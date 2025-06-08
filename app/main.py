@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 from sqlalchemy import text, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
+from datetime import datetime
 
 from .pdf_utils import extract_bom_text, parse_bom_lines
 from .quote_utils import calculate_quote
@@ -63,6 +64,33 @@ class QuoteResponse(SQLModel):
     total_components: int
     estimated_time_s: int
     estimated_cost_usd: float
+
+
+class TestResult(SQLModel, table=True):
+    """Database model for flying-probe test results."""
+
+    test_id: int | None = Field(default=None, primary_key=True)
+    assembly_id: int = 1  # placeholder until multi-BOM support
+    serial_number: str | None = None
+    date_tested: datetime = Field(default_factory=datetime.utcnow)
+    result: bool
+    failure_details: str | None = None
+
+
+class TestResultCreate(SQLModel):
+    """Schema for creating test results via the API."""
+
+    assembly_id: int = 1
+    serial_number: str | None = None
+    result: bool
+    failure_details: str | None = None
+
+
+class TestResultRead(TestResultCreate):
+    """Schema returned from the test result API."""
+
+    test_id: int
+    date_tested: datetime
 
 
 def init_db() -> None:
@@ -262,3 +290,39 @@ def get_quote() -> QuoteResponse:
         items = session.exec(select(BOMItem)).all()
     data = calculate_quote(items)
     return QuoteResponse(**data)
+
+
+@app.post("/testresults", response_model=TestResultRead, status_code=status.HTTP_201_CREATED)
+def create_test_result(result_in: TestResultCreate) -> TestResultRead:
+    """Log a new flying-probe test result."""
+
+    db_result = TestResult(**result_in.dict())
+    with Session(engine) as session:
+        session.add(db_result)
+        session.commit()
+        session.refresh(db_result)
+    return db_result
+
+
+@app.get("/testresults", response_model=list[TestResultRead])
+def list_test_results(skip: int = 0, limit: int = 50) -> list[TestResultRead]:
+    """Return test result logs with pagination."""
+
+    if limit > 200:
+        limit = 200
+
+    with Session(engine) as session:
+        stmt = select(TestResult).offset(skip).limit(limit)
+        results = session.exec(stmt).all()
+    return results
+
+
+@app.get("/testresults/{test_id}", response_model=TestResultRead)
+def get_test_result(test_id: int) -> TestResultRead:
+    """Retrieve a single test result by ID."""
+
+    with Session(engine) as session:
+        result = session.get(TestResult, test_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Test result not found")
+        return result
