@@ -1,8 +1,18 @@
 # root: app/main.py
-from fastapi import FastAPI, status, UploadFile, File, HTTPException, Depends
+from fastapi import (
+    FastAPI,
+    status,
+    UploadFile,
+    File,
+    HTTPException,
+    Depends,
+    APIRouter,
+    Request,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
 import jwt
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 from sqlalchemy import text, UniqueConstraint
@@ -20,6 +30,8 @@ from .config import (
     ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     DATABASE_URL,
+    load_settings,
+    save_database_url,
 )
 
 from .pdf_utils import extract_bom_text, parse_bom_lines
@@ -28,6 +40,15 @@ from .trace_utils import component_trace, board_trace
 
 engine = create_engine(DATABASE_URL, echo=False)
 scheduler = BackgroundScheduler()
+templates = Jinja2Templates(directory="app/frontend/templates")
+
+
+def reload_db(url: str) -> None:
+    """Rebuild SQL engine and re-init DB."""
+    global engine
+    engine.dispose()
+    engine = create_engine(url, echo=False)
+    init_db()
 
 
 class StatusCheck(SQLModel, table=True):
@@ -238,6 +259,7 @@ def init_db() -> None:
 
 
 app = FastAPI()
+ui_router = APIRouter(prefix="/ui")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 
@@ -587,3 +609,108 @@ def trace_board(serial_number: str):
     if not data:
         raise HTTPException(status_code=404, detail="Board not found")
     return data
+
+
+# ---------------------- Web UI -------------------------
+
+@ui_router.get("/", response_class=HTMLResponse)
+def ui_dashboard(request: Request):
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {"request": request, "title": "Dashboard", "db": DATABASE_URL},
+    )
+
+
+@ui_router.get("/bom/", response_class=HTMLResponse)
+def ui_bom(request: Request):
+    return templates.TemplateResponse("bom.html", {"request": request, "title": "BOM"})
+
+
+@ui_router.get("/bom/table", response_class=HTMLResponse)
+def ui_bom_table(request: Request):
+    items = get_all_bom()
+    return templates.TemplateResponse(
+        "bom_table.html", {"request": request, "items": items}
+    )
+
+
+@ui_router.post("/bom/create", response_class=HTMLResponse)
+async def ui_bom_create(request: Request, current_user: User = Depends(get_current_user)):
+    form = await request.form()
+    item = BOMItemCreate(
+        part_number=form.get("part_number"),
+        description=form.get("description"),
+        quantity=int(form.get("quantity", 1)),
+    )
+    with Session(engine) as session:
+        db_item = BOMItem.from_orm(item)
+        session.add(db_item)
+        session.commit()
+        session.refresh(db_item)
+    return templates.TemplateResponse(
+        "bom_table.html",
+        {"request": request, "items": [db_item]},
+    )
+
+
+@ui_router.get("/import/", response_class=HTMLResponse)
+def ui_import(request: Request):
+    return templates.TemplateResponse("import.html", {"request": request, "title": "Import"})
+
+
+@ui_router.get("/quote/", response_class=HTMLResponse)
+def ui_quote(request: Request):
+    return templates.TemplateResponse("quote.html", {"request": request, "title": "Quote"})
+
+
+@ui_router.get("/test/", response_class=HTMLResponse)
+def ui_test(request: Request):
+    return templates.TemplateResponse("test.html", {"request": request, "title": "Test"})
+
+
+@ui_router.get("/trace/", response_class=HTMLResponse)
+def ui_trace(request: Request):
+    return templates.TemplateResponse("trace.html", {"request": request, "title": "Trace"})
+
+
+@ui_router.get("/export/", response_class=HTMLResponse)
+def ui_export(request: Request):
+    return templates.TemplateResponse("export.html", {"request": request, "title": "Export"})
+
+
+@ui_router.get("/users/", response_class=HTMLResponse)
+def ui_users(request: Request):
+    return templates.TemplateResponse("users.html", {"request": request, "title": "Users"})
+
+
+@ui_router.get("/settings/", response_class=HTMLResponse)
+def ui_settings(request: Request):
+    sqlite_mode = "sqlite" in DATABASE_URL
+    return templates.TemplateResponse(
+        "settings.html",
+        {
+            "request": request,
+            "title": "Settings",
+            "sqlite": sqlite_mode,
+            "sqlite_path": DATABASE_URL.removeprefix("sqlite:///") if sqlite_mode else "",
+            "pg_url": DATABASE_URL if not sqlite_mode else "",
+        },
+    )
+
+
+@ui_router.post("/settings/", response_class=RedirectResponse)
+async def ui_save_settings(request: Request):
+    form = await request.form()
+    mode = form.get("mode")
+    if mode == "sqlite":
+        path = form.get("sqlite_path") or (BASE_DIR / "bom_dev.db")
+        url = f"sqlite:///{path}"
+    else:
+        url = form.get("pg_url") or DATABASE_URL
+    save_database_url(url)
+    reload_db(url)
+    return RedirectResponse("/ui/settings/", status_code=303)
+
+
+app.include_router(ui_router)
+

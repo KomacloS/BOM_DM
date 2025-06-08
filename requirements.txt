@@ -12,3 +12,7 @@ PyJWT
 openpyxl
 apscheduler
 requests
+jinja2
+requests_html
+pillow
+toml

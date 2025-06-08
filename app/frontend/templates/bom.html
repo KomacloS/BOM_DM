@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1 class="text-2xl mb-4">BOM Items</h1>
+<form id="add-form" hx-post="/ui/bom/create" hx-target="#table-body" hx-swap="afterbegin" class="mb-4">
+  <input type="text" name="part_number" placeholder="Part number" class="border" required>
+  <input type="text" name="description" placeholder="Description" class="border" required>
+  <input type="number" name="quantity" value="1" class="border" min="1">
+  <button type="submit" class="bg-blue-500 text-white px-2">Add</button>
+</form>
+<table class="min-w-full">
+  <thead><tr><th>ID</th><th>Part #</th><th>Description</th><th>Qty</th></tr></thead>
+  <tbody id="table-body" hx-get="/ui/bom/table" hx-trigger="load"></tbody>
+</table>
+{% endblock %}

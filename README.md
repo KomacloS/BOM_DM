@@ -149,6 +149,14 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/export/testresults.
 
 Nightly backups of these exports are saved under the `backups/` directory.
 
+### Browser access
+
+Open `http://localhost:8000/ui/` in a browser to use the built-in web UI.
+Switch between SQLite and Postgres under **Configuration**. Saving
+changes rewrites `~/.bom_platform/settings.toml` and reloads the database
+without restarting Python.
+
+
 ### 📋 Server Control Center GUI
 
 Launch the graphical control center from a virtual environment on a session that can open windows (RDP or local login):
