@@ -5,8 +5,8 @@ import pytest
 
 pytest.importorskip('tkinter')
 
-if os.environ.get('CI'):
-    pytest.skip('GUI tests skipped on CI', allow_module_level=True)
+if not os.environ.get('DISPLAY'):
+    pytest.skip('GUI tests require a display', allow_module_level=True)
 
 from gui import control_center
 

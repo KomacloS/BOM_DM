@@ -10,5 +10,20 @@ version = "0.1.0"
 [project.scripts]
 bom-gui = "gui.control_center:main"
 
+[project.optional-dependencies]
+full = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlmodel",
+    "psycopg2-binary",
+    "pymupdf",
+    "python-multipart",
+    "passlib[bcrypt]",
+    "PyJWT",
+    "openpyxl",
+    "apscheduler",
+    "requests",
+]
+
 [tool.setuptools]
 packages = ["app", "gui"]
