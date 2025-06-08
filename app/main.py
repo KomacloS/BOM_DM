@@ -2,11 +2,17 @@
 from fastapi import FastAPI, status, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import StreamingResponse
 import jwt
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 from sqlalchemy import text, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
+import csv
+import io
+import os
+from openpyxl import Workbook
 
 from .security import verify_password, get_password_hash, create_access_token
 from .config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
@@ -17,6 +23,7 @@ from .trace_utils import component_trace, board_trace
 
 DATABASE_URL = "postgresql://postgres:password@localhost:5432/bom_db"
 engine = create_engine(DATABASE_URL, echo=False)
+scheduler = BackgroundScheduler()
 
 
 class StatusCheck(SQLModel, table=True):
@@ -134,6 +141,82 @@ class BoardTraceResponse(SQLModel):
     bom: list[BoardTraceBOMItem]
 
 
+def get_all_bom() -> list[BOMItem]:
+    with Session(engine) as session:
+        return session.exec(select(BOMItem)).all()
+
+
+def get_all_testresults() -> list[TestResult]:
+    with Session(engine) as session:
+        return session.exec(select(TestResult)).all()
+
+
+def csv_generator(items: list[BOMItem]):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "part_number", "description", "quantity", "reference"])
+    yield output.getvalue()
+    output.seek(0)
+    output.truncate(0)
+    for item in items:
+        writer.writerow([
+            item.id,
+            item.part_number,
+            item.description,
+            item.quantity,
+            item.reference or "",
+        ])
+        yield output.getvalue()
+        output.seek(0)
+        output.truncate(0)
+
+
+def excel_bytes(results: list[TestResult]) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "results"
+    ws.append(
+        [
+            "test_id",
+            "assembly_id",
+            "serial_number",
+            "date_tested",
+            "result",
+            "failure_details",
+        ]
+    )
+    for r in results:
+        ws.append(
+            [
+                r.test_id,
+                r.assembly_id,
+                r.serial_number,
+                r.date_tested.isoformat(),
+                r.result,
+                r.failure_details,
+            ]
+        )
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def nightly_backup(dest: str = "backups") -> None:
+    os.makedirs(dest, exist_ok=True)
+    stamp = datetime.utcnow().strftime("%Y%m%d")
+    items = get_all_bom()
+    with open(os.path.join(dest, f"bom_{stamp}.csv"), "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["id", "part_number", "description", "quantity", "reference"])
+        for i in items:
+            writer.writerow([i.id, i.part_number, i.description, i.quantity, i.reference or ""])
+    results = get_all_testresults()
+    excel_data = excel_bytes(results)
+    with open(os.path.join(dest, f"testresults_{stamp}.xlsx"), "wb") as f:
+        f.write(excel_data)
+
+
 def init_db() -> None:
     """Create database tables if they do not exist."""
 
@@ -196,6 +279,16 @@ def on_startup() -> None:
     """Initialise the database on application start."""
 
     init_db()
+    if not scheduler.get_jobs():
+        scheduler.add_job(nightly_backup, "cron", hour=2, minute=0)
+    if not scheduler.running:
+        scheduler.start()
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    if scheduler.running:
+        scheduler.shutdown()
 
 
 @app.get("/health")
@@ -444,6 +537,34 @@ def get_test_result(test_id: int) -> TestResultRead:
         if not result:
             raise HTTPException(status_code=404, detail="Test result not found")
         return result
+
+
+@app.get("/export/bom.csv", dependencies=[Depends(admin_required)])
+def export_bom_csv():
+    items = get_all_bom()
+    headers = {"Content-Disposition": "attachment; filename=bom.csv"}
+    return StreamingResponse(
+        csv_generator(items), media_type="text/csv", headers=headers
+    )
+
+
+@app.get(
+    "/export/testresults.xlsx",
+    dependencies=[Depends(admin_required)],
+)
+def export_testresults_xlsx():
+    results = get_all_testresults()
+    data = excel_bytes(results)
+    headers = {
+        "Content-Disposition": "attachment; filename=testresults.xlsx"
+    }
+    return StreamingResponse(
+        (chunk for chunk in [data]),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers=headers,
+    )
 
 
 @app.get("/traceability/component/{part_number}", response_model=list[ComponentTraceEntry])
