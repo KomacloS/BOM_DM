@@ -152,6 +152,7 @@ Nightly backups of these exports are saved under the `backups/` directory.
 ### Browser access
 
 Open `http://localhost:8000/ui/` in a browser to use the built-in web UI.
+A new step-by-step workflow is available at `http://localhost:8000/ui/workflow`.
 Switch between SQLite and Postgres under **Configuration**. Saving
 changes rewrites `~/.bom_platform/settings.toml` and reloads the database
 without restarting Python.

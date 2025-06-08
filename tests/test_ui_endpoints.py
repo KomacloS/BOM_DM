@@ -6,6 +6,7 @@ client = TestClient(main.app)
 pages = [
     "/ui/",
     "/ui/bom/",
+    "/ui/workflow/",
     "/ui/import/",
     "/ui/quote/",
     "/ui/test/",
@@ -21,6 +22,11 @@ def test_pages_return_html():
         r = client.get(p)
         assert r.status_code == 200
         assert "<title>" in r.text
+
+
+def test_workflow_page_has_wizard():
+    r = client.get("/ui/workflow/")
+    assert "step1" in r.text
 
 
 def test_htmx_create_item():
