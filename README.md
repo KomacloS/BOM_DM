@@ -67,6 +67,22 @@ Get a quick time and cost estimate for the current BOM:
 curl http://localhost:8000/bom/quote
 ```
 
+### Test results
+
+Log a new flying-probe test result:
+
+```bash
+curl -X POST http://localhost:8000/testresults \
+     -H "Content-Type: application/json" \
+     -d '{"serial_number":"SN123","result":true}'
+```
+
+List saved results:
+
+```bash
+curl http://localhost:8000/testresults?skip=0&limit=10
+```
+
 ### BOMItem fields
 - **part_number**: unique identifier for the part (string, required)
 - **description**: human-friendly description (string, required)
