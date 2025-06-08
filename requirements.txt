@@ -5,3 +5,5 @@ sqlmodel           # SQLAlchemy + Pydantic
 psycopg2-binary    # PostgreSQL driver
 pytest
 httpx
+pymupdf
+python-multipart
