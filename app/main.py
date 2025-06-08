@@ -1,8 +1,10 @@
 # root: app/main.py
-from fastapi import FastAPI, status
+from fastapi import FastAPI, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 from sqlalchemy import text
+
+from .pdf_utils import extract_bom_text, parse_bom_lines
 
 DATABASE_URL = "postgresql://postgres:password@localhost:5432/bom_db"
 engine = create_engine(DATABASE_URL, echo=False)
@@ -95,3 +97,24 @@ def create_item(item: BOMItemCreate) -> BOMItem:
         session.commit()
         session.refresh(db_item)
     return db_item
+
+
+@app.post("/bom/import", response_model=list[BOMItem])
+async def import_bom(file: UploadFile = File(...)) -> list[BOMItem]:
+    """Import BOM items from an uploaded PDF file."""
+
+    pdf_bytes = await file.read()
+    text = extract_bom_text(pdf_bytes)
+    records = parse_bom_lines(text)
+
+    inserted: list[BOMItem] = []
+    with Session(engine) as session:
+        for rec in records:
+            if not rec.get("part_number") or not rec.get("description"):
+                continue
+            item = BOMItem(**rec)
+            session.add(item)
+            session.commit()
+            session.refresh(item)
+            inserted.append(item)
+    return inserted

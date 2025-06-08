@@ -23,6 +23,13 @@ curl -X POST http://localhost:8000/bom/items \
      -d '{"part_number":"ABC-123","description":"10 \u00b5F Cap","quantity":2}'
 ```
 
+Import a BOM PDF:
+```bash
+curl -F file=@sample.pdf http://localhost:8000/bom/import
+```
+The parser assumes table columns are separated by multiple spaces or tabs. Real
+world PDFs may require tweaks.
+
 ### BOMItem fields
 - **part_number**: unique identifier for the part (string, required)
 - **description**: human-friendly description (string, required)
