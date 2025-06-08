@@ -3,11 +3,17 @@
 
 This repository is the starting point for an on-premise BOM-centric test-engineering platform.
 
-**Stack**:  
-- Python 3.11 (virtual-env recommended)  
-- FastAPI + Uvicorn backend  
-- PostgreSQL (will run locally during dev)  
+**Stack**:
+- Python 3.11 (virtual-env recommended)
+- FastAPI + Uvicorn backend
+- PostgreSQL (will run locally during dev)
 - Pytest for TDD
+
+### Three-layer model
+
+1. **Core API** – FastAPI application with all business logic and data storage
+2. **Control Center GUI** – Tk desktop application communicating with the API
+3. **CLI / Scripts** – helper scripts for headless install and automation
 
 ### Quick start
 ```bash
@@ -152,3 +158,20 @@ bom-gui               # or:  python -m gui.control_center
 ```
 
 This window lets you start and stop the API server, run tests, trigger backups and download exports without using the terminal.
+
+![GUI screenshot](docs/gui_screenshot.png)
+
+### One-click install
+
+Windows:
+```bat
+scripts\setup.bat
+```
+
+Linux/macOS:
+```bash
+chmod +x scripts/setup.sh
+./scripts/setup.sh
+```
+
+The script creates a virtual environment, installs all optional dependencies and launches the Control Center.
