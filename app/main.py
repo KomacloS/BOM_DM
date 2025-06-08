@@ -13,6 +13,7 @@ from .config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 
 from .pdf_utils import extract_bom_text, parse_bom_lines
 from .quote_utils import calculate_quote
+from .trace_utils import component_trace, board_trace
 
 DATABASE_URL = "postgresql://postgres:password@localhost:5432/bom_db"
 engine = create_engine(DATABASE_URL, echo=False)
@@ -109,6 +110,28 @@ class TestResultRead(TestResultCreate):
 
     test_id: int
     date_tested: datetime
+
+
+class ComponentTraceEntry(SQLModel):
+    serial_number: str | None = None
+    result: bool
+    failure_details: str | None = None
+
+
+class BoardTraceBOMItem(SQLModel):
+    id: int
+    part_number: str
+    description: str
+    quantity: int
+    reference: str | None = None
+    status: str
+
+
+class BoardTraceResponse(SQLModel):
+    serial_number: str | None = None
+    result: bool
+    failure_details: str | None = None
+    bom: list[BoardTraceBOMItem]
 
 
 def init_db() -> None:
@@ -421,3 +444,21 @@ def get_test_result(test_id: int) -> TestResultRead:
         if not result:
             raise HTTPException(status_code=404, detail="Test result not found")
         return result
+
+
+@app.get("/traceability/component/{part_number}", response_model=list[ComponentTraceEntry])
+def trace_component(part_number: str):
+    with Session(engine) as session:
+        data = component_trace(part_number, session)
+    if not data:
+        raise HTTPException(status_code=404, detail="No failures found for part")
+    return data
+
+
+@app.get("/traceability/board/{serial_number}", response_model=BoardTraceResponse)
+def trace_board(serial_number: str):
+    with Session(engine) as session:
+        data = board_trace(serial_number, session)
+    if not data:
+        raise HTTPException(status_code=404, detail="Board not found")
+    return data

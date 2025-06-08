@@ -116,3 +116,17 @@ curl -H "Authorization: Bearer $TOKEN" \
      -d '{"part_number":"ABC-1","description":"Cap","quantity":1}' \
      http://localhost:8000/bom/items
 ```
+
+### Traceability
+
+Identify which boards failed because of a component:
+
+```bash
+curl http://localhost:8000/traceability/component/ABC-123
+```
+
+See the fail status of each BOM item for a board:
+
+```bash
+curl http://localhost:8000/traceability/board/SN123
+```
