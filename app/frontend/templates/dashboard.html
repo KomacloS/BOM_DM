@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1 class="text-2xl mb-4">Dashboard</h1>
+<div class="grid grid-cols-2 gap-4">
+  <a href="/ui/bom/" class="p-4 bg-gray-100">BOM Items</a>
+  <a href="/ui/import/" class="p-4 bg-gray-100">Import PDF</a>
+  <a href="/ui/quote/" class="p-4 bg-gray-100">Quote</a>
+  <a href="/ui/test/" class="p-4 bg-gray-100">Test Results</a>
+  <a href="/ui/trace/" class="p-4 bg-gray-100">Traceability</a>
+  <a href="/ui/export/" class="p-4 bg-gray-100">Exports & Backup</a>
+  <a href="/ui/users/" class="p-4 bg-gray-100">User Admin</a>
+  <a href="/ui/settings/" class="p-4 bg-gray-100">Configuration</a>
+</div>
+{% endblock %}

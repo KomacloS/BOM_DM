@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1 class="text-2xl mb-4">Traceability</h1>
+<div class="mb-4">
+  <form hx-get="/traceability/component/" hx-target="#trace-output">
+    <input type="text" name="pn" placeholder="Part number" class="border">
+    <button type="submit" class="bg-blue-500 text-white px-2">Query</button>
+  </form>
+</div>
+<div class="mb-4">
+  <form hx-get="/traceability/board/" hx-target="#trace-output">
+    <input type="text" name="sn" placeholder="Serial" class="border">
+    <button type="submit" class="bg-blue-500 text-white px-2">Query</button>
+  </form>
+</div>
+<pre id="trace-output"></pre>
+{% endblock %}
