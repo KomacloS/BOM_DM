@@ -1,0 +1,110 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1 class="text-2xl mb-4">Customer Workflow</h1>
+<div id="step1" class="mb-4">
+  <h2 class="font-bold">1. Select Customer</h2>
+  <select id="customer-select" class="border"></select>
+  <input type="text" id="new-customer-name" placeholder="New customer" class="border" />
+  <input type="text" id="new-customer-contact" placeholder="Contact" class="border" />
+  <button id="add-customer" class="bg-blue-500 text-white px-2">Add</button>
+</div>
+<div id="step2" class="mb-4 hidden">
+  <h2 class="font-bold">2. Select Project</h2>
+  <select id="project-select" class="border"></select>
+  <input type="text" id="new-project-name" placeholder="New project" class="border" />
+  <input type="text" id="new-project-desc" placeholder="Description" class="border" />
+  <button id="add-project" class="bg-blue-500 text-white px-2">Add</button>
+</div>
+<div id="step3" class="mb-4 hidden">
+  <h2 class="font-bold">3. Upload BOM</h2>
+  <input type="file" id="bom-file" accept=".csv,.xlsx" class="border" />
+  <button id="upload-bom" class="bg-blue-500 text-white px-2">Upload</button>
+</div>
+<div id="step4" class="mb-4 hidden">
+  <h2 class="font-bold">4. Review</h2>
+  <table class="min-w-full"><thead><tr><th>Part</th><th>Description</th><th>Qty</th><th>Ref</th></tr></thead><tbody id="bom-table"></tbody></table>
+  <button id="save-bom" class="bg-blue-500 text-white px-2 mt-2">Save BOM</button>
+  <button id="cancel-bom" class="bg-gray-500 text-white px-2 mt-2">Cancel</button>
+</div>
+<script>
+async function loadCustomers(){
+  const r=await fetch('/ui/workflow/customers');
+  const data=await r.json();
+  const sel=document.getElementById('customer-select');
+  sel.innerHTML='<option value="">--select--</option>';
+  data.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name;sel.appendChild(o);});
+}
+
+document.getElementById('add-customer').onclick=async ()=>{
+  const name=document.getElementById('new-customer-name').value;
+  const contact=document.getElementById('new-customer-contact').value;
+  if(!name) return;
+  await fetch('/ui/workflow/customers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,contact})});
+  loadCustomers();
+};
+
+document.getElementById('customer-select').onchange=()=>{
+  const cid=document.getElementById('customer-select').value;
+  if(cid){document.getElementById('step2').classList.remove('hidden');loadProjects(cid);}
+};
+
+async function loadProjects(cid){
+  const r=await fetch('/ui/workflow/projects?customer_id='+cid);
+  const data=await r.json();
+  const sel=document.getElementById('project-select');
+  sel.innerHTML='<option value="">--select--</option>';
+  data.forEach(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=p.name;sel.appendChild(o);});
+}
+
+document.getElementById('add-project').onclick=async ()=>{
+  const cid=document.getElementById('customer-select').value;
+  const name=document.getElementById('new-project-name').value;
+  const description=document.getElementById('new-project-desc').value;
+  if(!cid || !name) return;
+  await fetch('/ui/workflow/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customer_id:cid,name,description})});
+  loadProjects(cid);
+};
+
+document.getElementById('project-select').onchange=()=>{
+  if(document.getElementById('project-select').value){document.getElementById('step3').classList.remove('hidden');}
+};
+
+document.getElementById('upload-bom').onclick=async ()=>{
+  const f=document.getElementById('bom-file').files[0];
+  if(!f) return;
+  const fd=new FormData();fd.append('file',f);
+  const r=await fetch('/ui/workflow/upload',{method:'POST',body:fd});
+  const data=await r.json();
+  const tbody=document.getElementById('bom-table');
+  tbody.innerHTML='';
+  data.forEach(row=>{
+    const tr=document.createElement('tr');
+    ['part_number','description','quantity','reference'].forEach(k=>{
+      const td=document.createElement('td');
+      const inp=document.createElement('input');
+      inp.value=row[k]||''; inp.className='border';
+      if(k==='quantity') inp.type='number';
+      td.appendChild(inp); tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  document.getElementById('step4').classList.remove('hidden');
+};
+
+document.getElementById('save-bom').onclick=async ()=>{
+  const project=document.getElementById('project-select').value;
+  const rows=document.querySelectorAll('#bom-table tr');
+  const items=[];
+  rows.forEach(tr=>{
+    const i=tr.querySelectorAll('input');
+    items.push({part_number:i[0].value,description:i[1].value,quantity:parseInt(i[2].value||1),reference:i[3].value||null});
+  });
+  await fetch('/ui/workflow/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_id:parseInt(project),items})});
+  window.location='/ui/workflow/';
+};
+
+document.getElementById('cancel-bom').onclick=()=>{window.location='/ui/workflow/';};
+
+loadCustomers();
+</script>
+{% endblock %}
