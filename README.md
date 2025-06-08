@@ -130,3 +130,15 @@ See the fail status of each BOM item for a board:
 ```bash
 curl http://localhost:8000/traceability/board/SN123
 ```
+
+### Data export & backups
+
+Admins can download the current BOM and all test results:
+
+```bash
+TOKEN=<admin-token>
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/export/bom.csv
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/export/testresults.xlsx
+```
+
+Nightly backups of these exports are saved under the `backups/` directory.
