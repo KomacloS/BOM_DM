@@ -6,6 +6,7 @@ from sqlalchemy import text, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 
 from .pdf_utils import extract_bom_text, parse_bom_lines
+from .quote_utils import calculate_quote
 
 DATABASE_URL = "postgresql://postgres:password@localhost:5432/bom_db"
 engine = create_engine(DATABASE_URL, echo=False)
@@ -54,6 +55,14 @@ class BOMItemUpdate(SQLModel):
     description: str | None = Field(default=None, min_length=1)
     quantity: int | None = Field(default=None, ge=1)
     reference: str | None = None
+
+
+class QuoteResponse(SQLModel):
+    """Schema returned from the quote endpoint."""
+
+    total_components: int
+    estimated_time_s: int
+    estimated_cost_usd: float
 
 
 def init_db() -> None:
@@ -243,3 +252,13 @@ async def import_bom(file: UploadFile = File(...)) -> list[BOMItemRead]:
             session.refresh(item)
             inserted.append(item)
     return inserted
+
+
+@app.get("/bom/quote", response_model=QuoteResponse)
+def get_quote() -> QuoteResponse:
+    """Return quick cost/time estimates for all BOM items."""
+
+    with Session(engine) as session:
+        items = session.exec(select(BOMItem)).all()
+    data = calculate_quote(items)
+    return QuoteResponse(**data)
