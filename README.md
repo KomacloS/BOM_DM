@@ -142,3 +142,13 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/export/testresults.
 ```
 
 Nightly backups of these exports are saved under the `backups/` directory.
+
+### 📋 Server Control Center GUI
+
+Launch the graphical control center from a virtual environment on a session that can open windows (RDP or local login):
+
+```bash
+bom-gui               # or:  python -m gui.control_center
+```
+
+This window lets you start and stop the API server, run tests, trigger backups and download exports without using the terminal.

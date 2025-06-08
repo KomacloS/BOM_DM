@@ -11,3 +11,4 @@ passlib[bcrypt]
 PyJWT
 openpyxl
 apscheduler
+requests
