@@ -59,6 +59,14 @@ curl -F file=@sample.pdf http://localhost:8000/bom/import
 The parser assumes table columns are separated by multiple spaces or tabs. Real
 world PDFs may require tweaks.
 
+### Quote
+
+Get a quick time and cost estimate for the current BOM:
+
+```bash
+curl http://localhost:8000/bom/quote
+```
+
 ### BOMItem fields
 - **part_number**: unique identifier for the part (string, required)
 - **description**: human-friendly description (string, required)
