@@ -14,3 +14,13 @@ This repository is the starting point for an on-premise BOM-centric test-enginee
 python -m venv .venv && source .venv/bin/activate  # Windows: .\.venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload
+```
+
+### Health check
+
+Run the server and open `http://localhost:8000/health` to verify both the API
+and the database connection. The endpoint returns:
+
+```json
+{"api": "ok", "db": "ok"}
+```

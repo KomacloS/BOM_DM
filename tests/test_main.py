@@ -4,7 +4,9 @@ from app.main import app
 
 client = TestClient(app)
 
-def test_hello():
-    r = client.get("/hello")
-    assert r.status_code == 200
-    assert r.json() == {"message": "Hello BOM World"}
+def test_health():
+    """Ensure the API and database are reachable."""
+
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"api": "ok", "db": "ok"}
