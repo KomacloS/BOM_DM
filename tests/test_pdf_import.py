@@ -25,6 +25,16 @@ def client_fixture():
         yield c
 
 
+@pytest.fixture
+def auth_header(client):
+    resp = client.post(
+        "/auth/token",
+        data={"username": "admin", "password": "change_me"},
+    )
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def test_extract_and_parse():
     text = "PN1    Resistor 1k    2    R1\nPN2    Cap 1uF    5    C1"
     items = parse_bom_lines(text)
@@ -34,14 +44,14 @@ def test_extract_and_parse():
     ]
 
 
-def test_import_endpoint(client):
+def test_import_endpoint(client, auth_header):
     doc = fitz.open()
     page = doc.new_page()
     page.insert_text((72, 72), "PN9    Widget    3    R9")
     pdf_bytes = doc.tobytes()
 
     files = {"file": ("sample.pdf", pdf_bytes, "application/pdf")}
-    response = client.post("/bom/import", files=files)
+    response = client.post("/bom/import", files=files, headers=auth_header)
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 1

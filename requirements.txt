@@ -7,3 +7,5 @@ pytest
 httpx
 pymupdf
 python-multipart
+passlib[bcrypt]
+PyJWT
