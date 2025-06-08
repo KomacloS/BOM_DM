@@ -9,3 +9,6 @@ version = "0.1.0"
 
 [project.scripts]
 bom-gui = "gui.control_center:main"
+
+[tool.setuptools]
+packages = ["app", "gui"]
