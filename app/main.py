@@ -1,10 +1,15 @@
 # root: app/main.py
-from fastapi import FastAPI, status, UploadFile, File, HTTPException
+from fastapi import FastAPI, status, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+import jwt
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 from sqlalchemy import text, UniqueConstraint
 from sqlalchemy.exc import IntegrityError
-from datetime import datetime
+from datetime import datetime, timedelta
+
+from .security import verify_password, get_password_hash, create_access_token
+from .config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 
 from .pdf_utils import extract_bom_text, parse_bom_lines
 from .quote_utils import calculate_quote
@@ -58,6 +63,19 @@ class BOMItemUpdate(SQLModel):
     reference: str | None = None
 
 
+class User(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    username: str = Field(sa_column_kwargs={"unique": True})
+    hashed_pw: str
+    role: str
+
+
+class UserCreate(SQLModel):
+    username: str
+    password: str
+    role: str = "user"
+
+
 class QuoteResponse(SQLModel):
     """Schema returned from the quote endpoint."""
 
@@ -97,9 +115,47 @@ def init_db() -> None:
     """Create database tables if they do not exist."""
 
     SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        user_exists = session.exec(select(User)).first()
+        if not user_exists:
+            admin = User(
+                username="admin",
+                hashed_pw=get_password_hash("change_me"),
+                role="admin",
+            )
+            session.add(admin)
+            session.commit()
 
 
 app = FastAPI()
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
+
+
+def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except jwt.PyJWTError:
+        raise credentials_exception
+    with Session(engine) as session:
+        user = session.exec(select(User).where(User.username == username)).first()
+        if not user:
+            raise credentials_exception
+        return user
+
+
+def admin_required(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    return current_user
 
 origins = ["http://localhost:3000"]
 
@@ -131,6 +187,31 @@ def health() -> dict[str, str]:
         db_status = "error"
 
     return {"api": "ok", "db": db_status}
+
+
+@app.post("/auth/token")
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()) -> dict:
+    with Session(engine) as session:
+        user = session.exec(select(User).where(User.username == form_data.username)).first()
+        if not user or not verify_password(form_data.password, user.hashed_pw):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    token = create_access_token({"sub": user.username, "role": user.role}, access_token_expires)
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@app.post("/auth/register", dependencies=[Depends(admin_required)], status_code=status.HTTP_201_CREATED)
+def register_user(user_in: UserCreate) -> dict:
+    with Session(engine) as session:
+        user = User(username=user_in.username, hashed_pw=get_password_hash(user_in.password), role=user_in.role)
+        session.add(user)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
+        session.refresh(user)
+    return {"id": user.id, "username": user.username, "role": user.role}
 
 
 @app.get("/bom/items", response_model=list[BOMItemRead])
@@ -165,7 +246,7 @@ def list_items(
 
 
 @app.post("/bom/items", response_model=BOMItemRead, status_code=status.HTTP_201_CREATED)
-def create_item(item: BOMItemCreate) -> BOMItemRead:
+def create_item(item: BOMItemCreate, current_user: User = Depends(get_current_user)) -> BOMItemRead:
     """Create a new BOM item."""
 
     db_item = BOMItem.from_orm(item)
@@ -195,7 +276,11 @@ def get_item(item_id: int) -> BOMItemRead:
 
 
 @app.put("/bom/items/{item_id}", response_model=BOMItemRead)
-def replace_item(item_id: int, item_in: BOMItemCreate) -> BOMItemRead:
+def replace_item(
+    item_id: int,
+    item_in: BOMItemCreate,
+    current_user: User = Depends(get_current_user),
+) -> BOMItemRead:
     """Fully replace an existing BOM item."""
 
     with Session(engine) as session:
@@ -218,7 +303,11 @@ def replace_item(item_id: int, item_in: BOMItemCreate) -> BOMItemRead:
 
 
 @app.patch("/bom/items/{item_id}", response_model=BOMItemRead)
-def update_item(item_id: int, item_in: BOMItemUpdate) -> BOMItemRead:
+def update_item(
+    item_id: int,
+    item_in: BOMItemUpdate,
+    current_user: User = Depends(get_current_user),
+) -> BOMItemRead:
     """Partially update an existing BOM item."""
 
     with Session(engine) as session:
@@ -242,7 +331,7 @@ def update_item(item_id: int, item_in: BOMItemUpdate) -> BOMItemRead:
 
 
 @app.delete("/bom/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_item(item_id: int) -> None:
+def delete_item(item_id: int, current_user: User = Depends(admin_required)) -> None:
     """Delete a BOM item."""
 
     with Session(engine) as session:
@@ -255,7 +344,10 @@ def delete_item(item_id: int) -> None:
 
 
 @app.post("/bom/import", response_model=list[BOMItemRead])
-async def import_bom(file: UploadFile = File(...)) -> list[BOMItemRead]:
+async def import_bom(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+) -> list[BOMItemRead]:
     """Import BOM items from an uploaded PDF file."""
 
     pdf_bytes = await file.read()
@@ -293,7 +385,10 @@ def get_quote() -> QuoteResponse:
 
 
 @app.post("/testresults", response_model=TestResultRead, status_code=status.HTTP_201_CREATED)
-def create_test_result(result_in: TestResultCreate) -> TestResultRead:
+def create_test_result(
+    result_in: TestResultCreate,
+    current_user: User = Depends(get_current_user),
+) -> TestResultRead:
     """Log a new flying-probe test result."""
 
     db_result = TestResult(**result_in.dict())

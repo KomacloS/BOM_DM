@@ -23,13 +23,23 @@ def client_fixture():
         yield c
 
 
-def test_create_item(client):
+@pytest.fixture
+def auth_header(client):
+    resp = client.post(
+        "/auth/token",
+        data={"username": "admin", "password": "change_me"},
+    )
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_create_item(client, auth_header):
     payload = {
         "part_number": "ABC-123",
         "description": "10 uF Cap",
         "quantity": 2,
     }
-    response = client.post("/bom/items", json=payload)
+    response = client.post("/bom/items", json=payload, headers=auth_header)
     assert response.status_code == 201
     data = response.json()
     assert data["id"] == 1
@@ -39,9 +49,9 @@ def test_create_item(client):
     assert data["reference"] is None
 
 
-def test_list_items(client):
+def test_list_items(client, auth_header):
     item = {"part_number": "XYZ-1", "description": "Resistor", "quantity": 1}
-    client.post("/bom/items", json=item)
+    client.post("/bom/items", json=item, headers=auth_header)
 
     response = client.get("/bom/items")
     assert response.status_code == 200

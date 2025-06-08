@@ -24,6 +24,16 @@ def client_fixture():
         yield c
 
 
+@pytest.fixture
+def auth_header(client):
+    resp = client.post(
+        "/auth/token",
+        data={"username": "admin", "password": "change_me"},
+    )
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 class Dummy:
     def __init__(self, qty):
         self.quantity = qty
@@ -37,9 +47,17 @@ def test_calculate_quote():
     assert data["estimated_cost_usd"] == 100 + 0.07 * 5
 
 
-def test_quote_endpoint(client):
-    client.post("/bom/items", json={"part_number": "P1", "description": "A", "quantity": 2})
-    client.post("/bom/items", json={"part_number": "P2", "description": "B", "quantity": 3})
+def test_quote_endpoint(client, auth_header):
+    client.post(
+        "/bom/items",
+        json={"part_number": "P1", "description": "A", "quantity": 2},
+        headers=auth_header,
+    )
+    client.post(
+        "/bom/items",
+        json={"part_number": "P2", "description": "B", "quantity": 3},
+        headers=auth_header,
+    )
     resp = client.get("/bom/quote")
     assert resp.status_code == 200
     data = resp.json()

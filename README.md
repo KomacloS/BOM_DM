@@ -97,3 +97,22 @@ and the database connection. The endpoint returns:
 ```json
 {"api": "ok", "db": "ok"}
 ```
+
+### Authentication
+
+Obtain a token using the default admin account (created on first startup):
+
+```bash
+curl -X POST http://localhost:8000/auth/token \
+     -d "username=admin&password=change_me"
+```
+
+Use the returned token to access protected routes:
+
+```bash
+TOKEN=<token-from-login>
+curl -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"part_number":"ABC-1","description":"Cap","quantity":1}' \
+     http://localhost:8000/bom/items
+```
