@@ -23,6 +23,35 @@ curl -X POST http://localhost:8000/bom/items \
      -d '{"part_number":"ABC-123","description":"10 \u00b5F Cap","quantity":2}'
 ```
 
+Retrieve a single item:
+```bash
+curl http://localhost:8000/bom/items/1
+```
+
+Update an item completely:
+```bash
+curl -X PUT http://localhost:8000/bom/items/1 \
+     -H "Content-Type: application/json" \
+     -d '{"part_number":"ABC-123","description":"Cap 22uF","quantity":3}'
+```
+
+Patch an item:
+```bash
+curl -X PATCH http://localhost:8000/bom/items/1 \
+     -H "Content-Type: application/json" \
+     -d '{"quantity":5}'
+```
+
+Delete an item:
+```bash
+curl -X DELETE http://localhost:8000/bom/items/1
+```
+
+List items with search and pagination:
+```bash
+curl "http://localhost:8000/bom/items?search=Cap&min_qty=1&max_qty=10&skip=0&limit=20"
+```
+
 Import a BOM PDF:
 ```bash
 curl -F file=@sample.pdf http://localhost:8000/bom/import
