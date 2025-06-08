@@ -15,13 +15,17 @@ import os
 from openpyxl import Workbook
 
 from .security import verify_password, get_password_hash, create_access_token
-from .config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
+from .config import (
+    SECRET_KEY,
+    ALGORITHM,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    DATABASE_URL,
+)
 
 from .pdf_utils import extract_bom_text, parse_bom_lines
 from .quote_utils import calculate_quote
 from .trace_utils import component_trace, board_trace
 
-DATABASE_URL = "postgresql://postgres:password@localhost:5432/bom_db"
 engine = create_engine(DATABASE_URL, echo=False)
 scheduler = BackgroundScheduler()
 
