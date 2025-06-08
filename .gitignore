@@ -1,0 +1,9 @@
+# root: .gitignore
+# Virtual-envs, Python cache, editor files
+.venv/
+__pycache__/
+*.py[cod]
+*.sqlite
+.env
+.vscode/
+.idea/
