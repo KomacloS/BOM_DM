@@ -116,6 +116,12 @@ class CustomerRead(CustomerCreate):
     id: int
 
 
+class CustomerUpdate(SQLModel):
+    name: str | None = None
+    contact: str | None = None
+    active: bool | None = None
+
+
 class Project(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     customer_id: int = Field(foreign_key="customer.id")
@@ -131,6 +137,12 @@ class ProjectCreate(SQLModel):
 
 class ProjectRead(ProjectCreate):
     id: int
+
+
+class ProjectUpdate(SQLModel):
+    customer_id: int | None = None
+    name: str | None = None
+    description: str | None = None
 
 
 class User(SQLModel, table=True):
@@ -780,6 +792,31 @@ def wf_create_customer(customer: CustomerCreate):
         return db_cust
 
 
+@workflow_router.patch("/customers/{customer_id}", response_model=CustomerRead)
+def wf_update_customer(customer_id: int, customer: CustomerUpdate):
+    with Session(engine) as session:
+        db_cust = session.get(Customer, customer_id)
+        if not db_cust:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        for field, value in customer.model_dump(exclude_unset=True).items():
+            setattr(db_cust, field, value)
+        session.add(db_cust)
+        session.commit()
+        session.refresh(db_cust)
+        return db_cust
+
+
+@workflow_router.delete("/customers/{customer_id}", status_code=status.HTTP_204_NO_CONTENT)
+def wf_delete_customer(customer_id: int):
+    with Session(engine) as session:
+        db_cust = session.get(Customer, customer_id)
+        if not db_cust:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        session.delete(db_cust)
+        session.commit()
+    return None
+
+
 @workflow_router.get("/projects", response_model=list[ProjectRead])
 def wf_projects(customer_id: int):
     with Session(engine) as session:
@@ -794,6 +831,31 @@ def wf_create_project(project: ProjectCreate):
         session.commit()
         session.refresh(db_proj)
         return db_proj
+
+
+@workflow_router.patch("/projects/{project_id}", response_model=ProjectRead)
+def wf_update_project(project_id: int, project: ProjectUpdate):
+    with Session(engine) as session:
+        db_proj = session.get(Project, project_id)
+        if not db_proj:
+            raise HTTPException(status_code=404, detail="Project not found")
+        for field, value in project.model_dump(exclude_unset=True).items():
+            setattr(db_proj, field, value)
+        session.add(db_proj)
+        session.commit()
+        session.refresh(db_proj)
+        return db_proj
+
+
+@workflow_router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def wf_delete_project(project_id: int):
+    with Session(engine) as session:
+        db_proj = session.get(Project, project_id)
+        if not db_proj:
+            raise HTTPException(status_code=404, detail="Project not found")
+        session.delete(db_proj)
+        session.commit()
+    return None
 
 
 class BOMSave(SQLModel):

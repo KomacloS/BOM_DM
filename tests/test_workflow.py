@@ -32,3 +32,28 @@ def test_customer_project_and_save(client):
     all_items = client.get("/bom/items").json()
     assert any(i["part_number"] == "P1" for i in all_items)
 
+
+def test_customer_update_delete(client):
+    r = client.post("/ui/workflow/customers", json={"name": "Temp"})
+    cid = r.json()["id"]
+    upd = client.patch(f"/ui/workflow/customers/{cid}", json={"contact": "c"})
+    assert upd.status_code == 200
+    assert upd.json()["contact"] == "c"
+    del_r = client.delete(f"/ui/workflow/customers/{cid}")
+    assert del_r.status_code == 204
+    customers = client.get("/ui/workflow/customers").json()
+    assert all(c["id"] != cid for c in customers)
+
+
+def test_project_update_delete(client):
+    cust = client.post("/ui/workflow/customers", json={"name": "C2"}).json()
+    proj = client.post("/ui/workflow/projects", json={"customer_id": cust["id"], "name": "P"}).json()
+    pid = proj["id"]
+    upd = client.patch(f"/ui/workflow/projects/{pid}", json={"description": "d"})
+    assert upd.status_code == 200
+    assert upd.json()["description"] == "d"
+    del_r = client.delete(f"/ui/workflow/projects/{pid}")
+    assert del_r.status_code == 204
+    projs = client.get("/ui/workflow/projects", params={"customer_id": cust["id"]}).json()
+    assert projs == []
+

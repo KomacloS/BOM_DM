@@ -1,11 +1,15 @@
 @echo off
-python -m venv .venv
-if exist .venv\Scripts\activate.bat (
-    call .venv\Scripts\activate.bat
-) else (
-    echo Python 3.10+ required
-    exit /b 1
+set ROOT=%~dp0\..
+pushd %ROOT%
+if not exist .venv\Scripts\python.exe (
+    python -m venv .venv || (
+        echo Python 3.10+ required
+        exit /b 1
+    )
 )
-python -m pip install --upgrade pip
-python -m pip install ".[full]"
-python -m gui.control_center
+set PY=%ROOT%\.venv\Scripts\python.exe
+
+%PY% -m pip install --upgrade pip
+%PY% -m pip install ".[full]"
+%PY% -m gui.control_center
+popd
