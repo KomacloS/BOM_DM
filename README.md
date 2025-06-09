@@ -184,3 +184,5 @@ chmod +x scripts/setup.sh
 ```
 
 The script creates a virtual environment, installs all optional dependencies and launches the Control Center.
+It now detects the project root and directly invokes the Python inside `.venv`,
+so it works even if `python` isn't on your PATH.
