@@ -4,7 +4,7 @@ uvicorn[standard]
 sqlmodel           # SQLAlchemy + Pydantic
 psycopg2-binary    # PostgreSQL driver
 pytest
-httpx
+httpx<0.28
 pymupdf
 python-multipart
 passlib[bcrypt]

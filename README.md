@@ -152,6 +152,7 @@ Nightly backups of these exports are saved under the `backups/` directory.
 ### Browser access
 
 Open `http://localhost:8000/ui/` in a browser to use the built-in web UI.
+A new step-by-step workflow is available at `http://localhost:8000/ui/workflow`.
 Switch between SQLite and Postgres under **Configuration**. Saving
 changes rewrites `~/.bom_platform/settings.toml` and reloads the database
 without restarting Python.
@@ -164,6 +165,8 @@ Launch the graphical control center from a virtual environment on a session that
 ```bash
 bom-gui               # or:  python -m gui.control_center
 ```
+Run the command with **Python 3.10+** (e.g. `py -3` on Windows or the
+virtual environment's `python`).
 
 This window lets you start and stop the API server, run tests, trigger backups and download exports without using the terminal.
 
@@ -175,6 +178,8 @@ Windows:
 ```bat
 scripts\setup.bat
 ```
+Run this from **cmd.exe** or **PowerShell**. Git Bash/WSL users should run
+`./scripts/setup.sh` instead.
 
 Linux/macOS:
 ```bash

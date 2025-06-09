@@ -22,7 +22,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import csv
 import io
 import os
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from .security import verify_password, get_password_hash, create_access_token
 from .config import (
@@ -66,6 +66,8 @@ class BOMItemBase(SQLModel):
     quantity: int = Field(default=1, ge=1)
     reference: str | None = None
 
+    project_id: int | None = Field(default=None, foreign_key="project.id")
+
 
 class BOMItem(BOMItemBase, table=True):
     """Database model for a BOM item."""
@@ -94,6 +96,41 @@ class BOMItemUpdate(SQLModel):
     description: str | None = Field(default=None, min_length=1)
     quantity: int | None = Field(default=None, ge=1)
     reference: str | None = None
+    project_id: int | None = None
+
+
+class Customer(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(sa_column_kwargs={"unique": True})
+    contact: str | None = None
+    active: bool = True
+
+
+class CustomerCreate(SQLModel):
+    name: str
+    contact: str | None = None
+    active: bool = True
+
+
+class CustomerRead(CustomerCreate):
+    id: int
+
+
+class Project(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    customer_id: int = Field(foreign_key="customer.id")
+    name: str
+    description: str | None = None
+
+
+class ProjectCreate(SQLModel):
+    customer_id: int
+    name: str
+    description: str | None = None
+
+
+class ProjectRead(ProjectCreate):
+    id: int
 
 
 class User(SQLModel, table=True):
@@ -260,6 +297,7 @@ def init_db() -> None:
 
 app = FastAPI()
 ui_router = APIRouter(prefix="/ui")
+workflow_router = APIRouter(prefix="/ui/workflow")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 
@@ -712,5 +750,127 @@ async def ui_save_settings(request: Request):
     return RedirectResponse("/ui/settings/", status_code=303)
 
 
+# -------- Workflow Endpoints ---------
+
+@workflow_router.get("/", response_class=HTMLResponse)
+def ui_workflow(request: Request):
+    return templates.TemplateResponse(
+        "workflow.html",
+        {"request": request, "title": "Workflow"},
+    )
+
+
+@workflow_router.get("/customers", response_model=list[CustomerRead])
+def wf_customers():
+    with Session(engine) as session:
+        return session.exec(select(Customer).where(Customer.active == True)).all()
+
+
+@workflow_router.post(
+    "/customers",
+    response_model=CustomerRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def wf_create_customer(
+    customer: CustomerCreate, current_user: User = Depends(get_current_user)
+):
+    with Session(engine) as session:
+        db_cust = Customer.from_orm(customer)
+        session.add(db_cust)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(status_code=409, detail="Customer exists")
+        session.refresh(db_cust)
+        return db_cust
+
+
+@workflow_router.get("/projects", response_model=list[ProjectRead])
+def wf_projects(customer_id: int):
+    with Session(engine) as session:
+        return session.exec(select(Project).where(Project.customer_id == customer_id)).all()
+
+
+@workflow_router.post(
+    "/projects",
+    response_model=ProjectRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def wf_create_project(
+    project: ProjectCreate, current_user: User = Depends(get_current_user)
+):
+    with Session(engine) as session:
+        db_proj = Project.from_orm(project)
+        session.add(db_proj)
+        session.commit()
+        session.refresh(db_proj)
+        return db_proj
+
+
+class BOMSave(SQLModel):
+    project_id: int
+    items: list[BOMItemCreate]
+
+
+@workflow_router.post("/upload")
+async def wf_upload_bom(
+    file: UploadFile = File(...), current_user: User = Depends(get_current_user)
+):
+    contents = await file.read()
+    ext = file.filename.lower().split(".")[-1]
+    items: list[dict] = []
+    if ext == "csv":
+        text = contents.decode("utf-8", errors="ignore")
+        reader = csv.DictReader(io.StringIO(text))
+        for row in reader:
+            items.append(
+                {
+                    "part_number": row.get("part_number") or row.get("part number") or "",
+                    "description": row.get("description") or row.get("desc") or "",
+                    "quantity": int(row.get("quantity") or row.get("qty") or 1),
+                    "reference": row.get("reference") or row.get("ref") or None,
+                }
+            )
+    elif ext in {"xlsx", "xls"}:
+        wb = load_workbook(io.BytesIO(contents), read_only=True)
+        ws = wb.active
+        headers = [str(c.value).lower() if c.value else "" for c in next(ws.iter_rows(min_row=1, max_row=1))]
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            data = {headers[i]: (row[i] if i < len(row) else None) for i in range(len(headers))}
+            items.append(
+                {
+                    "part_number": data.get("part_number") or data.get("part number") or "",
+                    "description": data.get("description") or data.get("desc") or "",
+                    "quantity": int(data.get("quantity") or data.get("qty") or 1),
+                    "reference": data.get("reference") or data.get("ref") or None,
+                }
+            )
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+    return items
+
+
+@workflow_router.post("/save", response_model=list[BOMItemRead])
+def wf_save_bom(
+    payload: BOMSave, current_user: User = Depends(get_current_user)
+):
+    inserted: list[BOMItem] = []
+    with Session(engine) as session:
+        for itm in payload.items:
+            db_item = BOMItem.from_orm(itm)
+            db_item.project_id = payload.project_id
+            session.add(db_item)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                continue
+            session.refresh(db_item)
+            inserted.append(db_item)
+    return inserted
+
+
 app.include_router(ui_router)
+app.include_router(workflow_router)
 
