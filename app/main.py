@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 import jwt
 from sqlmodel import SQLModel, Field, Session, create_engine, select
 from sqlalchemy import text, UniqueConstraint
+import sqlalchemy
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -291,10 +292,29 @@ def nightly_backup(dest: str = "backups") -> None:
         f.write(excel_data)
 
 
+def migrate_db() -> None:
+    """Apply simple in-place migrations for older database schemas."""
+
+    inspector = sqlalchemy.inspect(engine)
+    if "bomitem" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("bomitem")}
+        if "project_id" not in columns:
+            with engine.begin() as conn:
+                if engine.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN project_id INTEGER"))
+                else:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES project(id)"
+                        )
+                    )
+
+
 def init_db() -> None:
     """Create database tables if they do not exist."""
 
     SQLModel.metadata.create_all(engine)
+    migrate_db()
     with Session(engine) as session:
         user_exists = session.exec(select(User)).first()
         if not user_exists:
