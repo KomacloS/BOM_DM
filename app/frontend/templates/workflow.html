@@ -1,26 +1,26 @@
 {% extends 'base.html' %}
 {% block content %}
 <h1 class="text-2xl mb-4">Customer Workflow</h1>
-<div id="step1" class="mb-4">
+<div id="step-1" class="mb-4">
   <h2 class="font-bold">1. Select Customer</h2>
   <select id="customer-select" class="border"></select>
   <input type="text" id="new-customer-name" placeholder="New customer" class="border" />
   <input type="text" id="new-customer-contact" placeholder="Contact" class="border" />
   <button id="add-customer" class="bg-blue-500 text-white px-2">Add</button>
 </div>
-<div id="step2" class="mb-4 hidden">
+<div id="step-2" class="mb-4 hidden">
   <h2 class="font-bold">2. Select Project</h2>
   <select id="project-select" class="border"></select>
   <input type="text" id="new-project-name" placeholder="New project" class="border" />
   <input type="text" id="new-project-desc" placeholder="Description" class="border" />
   <button id="add-project" class="bg-blue-500 text-white px-2">Add</button>
 </div>
-<div id="step3" class="mb-4 hidden">
+<div id="step-3" class="mb-4 hidden">
   <h2 class="font-bold">3. Upload BOM</h2>
   <input type="file" id="bom-file" accept=".csv,.xlsx" class="border" />
   <button id="upload-bom" class="bg-blue-500 text-white px-2">Upload</button>
 </div>
-<div id="step4" class="mb-4 hidden">
+<div id="step-4" class="mb-4 hidden">
   <h2 class="font-bold">4. Review</h2>
   <table class="min-w-full"><thead><tr><th>Part</th><th>Description</th><th>Qty</th><th>Ref</th></tr></thead><tbody id="bom-table"></tbody></table>
   <button id="save-bom" class="bg-blue-500 text-white px-2 mt-2">Save BOM</button>
@@ -45,7 +45,7 @@ document.getElementById('add-customer').onclick=async ()=>{
 
 document.getElementById('customer-select').onchange=()=>{
   const cid=document.getElementById('customer-select').value;
-  if(cid){document.getElementById('step2').classList.remove('hidden');loadProjects(cid);}
+  if(cid){document.getElementById('step-2').classList.remove('hidden');loadProjects(cid);}
 };
 
 async function loadProjects(cid){
@@ -66,7 +66,7 @@ document.getElementById('add-project').onclick=async ()=>{
 };
 
 document.getElementById('project-select').onchange=()=>{
-  if(document.getElementById('project-select').value){document.getElementById('step3').classList.remove('hidden');}
+  if(document.getElementById('project-select').value){document.getElementById('step-3').classList.remove('hidden');}
 };
 
 document.getElementById('upload-bom').onclick=async ()=>{
@@ -88,7 +88,7 @@ document.getElementById('upload-bom').onclick=async ()=>{
     });
     tbody.appendChild(tr);
   });
-  document.getElementById('step4').classList.remove('hidden');
+  document.getElementById('step-4').classList.remove('hidden');
 };
 
 document.getElementById('save-bom').onclick=async ()=>{

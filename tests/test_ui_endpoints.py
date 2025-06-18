@@ -26,7 +26,7 @@ def test_pages_return_html():
 
 def test_workflow_page_has_wizard():
     r = client.get("/ui/workflow/")
-    assert "step1" in r.text
+    assert '<div id="step-1"' in r.text
 
 
 def test_htmx_create_item():

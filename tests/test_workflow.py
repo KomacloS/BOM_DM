@@ -1,7 +1,11 @@
 import sqlalchemy
 import pytest
+import os
+import sys
 from fastapi.testclient import TestClient
 from sqlmodel import SQLModel, create_engine
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import app.main as main
 
@@ -56,4 +60,5 @@ def test_project_update_delete(client):
     assert del_r.status_code == 204
     projs = client.get("/ui/workflow/projects", params={"customer_id": cust["id"]}).json()
     assert projs == []
+
 

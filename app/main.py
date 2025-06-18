@@ -1,4 +1,5 @@
 # root: app/main.py
+from __future__ import annotations
 from fastapi import (
     FastAPI,
     status,
@@ -11,8 +12,9 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
+from typing import Optional
 import jwt
 from sqlmodel import SQLModel, Field, Session, select
 from sqlalchemy import text, UniqueConstraint
@@ -78,6 +80,8 @@ class BOMItem(BOMItemBase, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
 
+
+
     __table_args__ = (UniqueConstraint("part_number", "reference", name="uix_part_ref"),)
 
 
@@ -107,12 +111,15 @@ class Customer(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(sa_column_kwargs={"unique": True})
     contact: str | None = None
+    notes: str | None = None
     active: bool = True
+
 
 
 class CustomerCreate(SQLModel):
     name: str
     contact: str | None = None
+    notes: str | None = None
     active: bool = True
 
 
@@ -123,6 +130,7 @@ class CustomerRead(CustomerCreate):
 class CustomerUpdate(SQLModel):
     name: str | None = None
     contact: str | None = None
+    notes: str | None = None
     active: bool | None = None
 
 
@@ -130,12 +138,20 @@ class Project(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     customer_id: int = Field(foreign_key="customer.id")
     name: str
+    code: str | None = None
+    notes: str | None = None
     description: str | None = None
+
+
+
+    __table_args__ = (UniqueConstraint("customer_id", "name", name="uix_customer_name"),)
 
 
 class ProjectCreate(SQLModel):
     customer_id: int
     name: str
+    code: str | None = None
+    notes: str | None = None
     description: str | None = None
 
 
@@ -146,6 +162,8 @@ class ProjectRead(ProjectCreate):
 class ProjectUpdate(SQLModel):
     customer_id: int | None = None
     name: str | None = None
+    code: str | None = None
+    notes: str | None = None
     description: str | None = None
 
 
@@ -429,6 +447,114 @@ def register_user(user_in: UserCreate) -> dict:
     return {"id": user.id, "username": user.username, "role": user.role}
 
 
+@app.get("/customers", response_model=list[CustomerRead])
+def list_customers(search: str | None = None) -> list[CustomerRead]:
+    with Session(engine) as session:
+        stmt = select(Customer)
+        if search:
+            stmt = stmt.where(Customer.name.ilike(f"%{search}%"))
+        return session.exec(stmt).all()
+
+
+@app.post("/customers", response_model=CustomerRead, status_code=status.HTTP_201_CREATED)
+def create_customer(customer: CustomerCreate) -> CustomerRead:
+    with Session(engine) as session:
+        db = Customer.from_orm(customer)
+        session.add(db)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(status_code=409, detail="Customer exists")
+        session.refresh(db)
+        return db
+
+
+@app.patch("/customers/{customer_id}", response_model=CustomerRead)
+def update_customer(customer_id: int, customer: CustomerUpdate) -> CustomerRead:
+    with Session(engine) as session:
+        db_cust = session.get(Customer, customer_id)
+        if not db_cust:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        for f, v in customer.model_dump(exclude_unset=True).items():
+            setattr(db_cust, f, v)
+        session.add(db_cust)
+        session.commit()
+        session.refresh(db_cust)
+        return db_cust
+
+
+@app.delete("/customers/{customer_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_customer(customer_id: int) -> Response:
+    with Session(engine) as session:
+        cust = session.get(Customer, customer_id)
+        if not cust:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        # delete related projects and items
+        projects = session.exec(select(Project).where(Project.customer_id == customer_id)).all()
+        for proj in projects:
+            session.exec(sqlalchemy.delete(BOMItem).where(BOMItem.project_id == proj.id))
+            session.delete(proj)
+        session.delete(cust)
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/customers/{customer_id}/projects", response_model=list[ProjectRead])
+def customer_projects(customer_id: int) -> list[ProjectRead]:
+    with Session(engine) as session:
+        return session.exec(select(Project).where(Project.customer_id == customer_id)).all()
+
+
+@app.get("/projects", response_model=list[ProjectRead])
+def list_projects(customer_id: int | None = None) -> list[ProjectRead]:
+    with Session(engine) as session:
+        stmt = select(Project)
+        if customer_id is not None:
+            stmt = stmt.where(Project.customer_id == customer_id)
+        return session.exec(stmt).all()
+
+
+@app.post("/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
+def create_project(project: ProjectCreate) -> ProjectRead:
+    with Session(engine) as session:
+        db_proj = Project.from_orm(project)
+        session.add(db_proj)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(status_code=409, detail="Project exists")
+        session.refresh(db_proj)
+        return db_proj
+
+
+@app.patch("/projects/{project_id}", response_model=ProjectRead)
+def update_project(project_id: int, project: ProjectUpdate) -> ProjectRead:
+    with Session(engine) as session:
+        db_proj = session.get(Project, project_id)
+        if not db_proj:
+            raise HTTPException(status_code=404, detail="Project not found")
+        for f, v in project.model_dump(exclude_unset=True).items():
+            setattr(db_proj, f, v)
+        session.add(db_proj)
+        session.commit()
+        session.refresh(db_proj)
+        return db_proj
+
+
+@app.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_project(project_id: int) -> Response:
+    with Session(engine) as session:
+        db_proj = session.get(Project, project_id)
+        if not db_proj:
+            raise HTTPException(status_code=404, detail="Project not found")
+        session.exec(sqlalchemy.delete(BOMItem).where(BOMItem.project_id == project_id))
+        session.delete(db_proj)
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.get("/bom/items", response_model=list[BOMItemRead])
 def list_items(
     search: str | None = None,
@@ -545,8 +671,8 @@ def update_item(
         return db_item
 
 
-@app.delete("/bom/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_item(item_id: int, current_user: User = Depends(admin_required)) -> None:
+@app.delete("/bom/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_item(item_id: int, current_user: User = Depends(admin_required)) -> Response:
     """Delete a BOM item."""
 
     with Session(engine) as session:
@@ -555,12 +681,13 @@ def delete_item(item_id: int, current_user: User = Depends(admin_required)) -> N
             raise HTTPException(status_code=404, detail="Item not found")
         session.delete(db_item)
         session.commit()
-    return None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.post("/bom/import", response_model=list[BOMItemRead])
 async def import_bom(
     file: UploadFile = File(...),
+    project_id: int | None = None,
     current_user: User = Depends(get_current_user),
 ) -> list[BOMItemRead]:
     """Import BOM items from an uploaded PDF file."""
@@ -575,6 +702,7 @@ async def import_bom(
             if not rec.get("part_number") or not rec.get("description"):
                 continue
             item = BOMItem(**rec)
+            item.project_id = project_id
             session.add(item)
             try:
                 session.commit()
@@ -828,7 +956,7 @@ def wf_update_customer(customer_id: int, customer: CustomerUpdate):
         return db_cust
 
 
-@workflow_router.delete("/customers/{customer_id}", status_code=status.HTTP_204_NO_CONTENT)
+@workflow_router.delete("/customers/{customer_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def wf_delete_customer(customer_id: int):
     with Session(engine) as session:
         db_cust = session.get(Customer, customer_id)
@@ -836,7 +964,7 @@ def wf_delete_customer(customer_id: int):
             raise HTTPException(status_code=404, detail="Customer not found")
         session.delete(db_cust)
         session.commit()
-    return None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @workflow_router.get("/projects", response_model=list[ProjectRead])
@@ -869,7 +997,7 @@ def wf_update_project(project_id: int, project: ProjectUpdate):
         return db_proj
 
 
-@workflow_router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@workflow_router.delete("/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def wf_delete_project(project_id: int):
     with Session(engine) as session:
         db_proj = session.get(Project, project_id)
@@ -877,7 +1005,7 @@ def wf_delete_project(project_id: int):
             raise HTTPException(status_code=404, detail="Project not found")
         session.delete(db_proj)
         session.commit()
-    return None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 class BOMSave(SQLModel):
