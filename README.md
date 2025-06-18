@@ -173,6 +173,13 @@ changes rewrites `~/.bom_platform/settings.toml` and reloads the database
 without restarting Python.
 Run `python -m app.migrate` after upgrading to create new tables or columns.
 
+Uploading a PDF datasheet for an item:
+```bash
+curl -X POST -F file=@datasheet.pdf \
+     -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8000/bom/items/1/datasheet
+```
+
 
 ### 📋 Server Control Center GUI
 
