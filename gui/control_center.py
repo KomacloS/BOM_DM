@@ -10,7 +10,7 @@ from tkinter import messagebox, filedialog, ttk
 from tkinter.scrolledtext import ScrolledText
 
 import requests
-from app.config import DATABASE_URL
+from app import config
 
 def _reexec_into_venv() -> None:
     """Relaunch with the venv's python if available."""
@@ -356,16 +356,19 @@ class UsersTab(tk.Frame):
 class SettingsTab(tk.Frame):
     def __init__(self, master: tk.Misc):
         super().__init__(master)
-        self.mode = tk.StringVar(value="sqlite" if "sqlite" in DATABASE_URL else "postgres")
+        self.mode = tk.StringVar(value="sqlite" if "sqlite" in config.DATABASE_URL else "postgres")
         tk.Radiobutton(self, text="Embedded SQLite", variable=self.mode, value="sqlite").pack(anchor="w")
         tk.Radiobutton(self, text="External Postgres", variable=self.mode, value="postgres").pack(anchor="w")
         tk.Button(self, text="Apply", command=self.apply).pack(pady=5)
 
     def apply(self) -> None:
-        new_url = "sqlite:///./app.db" if self.mode.get() == "sqlite" else "postgresql://user:pass@localhost/bom"
-        if new_url != DATABASE_URL:
-            os.environ["DATABASE_URL"] = new_url
-            messagebox.showinfo("Settings", "Restart application for changes to take effect")
+        new_url = (
+            f"sqlite:///./app.db" if self.mode.get() == "sqlite" else "postgresql://user:pass@localhost/bom"
+        )
+        if new_url != config.DATABASE_URL:
+            config.save_database_url(new_url)
+            config.reload_settings()
+            messagebox.showinfo("Settings", "DB reloaded")
 
 
 def update_status() -> None:
@@ -489,6 +492,30 @@ def download_export(endpoint: str, default: str) -> None:
         messagebox.showerror("Error", f"{resp.status_code}: {resp.text}")
 
 
+def open_settings_dialog() -> None:
+    assert ROOT is not None
+    dlg = tk.Toplevel(ROOT)
+    dlg.title("Database Settings")
+    mode = tk.StringVar(value="sqlite" if "sqlite" in config.DATABASE_URL else "postgres")
+    tk.Radiobutton(dlg, text="SQLite", variable=mode, value="sqlite").grid(row=0, column=0, sticky="w")
+    path_var = tk.StringVar(value=config.DATABASE_URL.removeprefix("sqlite:///") if "sqlite" in config.DATABASE_URL else "")
+    tk.Entry(dlg, textvariable=path_var).grid(row=1, column=0)
+    tk.Button(dlg, text="Browse", command=lambda: path_var.set(filedialog.askopenfilename())).grid(row=1, column=1)
+    url_var = tk.StringVar(value=config.DATABASE_URL if "postgres" in config.DATABASE_URL else "")
+    tk.Entry(dlg, textvariable=url_var).grid(row=2, column=0, columnspan=2, sticky="we")
+
+    def save() -> None:
+        url = f"sqlite:///{path_var.get()}" if mode.get() == "sqlite" else url_var.get()
+        config.save_database_url(url)
+        config.reload_settings()
+        messagebox.showinfo("Settings", "DB reloaded")
+        dlg.destroy()
+
+    tk.Button(dlg, text="Save", command=save).grid(row=3, column=0, columnspan=2)
+    dlg.grab_set()
+    dlg.wait_window()
+
+
 def update_log() -> None:
     if LOG_WIDGET is None:
         return
@@ -522,6 +549,12 @@ def build_ui(root: tk.Tk | None = None) -> tk.Tk:
     ROOT = root or tk.Tk()
     ROOT.title("BOM Platform – Control Center")
     ROOT.protocol("WM_DELETE_WINDOW", on_close)
+
+    menubar = tk.Menu(ROOT)
+    app_menu = tk.Menu(menubar, tearoff=0)
+    app_menu.add_command(label="Settings...", command=open_settings_dialog)
+    menubar.add_cascade(label="App", menu=app_menu)
+    ROOT.config(menu=menubar)
 
     notebook = ttk.Notebook(ROOT)
     notebook.pack(fill="both", expand=True)

@@ -14,7 +14,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 import jwt
-from sqlmodel import SQLModel, Field, Session, create_engine, select
+from sqlmodel import SQLModel, Field, Session, select
 from sqlalchemy import text, UniqueConstraint
 import sqlalchemy
 from sqlalchemy.exc import IntegrityError
@@ -33,13 +33,15 @@ from .config import (
     DATABASE_URL,
     load_settings,
     save_database_url,
+    get_engine,
+    reload_settings,
 )
 
 from .pdf_utils import extract_bom_text, parse_bom_lines
 from .quote_utils import calculate_quote
 from .trace_utils import component_trace, board_trace
 
-engine = create_engine(DATABASE_URL, echo=False)
+engine = get_engine()
 scheduler = BackgroundScheduler()
 templates = Jinja2Templates(directory="app/frontend/templates")
 
@@ -47,8 +49,9 @@ templates = Jinja2Templates(directory="app/frontend/templates")
 def reload_db(url: str) -> None:
     """Rebuild SQL engine and re-init DB."""
     global engine
-    engine.dispose()
-    engine = create_engine(url, echo=False)
+    save_database_url(url)
+    reload_settings()
+    engine = get_engine()
     init_db()
 
 
@@ -777,7 +780,6 @@ async def ui_save_settings(request: Request):
         url = f"sqlite:///{path}"
     else:
         url = form.get("pg_url") or DATABASE_URL
-    save_database_url(url)
     reload_db(url)
     return RedirectResponse("/ui/settings/", status_code=303)
 
