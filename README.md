@@ -65,6 +65,21 @@ curl -F file=@sample.pdf http://localhost:8000/bom/import
 The parser assumes table columns are separated by multiple spaces or tabs. Real
 world PDFs may require tweaks.
 
+### Customers & Projects
+
+Group BOM items by customer and project. Example:
+
+```bash
+curl -X POST http://localhost:8000/customers \
+     -H "Content-Type: application/json" \
+     -d '{"name":"Acme"}'
+curl -X POST http://localhost:8000/projects \
+     -H "Content-Type: application/json" \
+     -d '{"customer_id":1,"name":"Widget"}'
+curl -F file=@sample.csv \
+     http://localhost:8000/bom/import?project_id=1
+```
+
 ### Quote
 
 Get a quick time and cost estimate for the current BOM:
@@ -156,6 +171,7 @@ A new step-by-step workflow is available at `http://localhost:8000/ui/workflow`.
 Switch between SQLite and Postgres under **Configuration**. Saving
 changes rewrites `~/.bom_platform/settings.toml` and reloads the database
 without restarting Python.
+Run `python -m app.migrate` after upgrading to create new tables or columns.
 
 
 ### 📋 Server Control Center GUI
