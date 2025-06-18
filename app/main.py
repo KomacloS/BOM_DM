@@ -34,6 +34,7 @@ from .config import (
     SECRET_KEY,
     ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    MAX_DATASHEET_MB,
     DATABASE_URL,
     load_settings,
     save_database_url,
@@ -603,6 +604,30 @@ def delete_project(project_id: int) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@app.get("/projects/{project_id}/bom", response_model=list[BOMItemRead])
+def project_bom(
+    project_id: int,
+    search: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+) -> list[BOMItemRead]:
+    """List BOM items for a specific project."""
+
+    if limit > 200:
+        limit = 200
+    stmt = select(BOMItem).where(BOMItem.project_id == project_id)
+    if search:
+        pattern = f"%{search}%"
+        stmt = stmt.where(
+            (BOMItem.part_number.ilike(pattern))
+            | (BOMItem.description.ilike(pattern))
+        )
+    stmt = stmt.offset(skip).limit(limit)
+    with Session(engine) as session:
+        items = session.exec(stmt).all()
+    return items
+
+
 @app.get("/bom/items", response_model=list[BOMItemRead])
 def list_items(
     search: str | None = None,
@@ -741,8 +766,11 @@ async def upload_datasheet(
     """Attach a datasheet file to an item and return the updated item."""
 
     contents = await file.read()
-    if len(contents) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large")
+    if len(contents) > MAX_DATASHEET_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds {MAX_DATASHEET_MB} MB",
+        )
     dest = Path("datasheets") / str(item_id)
     dest.mkdir(parents=True, exist_ok=True)
     filename = os.path.basename(file.filename)
@@ -995,7 +1023,7 @@ async def ui_save_settings(request: Request):
 def ui_workflow(request: Request):
     return templates.TemplateResponse(
         "workflow.html",
-        {"request": request, "title": "Workflow"},
+        {"request": request, "title": "Workflow", "max_ds_mb": MAX_DATASHEET_MB},
     )
 
 

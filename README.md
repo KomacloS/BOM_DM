@@ -183,6 +183,17 @@ curl -X POST -F file=@datasheet.pdf \
 Inline edits in the workflow automatically save changes and show a little
 confirmation toast. Uploaded datasheets turn the button into a 📎 link.
 
+### Editing an existing project
+
+Saved BOM items can be retrieved for further editing:
+
+```bash
+curl http://localhost:8000/projects/1/bom
+```
+
+The datasheet upload size limit defaults to 10 MB. Set `BOM_MAX_DS_MB` to
+override this cap.
+
 Workflow inline editing with the clip icon is shown in the documentation.
 
 

@@ -58,3 +58,6 @@ def save_database_url(url: str) -> None:
 SECRET_KEY = "secret-key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Max allowed datasheet upload size in megabytes
+MAX_DATASHEET_MB = int(os.getenv("BOM_MAX_DS_MB", 10))
