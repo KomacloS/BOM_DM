@@ -3,8 +3,8 @@ set -e
 # Determine project root (one directory up from this script)
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-
-if [ ! -x ".venv/bin/python" ]; then
+PY="$ROOT/.venv/bin/python"
+if [ ! -x "$PY" ]; then
   if command -v python3 >/dev/null; then
     python3 -m venv .venv
   else
@@ -13,9 +13,6 @@ if [ ! -x ".venv/bin/python" ]; then
   fi
 fi
 
-PY="$(pwd)/.venv/bin/python"
-[ -x "$PY" ] || PY=$(command -v python3)
-
-"$PY" -m pip install --upgrade pip
-"$PY" -m pip install ".[full]"
-"$PY" -m gui.control_center
+"$PY" -m pip install -q --upgrade pip
+"$PY" -m pip install -q ".[full]"
+exec "$PY" -m gui.control_center
