@@ -23,8 +23,12 @@
 <div id="step-4" class="mb-4 hidden">
   <h2 class="font-bold">4. Review</h2>
   <table class="min-w-full"><thead><tr><th>Part</th><th>Description</th><th>Qty</th><th>Ref</th><th>DS</th></tr></thead><tbody id="bom-table"></tbody></table>
-  <button id="upload-ds-btn" class="hidden"></button>
-  <div id="pagination" class="mt-2"></div>
+  <div id="pagination" class="mt-2 flex items-center space-x-2">
+    <button id="prev-page" class="border px-2">Prev</button>
+    <span id="page-info"></span>
+    <button id="next-page" class="border px-2">Next</button>
+  </div>
+  <div id="toast" class="fixed bottom-4 right-4 hidden bg-green-600 text-white px-2 py-1 rounded">Saved!</div>
   <button id="save-bom" class="bg-blue-500 text-white px-2 mt-2">Save BOM</button>
   <button id="cancel-bom" class="bg-gray-500 text-white px-2 mt-2">Cancel</button>
 </div>
@@ -75,29 +79,77 @@ let items=[];
 let page=0;
 const pageSize=10;
 
+function showToast(){
+  const t=document.getElementById('toast');
+  t.classList.remove('hidden');
+  setTimeout(()=>t.classList.add('hidden'),1500);
+}
+
+function triggerUpload(id,idx){
+  const input=document.createElement('input');
+  input.type='file';
+  input.onchange=async()=>{
+    const f=input.files[0];
+    if(!f) return;
+    const fd=new FormData();fd.append('file',f);
+    const r=await fetch(`/bom/items/${id}/datasheet`,{method:'POST',body:fd});
+    if(r.ok){
+      items[idx]=await r.json();
+      showToast();
+      renderPage();
+    }
+  };
+  input.click();
+}
+
+async function patchField(idx,field,value){
+  const item=items[idx];
+  if(!item.id){item[field]=value;return;}
+  const body={};
+  body[field]=field==='quantity'?parseInt(value,10)||1:value||null;
+  const r=await fetch(`/bom/items/${item.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.ok){
+    items[idx]=await r.json();
+    showToast();
+  }
+}
+
 function renderPage(){
   const tbody=document.getElementById('bom-table');
   tbody.innerHTML='';
   const slice=items.slice(page*pageSize,(page+1)*pageSize);
   slice.forEach((row,idx)=>{
+    const realIdx=page*pageSize+idx;
     const tr=document.createElement('tr');
     ['part_number','description','quantity','reference'].forEach(k=>{
       const td=document.createElement('td');
       const inp=document.createElement('input');
       inp.value=row[k]||'';inp.className='border w-full';
       if(k==='quantity') inp.type='number';
+      if(k==='quantity' || k==='reference') inp.onblur=()=>patchField(realIdx,k,inp.value);
       td.appendChild(inp);tr.appendChild(td);
     });
     const td=document.createElement('td');
-    const btn=document.createElement('button');
-    btn.textContent='Upload';
-    btn.id='upload-ds-btn';
-    td.appendChild(btn);tr.appendChild(td);
+    if(row.datasheet_url){
+      const a=document.createElement('a');
+      a.textContent='📎';
+      a.href=row.datasheet_url;
+      a.target='_blank';
+      td.appendChild(a);
+    }else{
+      const btn=document.createElement('button');
+      btn.textContent='Upload';
+      btn.id=`upload-ds-btn-${realIdx}`;
+      btn.onclick=()=>triggerUpload(row.id,realIdx);
+      td.appendChild(btn);
+    }
+    tr.appendChild(td);
     tbody.appendChild(tr);
   });
-  const pag=document.getElementById('pagination');
   const pages=Math.ceil(items.length/pageSize)||1;
-  pag.textContent=`Page ${page+1} of ${pages}`;
+  document.getElementById('page-info').textContent=`Page ${page+1} of ${pages}`;
+  document.getElementById('prev-page').disabled=page===0;
+  document.getElementById('next-page').disabled=page>=pages-1;
 }
 
 document.getElementById('upload-bom').onclick=async ()=>{
@@ -112,6 +164,9 @@ document.getElementById('upload-bom').onclick=async ()=>{
   document.getElementById('step-4').classList.remove('hidden');
 };
 
+document.getElementById('prev-page').onclick=()=>{if(page>0){page--;renderPage();}};
+document.getElementById('next-page').onclick=()=>{const pages=Math.ceil(items.length/pageSize);if(page<pages-1){page++;renderPage();}};
+
 document.getElementById('save-bom').onclick=async ()=>{
   const project=document.getElementById('project-select').value;
   const rows=document.querySelectorAll('#bom-table tr');
@@ -124,7 +179,7 @@ document.getElementById('save-bom').onclick=async ()=>{
   if(resp.ok){
     items=await resp.json();
     renderPage();
-    alert('Saved!');
+    showToast();
   }
 };
 

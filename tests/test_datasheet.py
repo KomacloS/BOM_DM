@@ -46,3 +46,29 @@ def test_upload_datasheet(client, auth_header, tmp_path):
     assert url.startswith("/datasheets/")
     get_r = client.get(url)
     assert get_r.status_code == 200
+
+def test_replace_datasheet(client, auth_header):
+    cust = client.post("/customers", json={"name": "C2"}).json()
+    proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}).json()
+    item = client.post(
+        "/bom/items",
+        json={"part_number": "P2", "description": "D", "quantity": 1, "project_id": proj["id"]},
+        headers=auth_header,
+    ).json()
+    pdf1 = b"%PDF-1.3\n%%EOF"
+    client.post(
+        f"/bom/items/{item['id']}/datasheet",
+        files={"file": ("a.pdf", pdf1, "application/pdf")},
+        headers=auth_header,
+    )
+    pdf2 = b"%PDF-1.4\n%%EOF"
+    r = client.post(
+        f"/bom/items/{item['id']}/datasheet",
+        files={"file": ("b.pdf", pdf2, "application/pdf")},
+        headers=auth_header,
+    )
+    assert r.status_code == 200
+    url = r.json()["datasheet_url"]
+    assert url.endswith("/b.pdf")
+    with open(os.path.join("datasheets", str(item["id"]), "b.pdf"), "rb") as f:
+        assert f.read() == pdf2

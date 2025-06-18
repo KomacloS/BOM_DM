@@ -741,6 +741,8 @@ async def upload_datasheet(
     """Attach a datasheet file to an item and return the updated item."""
 
     contents = await file.read()
+    if len(contents) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large")
     dest = Path("datasheets") / str(item_id)
     dest.mkdir(parents=True, exist_ok=True)
     filename = os.path.basename(file.filename)
