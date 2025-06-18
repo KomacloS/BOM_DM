@@ -180,6 +180,11 @@ curl -X POST -F file=@datasheet.pdf \
      http://localhost:8000/bom/items/1/datasheet
 ```
 
+Inline edits in the workflow automatically save changes and show a little
+confirmation toast. Uploaded datasheets turn the button into a 📎 link.
+
+Workflow inline editing with the clip icon is shown in the documentation.
+
 
 ### 📋 Server Control Center GUI
 
