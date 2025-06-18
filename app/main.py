@@ -14,10 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 from typing import Optional
 import jwt
 from sqlmodel import SQLModel, Field, Session, select
-from sqlalchemy import text, UniqueConstraint
+from sqlalchemy import text, UniqueConstraint, Column, ForeignKey, Integer
 import sqlalchemy
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta
@@ -25,6 +26,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import csv
 import io
 import os
+from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from .security import verify_password, get_password_hash, create_access_token
@@ -44,6 +46,10 @@ from .quote_utils import calculate_quote
 from .trace_utils import component_trace, board_trace
 
 engine = get_engine()
+if engine.dialect.name == "sqlite":
+    @sqlalchemy.event.listens_for(engine, "connect")
+    def _fk_pragma(dbapi_con, rec):
+        dbapi_con.execute("PRAGMA foreign_keys=ON")
 scheduler = BackgroundScheduler()
 templates = Jinja2Templates(directory="app/frontend/templates")
 
@@ -71,8 +77,12 @@ class BOMItemBase(SQLModel):
     description: str = Field(min_length=1)
     quantity: int = Field(default=1, ge=1)
     reference: str | None = None
+    datasheet_url: str | None = None
 
-    project_id: int | None = Field(default=None, foreign_key="project.id")
+    project_id: int | None = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("project.id", ondelete="CASCADE")),
+    )
 
 
 class BOMItem(BOMItemBase, table=True):
@@ -104,6 +114,7 @@ class BOMItemUpdate(SQLModel):
     description: str | None = Field(default=None, min_length=1)
     quantity: int | None = Field(default=None, ge=1)
     reference: str | None = None
+    datasheet_url: str | None = None
     project_id: int | None = None
 
 
@@ -136,7 +147,9 @@ class CustomerUpdate(SQLModel):
 
 class Project(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    customer_id: int = Field(foreign_key="customer.id")
+    customer_id: int = Field(
+        sa_column=Column(Integer, ForeignKey("customer.id", ondelete="CASCADE")),
+    )
     name: str
     code: str | None = None
     notes: str | None = None
@@ -329,11 +342,36 @@ def migrate_db() -> None:
                             "ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES project(id)"
                         )
                     )
+        if "datasheet_url" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN datasheet_url TEXT"))
+        with engine.begin() as conn:
+            if engine.dialect.name == "postgresql":
+                conn.execute(
+                    text(
+                        "ALTER TABLE bomitem DROP CONSTRAINT IF EXISTS bomitem_project_id_fkey"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "ALTER TABLE bomitem ADD CONSTRAINT bomitem_project_id_fkey FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE"
+                    )
+                )
+            elif engine.dialect.name == "sqlite":
+                ver = conn.exec_driver_sql("select sqlite_version()").scalar()
+                if tuple(map(int, ver.split("."))) >= (3, 35):
+                    pass
 
 
 def init_db() -> None:
     """Create database tables if they do not exist."""
 
+    if engine.dialect.name == "sqlite":
+        sqlalchemy.event.listen(
+            engine, "connect", lambda conn, rec: conn.execute("PRAGMA foreign_keys=ON")
+        )
+        with engine.connect() as conn:
+            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
     SQLModel.metadata.create_all(engine)
     migrate_db()
     with Session(engine) as session:
@@ -347,8 +385,10 @@ def init_db() -> None:
             session.add(admin)
             session.commit()
 
+os.makedirs("datasheets", exist_ok=True)
 
 app = FastAPI()
+app.mount("/datasheets", StaticFiles(directory="datasheets"), name="datasheets")
 ui_router = APIRouter(prefix="/ui")
 workflow_router = APIRouter(prefix="/ui/workflow")
 
@@ -448,11 +488,18 @@ def register_user(user_in: UserCreate) -> dict:
 
 
 @app.get("/customers", response_model=list[CustomerRead])
-def list_customers(search: str | None = None) -> list[CustomerRead]:
+def list_customers(
+    search: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+) -> list[CustomerRead]:
+    if limit > 200:
+        limit = 200
     with Session(engine) as session:
         stmt = select(Customer)
         if search:
             stmt = stmt.where(Customer.name.ilike(f"%{search}%"))
+        stmt = stmt.offset(skip).limit(limit)
         return session.exec(stmt).all()
 
 
@@ -490,11 +537,6 @@ def delete_customer(customer_id: int) -> Response:
         cust = session.get(Customer, customer_id)
         if not cust:
             raise HTTPException(status_code=404, detail="Customer not found")
-        # delete related projects and items
-        projects = session.exec(select(Project).where(Project.customer_id == customer_id)).all()
-        for proj in projects:
-            session.exec(sqlalchemy.delete(BOMItem).where(BOMItem.project_id == proj.id))
-            session.delete(proj)
         session.delete(cust)
         session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -507,11 +549,18 @@ def customer_projects(customer_id: int) -> list[ProjectRead]:
 
 
 @app.get("/projects", response_model=list[ProjectRead])
-def list_projects(customer_id: int | None = None) -> list[ProjectRead]:
+def list_projects(
+    customer_id: int | None = None,
+    skip: int = 0,
+    limit: int = 50,
+) -> list[ProjectRead]:
+    if limit > 200:
+        limit = 200
     with Session(engine) as session:
         stmt = select(Project)
         if customer_id is not None:
             stmt = stmt.where(Project.customer_id == customer_id)
+        stmt = stmt.offset(skip).limit(limit)
         return session.exec(stmt).all()
 
 
@@ -549,7 +598,6 @@ def delete_project(project_id: int) -> Response:
         db_proj = session.get(Project, project_id)
         if not db_proj:
             raise HTTPException(status_code=404, detail="Project not found")
-        session.exec(sqlalchemy.delete(BOMItem).where(BOMItem.project_id == project_id))
         session.delete(db_proj)
         session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -682,6 +730,33 @@ def delete_item(item_id: int, current_user: User = Depends(admin_required)) -> R
         session.delete(db_item)
         session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/bom/items/{item_id}/datasheet", response_model=BOMItemRead)
+async def upload_datasheet(
+    item_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+) -> BOMItemRead:
+    """Attach a datasheet file to an item and return the updated item."""
+
+    contents = await file.read()
+    dest = Path("datasheets") / str(item_id)
+    dest.mkdir(parents=True, exist_ok=True)
+    filename = os.path.basename(file.filename)
+    path = dest / filename
+    with open(path, "wb") as f:
+        f.write(contents)
+    url = f"/datasheets/{item_id}/{filename}"
+    with Session(engine) as session:
+        db_item = session.get(BOMItem, item_id)
+        if not db_item:
+            raise HTTPException(status_code=404, detail="Item not found")
+        db_item.datasheet_url = url
+        session.add(db_item)
+        session.commit()
+        session.refresh(db_item)
+        return db_item
 
 
 @app.post("/bom/import", response_model=list[BOMItemRead])

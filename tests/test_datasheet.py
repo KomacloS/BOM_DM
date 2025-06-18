@@ -1,5 +1,4 @@
-import os
-import sys
+import os, sys
 import sqlalchemy
 import pytest
 from fastapi.testclient import TestClient
@@ -7,7 +6,6 @@ from sqlmodel import SQLModel, create_engine
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import app.main as main
-
 
 @pytest.fixture(name="client")
 def client_fixture():
@@ -21,7 +19,6 @@ def client_fixture():
     with TestClient(main.app) as c:
         yield c
 
-
 @pytest.fixture
 def auth_header(client):
     token = client.post(
@@ -30,27 +27,22 @@ def auth_header(client):
     ).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
-
-def test_link_items_to_project(client, auth_header):
-    cust = client.post("/customers", json={"name": "Acme"}).json()
-    proj = client.post(
-        "/projects",
-        json={"customer_id": cust["id"], "name": "Widget"},
+def test_upload_datasheet(client, auth_header, tmp_path):
+    cust = client.post("/customers", json={"name": "C"}).json()
+    proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}).json()
+    item = client.post(
+        "/bom/items",
+        json={"part_number": "P1", "description": "D", "quantity": 1, "project_id": proj["id"]},
+        headers=auth_header,
     ).json()
-    import fitz
-    doc = fitz.open()
-    page = doc.new_page()
-    page.insert_text((72, 72), "PNX    Part    1    R1")
-    pdf_bytes = doc.tobytes()
-    resp = client.post(
-        f"/bom/import?project_id={proj['id']}",
-        files={"file": ("sample.pdf", pdf_bytes, "application/pdf")},
+    pdf_bytes = b"%PDF-1.3\n%%EOF"
+    r = client.post(
+        f"/bom/items/{item['id']}/datasheet",
+        files={"file": ("ds.pdf", pdf_bytes, "application/pdf")},
         headers=auth_header,
     )
-    assert resp.status_code == 200
-    items = client.get("/bom/items").json()
-    assert items[0]["project_id"] == proj["id"]
-    assert len(items) > 0
-    client.delete(f"/customers/{cust['id']}")
-    assert client.get("/bom/items").json() == []
-
+    assert r.status_code == 200
+    url = r.json()["datasheet_url"]
+    assert url.startswith("/datasheets/")
+    get_r = client.get(url)
+    assert get_r.status_code == 200
