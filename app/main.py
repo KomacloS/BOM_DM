@@ -261,9 +261,9 @@ def get_all_testresults() -> list[TestResult]:
         return session.exec(select(TestResult)).all()
 
 
-def csv_generator(items: list[BOMItem]):
+def csv_generator(items: list[BOMItem], delimiter: str = ","):
     output = io.StringIO()
-    writer = csv.writer(output)
+    writer = csv.writer(output, delimiter=delimiter)
     writer.writerow(["id", "part_number", "description", "quantity", "reference"])
     yield output.getvalue()
     output.seek(0)
@@ -626,6 +626,22 @@ def project_bom(
     with Session(engine) as session:
         items = session.exec(stmt).all()
     return items
+
+
+@app.get("/projects/{project_id}/export.csv")
+def project_export_csv(project_id: int, comma: bool = True):
+    """Export a project's BOM as CSV."""
+    with Session(engine) as session:
+        items = session.exec(
+            select(BOMItem).where(BOMItem.project_id == project_id)
+        ).all()
+    delim = "," if comma else ";"
+    headers = {"Content-Disposition": "attachment; filename=export.csv"}
+    return StreamingResponse(
+        csv_generator(items, delimiter=delim),
+        media_type="text/csv",
+        headers=headers,
+    )
 
 
 @app.get("/bom/items", response_model=list[BOMItemRead])

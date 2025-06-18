@@ -191,6 +191,14 @@ Saved BOM items can be retrieved for further editing:
 curl http://localhost:8000/projects/1/bom
 ```
 
+Export the project BOM to CSV:
+
+```bash
+curl -L -o widget.csv http://localhost:8000/projects/1/export.csv
+```
+
+Use `?comma=false` for semicolon-separated files.
+
 The datasheet upload size limit defaults to 10 MB. Set `BOM_MAX_DS_MB` to
 override this cap.
 

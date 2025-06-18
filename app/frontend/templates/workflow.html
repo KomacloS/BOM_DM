@@ -33,10 +33,13 @@
     <button id="prev-page" class="border px-2">Prev</button>
     <span id="page-info"></span>
     <button id="next-page" class="border px-2">Next</button>
+    <input id="page-jump" type="number" class="border w-16" />
+    <button id="go-page" class="border px-2">Go</button>
   </div>
   <div id="toast" class="fixed bottom-4 right-4 hidden bg-green-600 text-white px-2 py-1 rounded">Saved!</div>
   <button id="save-bom" class="bg-blue-500 text-white px-2 mt-2">Save BOM</button>
   <button id="cancel-bom" class="bg-gray-500 text-white px-2 mt-2">Cancel</button>
+  <button id="export-csv" class="bg-blue-500 text-white px-2 mt-2">Export CSV</button>
 </div>
 <script>
 async function loadCustomers(){
@@ -154,6 +157,8 @@ async function deleteRow(idx){
 function renderPage(){
   const tbody=document.getElementById('bom-table');
   tbody.innerHTML='';
+  const pages=Math.ceil(items.length/pageSize)||1;
+  if(page>=pages) page=pages-1;
   const slice=items.slice(page*pageSize,(page+1)*pageSize);
   slice.forEach((row,idx)=>{
     const realIdx=page*pageSize+idx;
@@ -188,10 +193,11 @@ function renderPage(){
     tr.appendChild(deltd);
     tbody.appendChild(tr);
   });
-  const pages=Math.ceil(items.length/pageSize)||1;
   document.getElementById('page-info').textContent=`Page ${page+1} of ${pages}`;
   document.getElementById('prev-page').disabled=page===0;
   document.getElementById('next-page').disabled=page>=pages-1;
+  const pdiv=document.getElementById('pagination');
+  if(pages<=1){pdiv.classList.add('hidden');}else{pdiv.classList.remove('hidden');}
 }
 
 document.getElementById('upload-bom').onclick=async ()=>{
@@ -234,6 +240,18 @@ document.getElementById('save-bom').onclick=async ()=>{
 };
 
 document.getElementById('cancel-bom').onclick=()=>{window.location='/ui/workflow/';};
+document.getElementById('export-csv').onclick=async()=>{
+  const pid=document.getElementById('project-select').value;
+  if(!pid) return;
+  const r=await fetch(`/projects/${pid}/export.csv`);
+  const blob=await r.blob();
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download='export.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+};
 
 loadCustomers();
 </script>
