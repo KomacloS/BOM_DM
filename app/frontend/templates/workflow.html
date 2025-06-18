@@ -1,5 +1,11 @@
 {% extends 'base.html' %}
 {% block content %}
+<style>
+@media(max-width:640px){
+  #toast{bottom:6rem;}
+}
+</style>
+<script>const MAX_DS_MB={{ max_ds_mb }};</script>
 <h1 class="text-2xl mb-4">Customer Workflow</h1>
 <div id="step-1" class="mb-4">
   <h2 class="font-bold">1. Select Customer</h2>
@@ -70,21 +76,31 @@ document.getElementById('add-project').onclick=async ()=>{
   await fetch('/ui/workflow/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customer_id:cid,name,description})});
   loadProjects(cid);
 };
-
-document.getElementById('project-select').onchange=()=>{
-  if(document.getElementById('project-select').value){document.getElementById('step-3').classList.remove('hidden');}
+document.getElementById("project-select").onchange=async()=>{
+  const pid=document.getElementById("project-select").value;
+  if(!pid) return;
+  document.getElementById("step-3").classList.remove("hidden");
+  const r=await fetch(`/projects/${pid}/bom?limit=1000`);
+  const data=await r.json();
+  if(data.length && confirm("Edit existing BOM?")){
+    items=data;
+    page=0;
+    renderPage();
+    document.getElementById("step-4").classList.remove("hidden");
+  }
 };
 
 let items=[];
 let page=0;
 const pageSize=10;
 
-function showToast(){
-  const t=document.getElementById('toast');
-  t.classList.remove('hidden');
-  setTimeout(()=>t.classList.add('hidden'),1500);
+function showToast(msg="Saved!", ok=true){
+  const t=document.getElementById("toast");
+  t.textContent=msg;
+  t.className=`fixed bottom-4 right-4 ${ok?"bg-green-600":"bg-red-600"} text-white px-2 py-1 rounded`;
+  t.classList.remove("hidden");
+  setTimeout(()=>t.classList.add("hidden"),1500);
 }
-
 function triggerUpload(id,idx){
   const input=document.createElement('input');
   input.type='file';
@@ -97,6 +113,10 @@ function triggerUpload(id,idx){
       items[idx]=await r.json();
       showToast();
       renderPage();
+    }else if(r.status===413){
+      showToast(`Too large (max ${MAX_DS_MB} MB)`,false);
+    }else{
+      showToast("Error",false);
     }
   };
   input.click();
@@ -106,13 +126,30 @@ async function patchField(idx,field,value){
   const item=items[idx];
   if(!item.id){item[field]=value;return;}
   const body={};
-  body[field]=field==='quantity'?parseInt(value,10)||1:value||null;
-  const r=await fetch(`/bom/items/${item.id}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  body[field]=field==="quantity"?parseInt(value,10)||1:value||null;
+  const r=await fetch(`/bom/items/${item.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   if(r.ok){
     items[idx]=await r.json();
     showToast();
+  }else{
+    showToast("Error",false);
   }
 }
+async function deleteRow(idx){
+  const item=items[idx];
+  if(item.id){
+    const r=await fetch(`/bom/items/${item.id}`,{method:"DELETE"});
+    if(r.status!==204){
+      showToast("Error",false);
+      return;
+    }
+  }
+  items.splice(idx,1);
+  if(page>0 && page*pageSize>=items.length) page--;
+  renderPage();
+  showToast("Deleted");
+}
+
 
 function renderPage(){
   const tbody=document.getElementById('bom-table');
@@ -126,9 +163,8 @@ function renderPage(){
       const inp=document.createElement('input');
       inp.value=row[k]||'';inp.className='border w-full';
       if(k==='quantity') inp.type='number';
-      if(k==='quantity' || k==='reference') inp.onblur=()=>patchField(realIdx,k,inp.value);
+      inp.onblur=()=>patchField(realIdx,k,inp.value);
       td.appendChild(inp);tr.appendChild(td);
-    });
     const td=document.createElement('td');
     if(row.datasheet_url){
       const a=document.createElement('a');
@@ -144,6 +180,12 @@ function renderPage(){
       td.appendChild(btn);
     }
     tr.appendChild(td);
+    const deltd=document.createElement("td");
+    const delbtn=document.createElement("button");
+    delbtn.textContent="🗑";
+    delbtn.onclick=()=>deleteRow(realIdx);
+    deltd.appendChild(delbtn);
+    tr.appendChild(deltd);
     tbody.appendChild(tr);
   });
   const pages=Math.ceil(items.length/pageSize)||1;
@@ -165,6 +207,14 @@ document.getElementById('upload-bom').onclick=async ()=>{
 };
 
 document.getElementById('prev-page').onclick=()=>{if(page>0){page--;renderPage();}};
+document.getElementById("go-page").onclick=()=>{
+  const v=parseInt(document.getElementById("page-jump").value,10);
+  const pages=Math.ceil(items.length/pageSize)||1;
+  if(v>=1 && v<=pages){
+    page=v-1;
+    renderPage();
+  }
+};
 document.getElementById('next-page').onclick=()=>{const pages=Math.ceil(items.length/pageSize);if(page<pages-1){page++;renderPage();}};
 
 document.getElementById('save-bom').onclick=async ()=>{
