@@ -18,6 +18,17 @@ def upgrade() -> None:
                 conn.execute(text("ALTER TABLE bomitem ADD COLUMN project_id INTEGER"))
             if "datasheet_url" not in cols:
                 conn.execute(text("ALTER TABLE bomitem ADD COLUMN datasheet_url TEXT"))
+            if "manufacturer" not in cols:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN manufacturer TEXT"))
+            if "mpn" not in cols:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN mpn TEXT"))
+            if "footprint" not in cols:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN footprint TEXT"))
+            if "unit_cost" not in cols:
+                if engine.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN unit_cost NUMERIC"))
+                else:
+                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(10,4)"))
             if engine.dialect.name == "postgresql":
                 conn.execute(text("ALTER TABLE bomitem DROP CONSTRAINT IF EXISTS bomitem_project_id_fkey"))
                 conn.execute(

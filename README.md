@@ -89,6 +89,11 @@ Get a quick time and cost estimate for the current BOM:
 ```bash
 curl http://localhost:8000/bom/quote
 ```
+Get total cost for a specific project:
+```bash
+TOKEN=<token>
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/projects/1/cost
+```
 
 ### Test results
 
@@ -111,6 +116,10 @@ curl http://localhost:8000/testresults?skip=0&limit=10
 - **description**: human-friendly description (string, required)
 - **quantity**: number of parts required (integer, min 1, default 1)
 - **reference**: optional reference designator or notes
+- **manufacturer**: optional manufacturer name
+- **mpn**: optional manufacturer part number
+- **footprint**: optional package footprint
+- **unit_cost**: optional unit price (numeric with 4 decimals)
 
 ### Health check
 
@@ -142,6 +151,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 The same token is required when **listing** BOM items or retrieving a
 project's BOM.
+Users with the **operator** role can only view data; any write attempts return 403.
 
 ### Traceability
 
