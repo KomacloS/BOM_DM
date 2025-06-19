@@ -79,6 +79,10 @@ class BOMItemBase(SQLModel):
     quantity: int = Field(default=1, ge=1)
     reference: str | None = None
     datasheet_url: str | None = None
+    manufacturer: str | None = None
+    mpn: str | None = None
+    footprint: str | None = None
+    unit_cost: float | None = Field(default=None, sa_column=Column(sqlalchemy.Numeric(10,4)))
 
     project_id: int | None = Field(
         default=None,
@@ -117,6 +121,10 @@ class BOMItemUpdate(SQLModel):
     reference: str | None = None
     datasheet_url: str | None = None
     project_id: int | None = None
+    manufacturer: str | None = None
+    mpn: str | None = None
+    footprint: str | None = None
+    unit_cost: float | None = None
 
 
 class Customer(SQLModel, table=True):
@@ -200,6 +208,7 @@ class QuoteResponse(SQLModel):
     total_components: int
     estimated_time_s: int
     estimated_cost_usd: float
+    total_cost: float
 
 
 class TestResult(SQLModel, table=True):
@@ -346,6 +355,21 @@ def migrate_db() -> None:
         if "datasheet_url" not in columns:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE bomitem ADD COLUMN datasheet_url TEXT"))
+        if "manufacturer" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN manufacturer TEXT"))
+        if "mpn" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN mpn TEXT"))
+        if "footprint" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN footprint TEXT"))
+        if "unit_cost" not in columns:
+            with engine.begin() as conn:
+                if engine.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN unit_cost NUMERIC"))
+                else:
+                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(10,4)"))
         with engine.begin() as conn:
             if engine.dialect.name == "postgresql":
                 conn.execute(
@@ -419,6 +443,13 @@ def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
 def admin_required(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin only")
+    return current_user
+
+
+def edit_allowed(current_user: User = Depends(get_current_user)) -> User:
+    """Deny write operations for operator role."""
+    if current_user.role == "operator":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Read only")
     return current_user
 
 origins = ["http://localhost:3000"]
@@ -645,6 +676,15 @@ def project_export_csv(project_id: int, comma: bool = True):
     )
 
 
+@app.get("/projects/{project_id}/cost")
+def project_cost(project_id: int, current_user: User = Depends(get_current_user)) -> dict:
+    """Return estimated total cost for a project's BOM."""
+    with Session(engine) as session:
+        items = session.exec(select(BOMItem).where(BOMItem.project_id == project_id)).all()
+    total = sum((item.unit_cost or 0) * item.quantity for item in items if item.unit_cost and item.unit_cost > 0)
+    return {"total_cost": float(round(total, 2))}
+
+
 @app.get("/bom/items", response_model=list[BOMItemRead])
 def list_items(
     search: str | None = None,
@@ -678,7 +718,7 @@ def list_items(
 
 
 @app.post("/bom/items", response_model=BOMItemRead, status_code=status.HTTP_201_CREATED)
-def create_item(item: BOMItemCreate, current_user: User = Depends(get_current_user)) -> BOMItemRead:
+def create_item(item: BOMItemCreate, current_user: User = Depends(edit_allowed)) -> BOMItemRead:
     """Create a new BOM item."""
 
     db_item = BOMItem.from_orm(item)
@@ -711,7 +751,7 @@ def get_item(item_id: int) -> BOMItemRead:
 def replace_item(
     item_id: int,
     item_in: BOMItemCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(edit_allowed),
 ) -> BOMItemRead:
     """Fully replace an existing BOM item."""
 
@@ -738,7 +778,7 @@ def replace_item(
 def update_item(
     item_id: int,
     item_in: BOMItemUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(edit_allowed),
 ) -> BOMItemRead:
     """Partially update an existing BOM item."""
 
@@ -779,7 +819,7 @@ def delete_item(item_id: int, current_user: User = Depends(admin_required)) -> R
 async def upload_datasheet(
     item_id: int,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(edit_allowed),
 ) -> BOMItemRead:
     """Attach a datasheet file to an item and return the updated item."""
 
@@ -811,13 +851,52 @@ async def upload_datasheet(
 async def import_bom(
     file: UploadFile = File(...),
     project_id: int | None = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(edit_allowed),
 ) -> list[BOMItemRead]:
-    """Import BOM items from an uploaded PDF file."""
+    """Import BOM items from an uploaded PDF or Excel file."""
 
-    pdf_bytes = await file.read()
-    text = extract_bom_text(pdf_bytes)
-    records = parse_bom_lines(text)
+    contents = await file.read()
+    ext = file.filename.lower().split(".")[-1]
+    records: list[dict]
+    if ext == "pdf":
+        text = extract_bom_text(contents)
+        records = parse_bom_lines(text)
+    elif ext in {"xlsx", "xls"}:
+        if ext == "xls":
+            import xlrd
+
+            wb = xlrd.open_workbook(file_contents=contents)
+            sheet = wb.sheet_by_index(0)
+            headers = [str(sheet.cell_value(0, i)).lower() for i in range(sheet.ncols)]
+            records = []
+            for row_idx in range(1, sheet.nrows):
+                row = sheet.row_values(row_idx)
+                data = {headers[i]: row[i] if i < len(row) else None for i in range(len(headers))}
+                records.append(
+                    {
+                        "part_number": data.get("part_number") or data.get("part number") or "",
+                        "description": data.get("description") or data.get("desc") or "",
+                        "quantity": int(data.get("quantity") or data.get("qty") or 1),
+                        "reference": data.get("reference") or data.get("ref") or None,
+                    }
+                )
+        else:
+            wb = load_workbook(io.BytesIO(contents), read_only=True)
+            ws = wb.active
+            headers = [str(c.value).lower() if c.value else "" for c in next(ws.iter_rows(min_row=1, max_row=1))]
+            records = []
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                data = {headers[i]: (row[i] if i < len(row) else None) for i in range(len(headers))}
+                records.append(
+                    {
+                        "part_number": data.get("part_number") or data.get("part number") or "",
+                        "description": data.get("description") or data.get("desc") or "",
+                        "quantity": int(data.get("quantity") or data.get("qty") or 1),
+                        "reference": data.get("reference") or data.get("ref") or None,
+                    }
+                )
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
 
     inserted: list[BOMItem] = []
     with Session(engine) as session:
@@ -847,13 +926,15 @@ def get_quote() -> QuoteResponse:
     with Session(engine) as session:
         items = session.exec(select(BOMItem)).all()
     data = calculate_quote(items)
+    total = sum((i.unit_cost or 0) * i.quantity for i in items if i.unit_cost and i.unit_cost > 0)
+    data["total_cost"] = round(float(total), 2)
     return QuoteResponse(**data)
 
 
 @app.post("/testresults", response_model=TestResultRead, status_code=status.HTTP_201_CREATED)
 def create_test_result(
     result_in: TestResultCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(edit_allowed),
 ) -> TestResultRead:
     """Log a new flying-probe test result."""
 
@@ -959,7 +1040,7 @@ def ui_bom_table(request: Request):
 
 
 @ui_router.post("/bom/create", response_class=HTMLResponse)
-async def ui_bom_create(request: Request, current_user: User = Depends(get_current_user)):
+async def ui_bom_create(request: Request, current_user: User = Depends(edit_allowed)):
     form = await request.form()
     item = BOMItemCreate(
         part_number=form.get("part_number"),

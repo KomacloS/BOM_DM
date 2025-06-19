@@ -50,18 +50,19 @@ def test_calculate_quote():
 def test_quote_endpoint(client, auth_header):
     client.post(
         "/bom/items",
-        json={"part_number": "P1", "description": "A", "quantity": 2},
+        json={"part_number": "P1", "description": "A", "quantity": 2, "unit_cost": 0.5},
         headers=auth_header,
     )
     client.post(
         "/bom/items",
-        json={"part_number": "P2", "description": "B", "quantity": 3},
+        json={"part_number": "P2", "description": "B", "quantity": 3, "unit_cost": 1.0},
         headers=auth_header,
     )
     resp = client.get("/bom/quote")
     assert resp.status_code == 200
     data = resp.json()
-    assert set(data.keys()) == {"total_components", "estimated_time_s", "estimated_cost_usd"}
+    assert set(data.keys()) == {"total_components", "estimated_time_s", "estimated_cost_usd", "total_cost"}
     assert data["total_components"] == 5
     assert isinstance(data["estimated_time_s"], int)
     assert isinstance(data["estimated_cost_usd"], float)
+    assert data["total_cost"] == pytest.approx(2*0.5 + 3*1.0, rel=1e-2)

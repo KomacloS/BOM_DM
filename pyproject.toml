@@ -21,6 +21,7 @@ full = [
     "passlib[bcrypt]",
     "PyJWT",
     "openpyxl",
+    "xlrd",
     "apscheduler",
     "requests",
 ]
