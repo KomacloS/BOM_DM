@@ -29,6 +29,10 @@ def upgrade() -> None:
                     conn.execute(text("ALTER TABLE bomitem ADD COLUMN unit_cost NUMERIC"))
                 else:
                     conn.execute(text("ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(10,4)"))
+            if "dnp" not in cols:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN dnp BOOLEAN DEFAULT 0"))
+            if "currency" not in cols:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN currency VARCHAR(3) DEFAULT 'USD'"))
             if engine.dialect.name == "postgresql":
                 conn.execute(text("ALTER TABLE bomitem DROP CONSTRAINT IF EXISTS bomitem_project_id_fkey"))
                 conn.execute(

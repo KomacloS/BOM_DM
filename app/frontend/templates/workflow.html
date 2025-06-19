@@ -5,7 +5,7 @@
   #toast{bottom:6rem;}
 }
 </style>
-<script>const MAX_DS_MB={{ max_ds_mb }};const HOURLY={{ hourly }};</script>
+<script>const MAX_DS_MB={{ max_ds_mb }};const HOURLY={{ hourly }};const DEFAULT_CURRENCY='{{ default_currency }}';</script>
 <h1 class="text-2xl mb-4">Customer Workflow</h1>
 <div id="login" class="mb-4">
   <input type="text" id="login-user" placeholder="Username" class="border" />
@@ -33,7 +33,7 @@
 </div>
 <div id="step-4" class="mb-4 hidden">
   <h2 class="font-bold">4. Review</h2>
-  <table class="min-w-full"><thead><tr><th>Part</th><th>Description</th><th>Qty</th><th>Ref</th><th>Mfr</th><th>MPN</th><th>Footprint</th><th>Unit$</th><th>Total $</th><th>DS</th><th></th></tr></thead><tbody id="bom-table"></tbody></table>
+  <table class="min-w-full"><thead><tr><th>DNP</th><th>Part</th><th>Description</th><th>Qty</th><th>Ref</th><th>Mfr</th><th>MPN</th><th>Footprint</th><th>Unit$</th><th>Cur</th><th></th><th>Total $</th><th>DS</th><th></th></tr></thead><tbody id="bom-table"></tbody></table>
   <div id="pagination" class="mt-2 flex items-center space-x-2">
     <button id="prev-page" class="border px-2">Prev</button>
     <span id="page-info"></span>
@@ -50,7 +50,8 @@
   <button id="export-csv" class="bg-blue-500 text-white px-2 mt-2">Export CSV</button>
 </div>
 <script>
-const usd=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'});
+function money(cur){return new Intl.NumberFormat('en-US',{style:'currency',currency:cur});}
+let usd=money(DEFAULT_CURRENCY);
 document.getElementById('login-btn').onclick=async()=>{
   const u=document.getElementById('login-user').value;
   const p=document.getElementById('login-pass').value;
@@ -128,9 +129,10 @@ function showToast(msg="Saved!", ok=true){
 async function updateCost(){
   const pid=document.getElementById('project-select').value;
   if(!pid) return;
-  const r=await authFetch(`/projects/${pid}/quote`);
+  const r=await authFetch(`/projects/${pid}/quote?currency=${DEFAULT_CURRENCY}`);
   if(r.ok){
     const d=await r.json();
+    usd=money(d.currency);
     const parts=d.total_cost||0;
     const labor=d.estimated_time_s/3600*HOURLY;
     const total=parts+labor;
@@ -181,6 +183,8 @@ async function patchField(idx,field,value){
   if(!item.id){
     if(field==='quantity') item[field]=parseInt(value,10)||1;
     else if(field==='unit_cost') item[field]=value?parseFloat(value):null;
+    else if(field==='dnp') item[field]=value;
+    else if(field==='currency') item[field]=value;
     else item[field]=value||null;
     renderPage();
     updateCost();
@@ -189,6 +193,8 @@ async function patchField(idx,field,value){
   const body={};
   if(field==="quantity") body[field]=parseInt(value,10)||1;
   else if(field==="unit_cost") body[field]=value?parseFloat(value):null;
+  else if(field==="dnp") body[field]=value;
+  else if(field==="currency") body[field]=value;
   else body[field]=value||null;
   const r=await authFetch(`/bom/items/${item.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   if(r.ok){
@@ -226,6 +232,13 @@ function renderPage(){
   slice.forEach((row,idx)=>{
     const realIdx=page*pageSize+idx;
     const tr=document.createElement('tr');
+    if(row.dnp) tr.classList.add('opacity-50');
+    const dtd=document.createElement('td');
+    const chk=document.createElement('input');
+    chk.type='checkbox';
+    chk.checked=!row.dnp;
+    chk.onchange=()=>patchField(realIdx,'dnp',!chk.checked);
+    dtd.appendChild(chk);tr.appendChild(dtd);
     ['part_number','description','quantity','reference','manufacturer','mpn','footprint','unit_cost'].forEach(k=>{
       const td=document.createElement('td');
       const inp=document.createElement('input');
@@ -237,8 +250,19 @@ function renderPage(){
       inp.onblur=()=>patchField(realIdx,k,inp.value);
       td.appendChild(inp);tr.appendChild(td);
       if(k==='unit_cost'){
+        const ctd=document.createElement('td');
+        const sel=document.createElement('select');
+        ['USD','EUR','GBP'].forEach(c=>{const o=document.createElement('option');o.value=c;o.textContent=c;if(row.currency===c) o.selected=true;sel.appendChild(o);});
+        sel.onchange=()=>patchField(realIdx,'currency',sel.value);
+        ctd.appendChild(sel);tr.appendChild(ctd);
+        const ft=document.createElement('td');
+        const btn=document.createElement('button');
+        btn.textContent='🔍';
+        btn.onclick=async()=>{const r=await authFetch(`/bom/items/${row.id}/fetch_price`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'octopart'})});if(r.ok){items[realIdx]=await r.json();renderPage();updateCost();}};
+        ft.appendChild(btn);tr.appendChild(ft);
         const ttd=document.createElement('td');
-        ttd.textContent=usd.format((row.unit_cost||0)*row.quantity);
+        const fmt=money(row.currency||DEFAULT_CURRENCY);
+        ttd.textContent=fmt.format((row.unit_cost||0)*row.quantity);
         tr.appendChild(ttd);
       }
     });
@@ -304,15 +328,18 @@ document.getElementById('save-bom').onclick=async ()=>{
   const payload=[];
   rows.forEach(tr=>{
     const i=tr.querySelectorAll('input');
+    const sel=tr.querySelector('select');
     payload.push({
-      part_number:i[0].value,
-      description:i[1].value,
-      quantity:parseInt(i[2].value,10)||1,
-      reference:i[3].value||null,
-      manufacturer:i[4].value||null,
-      mpn:i[5].value||null,
-      footprint:i[6].value||null,
-      unit_cost:i[7].value?parseFloat(i[7].value):null
+      dnp: !i[0].checked,
+      part_number:i[1].value,
+      description:i[2].value,
+      quantity:parseInt(i[3].value,10)||1,
+      reference:i[4].value||null,
+      manufacturer:i[5].value||null,
+      mpn:i[6].value||null,
+      footprint:i[7].value||null,
+      unit_cost:i[8].value?parseFloat(i[8].value):null,
+      currency: sel?sel.value:DEFAULT_CURRENCY
     });
   });
   const resp=await authFetch('/ui/workflow/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_id:parseInt(project),items:payload})});

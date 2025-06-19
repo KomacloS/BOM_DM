@@ -95,6 +95,10 @@ TOKEN=<token>
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/projects/1/quote
 ```
 Labor cost is calculated using `BOM_HOURLY_USD` (default `$25/hr`).
+Parts marked as `dnp` (do-not-populate) are ignored in quotes.
+Fetch latest pricing with `POST /bom/items/{id}/fetch_price` and body `{"source":"octopart"}`.
+Set `OCTOPART_TOKEN` for live lookups or rely on built-in mock data.
+The default currency is set via `BOM_DEFAULT_CURRENCY` (defaults to USD).
 
 ### Test results
 

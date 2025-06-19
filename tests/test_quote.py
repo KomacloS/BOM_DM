@@ -66,3 +66,20 @@ def test_quote_endpoint(client, auth_header):
     assert isinstance(data["estimated_time_s"], int)
     assert isinstance(data["estimated_cost_usd"], float)
     assert data["total_cost"] == pytest.approx(2*0.5 + 3*1.0, rel=1e-2)
+
+
+def test_quote_excludes_dnp(client, auth_header):
+    client.post(
+        "/bom/items",
+        json={"part_number": "P1", "description": "A", "quantity": 2, "unit_cost": 1.0},
+        headers=auth_header,
+    )
+    client.post(
+        "/bom/items",
+        json={"part_number": "P2", "description": "B", "quantity": 3, "unit_cost": 1.0, "dnp": True},
+        headers=auth_header,
+    )
+    resp = client.get("/bom/quote")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_components"] == 2

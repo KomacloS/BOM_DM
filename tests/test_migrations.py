@@ -10,4 +10,4 @@ def test_migration_adds_new_columns(tmp_path):
     main.migrate_db()
     insp = sqlalchemy.inspect(engine)
     cols = {c['name'] for c in insp.get_columns('bomitem')}
-    assert {'manufacturer','mpn','footprint','unit_cost'}.issubset(cols)
+    assert {'manufacturer','mpn','footprint','unit_cost','dnp','currency'}.issubset(cols)
