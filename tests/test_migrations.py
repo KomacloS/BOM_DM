@@ -11,3 +11,5 @@ def test_migration_adds_new_columns(tmp_path):
     insp = sqlalchemy.inspect(engine)
     cols = {c['name'] for c in insp.get_columns('bomitem')}
     assert {'manufacturer','mpn','footprint','unit_cost','dnp','currency'}.issubset(cols)
+    assert 'inventory' in insp.get_table_names()
+    assert 'fxrate' in insp.get_table_names() or 'fxrates' in insp.get_table_names()

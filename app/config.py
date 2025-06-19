@@ -67,3 +67,6 @@ BOM_HOURLY_USD = float(os.getenv("BOM_HOURLY_USD", 25))
 
 # Default currency for BOM items and quotes
 BOM_DEFAULT_CURRENCY = os.getenv("BOM_DEFAULT_CURRENCY", "USD")
+
+# Hours to keep cached FX rates
+FX_CACHE_HOURS = int(os.getenv("FX_CACHE_HOURS", 24))

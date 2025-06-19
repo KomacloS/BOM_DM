@@ -48,6 +48,8 @@ from .pdf_utils import extract_bom_text, parse_bom_lines
 from .quote_utils import calculate_quote
 from .trace_utils import component_trace, board_trace
 from .vendor import octopart, fixer
+from . import fx
+from .fx import FXRate
 
 engine = get_engine()
 if engine.dialect.name == "sqlite":
@@ -215,8 +217,33 @@ class QuoteResponse(SQLModel):
     total_components: int
     estimated_time_s: int
     estimated_cost_usd: float
+    labor_cost: float
+    parts_cost: float
     total_cost: float
     currency: str
+
+
+class Inventory(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    mpn: str = Field(sa_column_kwargs={"unique": True})
+    on_hand: int = 0
+    on_order: int = 0
+
+
+class InventoryCreate(SQLModel):
+    mpn: str
+    on_hand: int = 0
+    on_order: int = 0
+
+
+class InventoryRead(InventoryCreate):
+    id: int
+
+
+class InventoryUpdate(SQLModel):
+    on_hand: int | None = None
+    on_order: int | None = None
+
 
 
 class TestResult(SQLModel, table=True):
@@ -346,7 +373,7 @@ def nightly_backup(dest: str = "backups") -> None:
 
 def migrate_db() -> None:
     """Apply simple in-place migrations for older database schemas."""
-
+    SQLModel.metadata.create_all(engine)
     inspector = sqlalchemy.inspect(engine)
     if "bomitem" in inspector.get_table_names():
         columns = {c["name"] for c in inspector.get_columns("bomitem")}
@@ -431,7 +458,7 @@ app.mount("/datasheets", StaticFiles(directory="datasheets"), name="datasheets")
 ui_router = APIRouter(prefix="/ui")
 workflow_router = APIRouter(prefix="/ui/workflow")
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token", auto_error=False)
 
 
 def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
@@ -465,6 +492,18 @@ def edit_allowed(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role == "operator":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Read only")
     return current_user
+
+
+def optional_user(token: str | None = Depends(oauth2_scheme)) -> User | None:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+    except Exception:
+        return None
+    with Session(engine) as session:
+        return session.exec(select(User).where(User.username == username)).first()
 
 origins = ["http://localhost:3000"]
 
@@ -703,21 +742,27 @@ def project_cost(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """Return estimated total cost for a project's BOM."""
-    cur = currency or BOM_DEFAULT_CURRENCY
-    rates = fixer.today()
+    cur = (currency or BOM_DEFAULT_CURRENCY).upper()
     with Session(engine) as session:
         items = session.exec(
             select(BOMItem).where(
                 BOMItem.project_id == project_id, BOMItem.dnp == False
             )
         ).all()
-    rate_to = rates.get(cur, 1)
-    total = 0.0
+    rate_to = fx.get(cur)
+    parts = 0.0
     for item in items:
-        if item.unit_cost and item.unit_cost > 0:
-            rate_from = rates.get(item.currency or BOM_DEFAULT_CURRENCY, 1)
-            total += item.unit_cost * item.quantity * rate_to / rate_from
-    return {"total_cost": round(float(total), 2)}
+        if item.unit_cost and float(item.unit_cost) > 0:
+            rate_from = fx.get(item.currency or BOM_DEFAULT_CURRENCY)
+            parts += float(item.unit_cost) * item.quantity * rate_to / rate_from
+    labor = calculate_quote(items)["estimated_cost_usd"] * rate_to
+    total = parts + labor
+    return {
+        "parts_cost": round(parts, 2),
+        "labor_cost": round(labor, 2),
+        "total_cost": round(total, 2),
+        "currency": cur,
+    }
 
 
 @app.get("/projects/{project_id}/quote", response_model=QuoteResponse)
@@ -727,8 +772,7 @@ def project_quote(
     current_user: User = Depends(get_current_user),
 ) -> QuoteResponse:
     """Return cost/time estimate for a single project's BOM."""
-    cur = currency or BOM_DEFAULT_CURRENCY
-    rates = fixer.today()
+    cur = (currency or BOM_DEFAULT_CURRENCY).upper()
     with Session(engine) as session:
         items = session.exec(
             select(BOMItem).where(
@@ -736,15 +780,79 @@ def project_quote(
             )
         ).all()
     data = calculate_quote(items)
-    rate_to = rates.get(cur, 1)
-    total = 0.0
+    rate_to = fx.get(cur)
+    parts = 0.0
     for i in items:
-        if i.unit_cost and i.unit_cost > 0:
-            rate_from = rates.get(i.currency or BOM_DEFAULT_CURRENCY, 1)
-            total += i.unit_cost * i.quantity * rate_to / rate_from
-    data["total_cost"] = round(float(total), 2)
+        if i.unit_cost and float(i.unit_cost) > 0:
+            rate_from = fx.get(i.currency or BOM_DEFAULT_CURRENCY)
+            parts += float(i.unit_cost) * i.quantity * rate_to / rate_from
+    labor = data["estimated_cost_usd"] * rate_to
+    data["parts_cost"] = round(parts, 2)
+    data["labor_cost"] = round(labor, 2)
+    data["total_cost"] = round(parts + labor, 2)
     data["currency"] = cur
     return QuoteResponse(**data)
+
+
+@app.post("/projects/{project_id}/po.pdf")
+def project_po_pdf(project_id: int, current_user: User = Depends(edit_allowed)):
+    """Generate a simple purchase order PDF and update inventory."""
+    with Session(engine) as session:
+        proj = session.get(Project, project_id)
+        if not proj:
+            raise HTTPException(status_code=404, detail="Project not found")
+        cust = session.get(Customer, proj.customer_id)
+        items = session.exec(
+            select(BOMItem).where(
+                BOMItem.project_id == project_id, BOMItem.dnp == False
+            )
+        ).all()
+        groups: dict[tuple[str, str, str], dict[str, float]] = {}
+        for it in items:
+            key = (
+                it.manufacturer or "",
+                it.mpn or it.part_number,
+                (it.currency or BOM_DEFAULT_CURRENCY).upper(),
+            )
+            g = groups.setdefault(key, {"qty": 0, "cost": 0.0})
+            g["qty"] += it.quantity
+            g["cost"] += float(it.unit_cost or 0) * it.quantity
+        parts_sub = 0.0
+        rate_to = fx.get(BOM_DEFAULT_CURRENCY)
+        for (mfr, mpn, cur), g in groups.items():
+            parts_sub += g["cost"] * rate_to / fx.get(cur)
+            inv = session.exec(select(Inventory).where(Inventory.mpn == mpn)).first()
+            if not inv:
+                inv = Inventory(mpn=mpn, on_hand=0, on_order=0)
+            inv.on_hand -= g["qty"]
+            inv.on_order += g["qty"]
+            session.add(inv)
+        labor = calculate_quote(items)["estimated_cost_usd"] * rate_to
+        total = parts_sub + labor
+        session.commit()
+        from reportlab.platypus import SimpleDocTemplate, Table, Paragraph, Image, Spacer
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=letter)
+        styles = getSampleStyleSheet()
+        elems = []
+        logo = Path("docs/logo.png")
+        if logo.exists():
+            elems.append(Image(str(logo), width=100))
+        elems.append(Paragraph(f"{cust.name} - {proj.name} - {datetime.utcnow().date()}", styles["Heading2"]))
+        rows = [["Manufacturer", "MPN", "Qty", "Currency", "Ext. Cost"]]
+        for (mfr, mpn, cur), g in groups.items():
+            rows.append([mfr, mpn, str(g["qty"]), cur, f"{g['cost']:.2f}"])
+        elems.append(Table(rows))
+        elems.append(Spacer(1, 12))
+        elems.append(Paragraph(f"Parts subtotal: {parts_sub:.2f} {BOM_DEFAULT_CURRENCY}", styles["Normal"]))
+        elems.append(Paragraph(f"Labor subtotal: {labor:.2f} {BOM_DEFAULT_CURRENCY}", styles["Normal"]))
+        elems.append(Paragraph(f"Grand total: {total:.2f} {BOM_DEFAULT_CURRENCY}", styles["Normal"]))
+        doc.build(elems)
+        pdf = buf.getvalue()
+    headers = {"Content-Disposition": "attachment; filename=po.pdf"}
+    return Response(content=pdf, media_type="application/pdf", headers=headers)
 
 
 @app.get("/bom/items", response_model=list[BOMItemRead])
@@ -1040,18 +1148,20 @@ async def import_bom(
 def get_quote(currency: str | None = None) -> QuoteResponse:
     """Return quick cost/time estimates for all BOM items."""
 
-    cur = currency or BOM_DEFAULT_CURRENCY
-    rates = fixer.today()
+    cur = (currency or BOM_DEFAULT_CURRENCY).upper()
     with Session(engine) as session:
         items = session.exec(select(BOMItem).where(BOMItem.dnp == False)).all()
     data = calculate_quote(items)
-    rate_to = rates.get(cur, 1)
-    total = 0.0
+    rate_to = fx.get(cur)
+    parts = 0.0
     for i in items:
-        if i.unit_cost and i.unit_cost > 0:
-            rate_from = rates.get(i.currency or BOM_DEFAULT_CURRENCY, 1)
-            total += i.unit_cost * i.quantity * rate_to / rate_from
-    data["total_cost"] = round(float(total), 2)
+        if i.unit_cost and float(i.unit_cost) > 0:
+            rate_from = fx.get(i.currency or BOM_DEFAULT_CURRENCY)
+            parts += float(i.unit_cost) * i.quantity * rate_to / rate_from
+    labor = data["estimated_cost_usd"] * rate_to
+    data["parts_cost"] = round(parts, 2)
+    data["labor_cost"] = round(labor, 2)
+    data["total_cost"] = round(parts + labor, 2)
     data["currency"] = cur
     return QuoteResponse(**data)
 
@@ -1121,6 +1231,47 @@ def export_testresults_xlsx():
         ),
         headers=headers,
     )
+
+
+@app.get("/inventory", response_model=list[InventoryRead])
+def list_inventory() -> list[InventoryRead]:
+    with Session(engine) as session:
+        return session.exec(select(Inventory)).all()
+
+
+@app.post("/inventory", response_model=InventoryRead, status_code=status.HTTP_201_CREATED)
+def create_inventory(inv: InventoryCreate, current_user: User = Depends(edit_allowed)) -> InventoryRead:
+    with Session(engine) as session:
+        db = Inventory.from_orm(inv)
+        session.add(db)
+        session.commit()
+        session.refresh(db)
+        return db
+
+
+@app.patch("/inventory/{inv_id}", response_model=InventoryRead)
+def update_inventory(inv_id: int, inv: InventoryUpdate, current_user: User = Depends(edit_allowed)) -> InventoryRead:
+    with Session(engine) as session:
+        db = session.get(Inventory, inv_id)
+        if not db:
+            raise HTTPException(status_code=404, detail="Item not found")
+        for f, v in inv.model_dump(exclude_unset=True).items():
+            setattr(db, f, v)
+        session.add(db)
+        session.commit()
+        session.refresh(db)
+        return db
+
+
+@app.delete("/inventory/{inv_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_inventory(inv_id: int, current_user: User = Depends(edit_allowed)):
+    with Session(engine) as session:
+        db = session.get(Inventory, inv_id)
+        if not db:
+            raise HTTPException(status_code=404, detail="Item not found")
+        session.delete(db)
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/traceability/component/{part_number}", response_model=list[ComponentTraceEntry])
@@ -1208,6 +1359,15 @@ def ui_export(request: Request):
     return templates.TemplateResponse("export.html", {"request": request, "title": "Export"})
 
 
+@ui_router.get("/inventory/", response_class=HTMLResponse)
+def ui_inventory(request: Request):
+    with Session(engine) as session:
+        items = session.exec(select(Inventory)).all()
+    return templates.TemplateResponse(
+        "inventory.html", {"request": request, "title": "Inventory", "items": items}
+    )
+
+
 @ui_router.get("/users/", response_class=HTMLResponse)
 def ui_users(request: Request):
     return templates.TemplateResponse("users.html", {"request": request, "title": "Users"})
@@ -1244,7 +1404,7 @@ async def ui_save_settings(request: Request):
 # -------- Workflow Endpoints ---------
 
 @workflow_router.get("/", response_class=HTMLResponse)
-def ui_workflow(request: Request):
+def ui_workflow(request: Request, user: User | None = Depends(optional_user)):
     return templates.TemplateResponse(
         "workflow.html",
         {
@@ -1253,6 +1413,7 @@ def ui_workflow(request: Request):
             "max_ds_mb": MAX_DATASHEET_MB,
             "hourly": BOM_HOURLY_USD,
             "default_currency": BOM_DEFAULT_CURRENCY,
+            "hide_po": user.role == "operator" if user else False,
         },
     )
 

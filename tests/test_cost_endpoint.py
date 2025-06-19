@@ -23,4 +23,6 @@ def test_project_cost(client, auth_header):
     client.post('/bom/items', json={'part_number':'B','description':'d','quantity':3,'unit_cost':1,'project_id':proj['id']}, headers=auth_header)
     r = client.get(f"/projects/{proj['id']}/cost", headers=auth_header)
     assert r.status_code == 200
-    assert r.json()['total_cost'] == pytest.approx(2*0.5+3*1, rel=1e-2)
+    d = r.json()
+    assert d['parts_cost'] == pytest.approx(2*0.5+3*1, rel=1e-2)
+    assert 'labor_cost' in d

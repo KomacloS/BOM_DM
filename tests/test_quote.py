@@ -61,11 +61,19 @@ def test_quote_endpoint(client, auth_header):
     resp = client.get("/bom/quote")
     assert resp.status_code == 200
     data = resp.json()
-    assert set(data.keys()) == {"total_components", "estimated_time_s", "estimated_cost_usd", "total_cost"}
+    assert set(data.keys()) == {
+        "total_components",
+        "estimated_time_s",
+        "estimated_cost_usd",
+        "labor_cost",
+        "parts_cost",
+        "total_cost",
+        "currency",
+    }
     assert data["total_components"] == 5
     assert isinstance(data["estimated_time_s"], int)
     assert isinstance(data["estimated_cost_usd"], float)
-    assert data["total_cost"] == pytest.approx(2*0.5 + 3*1.0, rel=1e-2)
+    assert data["parts_cost"] == pytest.approx(2*0.5 + 3*1.0, rel=1e-2)
 
 
 def test_quote_excludes_dnp(client, auth_header):
@@ -83,3 +91,4 @@ def test_quote_excludes_dnp(client, auth_header):
     assert resp.status_code == 200
     data = resp.json()
     assert data["total_components"] == 2
+    assert data["parts_cost"] == pytest.approx(2*1.0, rel=1e-2)

@@ -12,6 +12,7 @@ pages = [
     "/ui/test/",
     "/ui/trace/",
     "/ui/export/",
+    "/ui/inventory/",
     "/ui/users/",
     "/ui/settings/",
 ]
