@@ -48,9 +48,9 @@ def test_link_items_to_project(client, auth_header):
         headers=auth_header,
     )
     assert resp.status_code == 200
-    items = client.get("/bom/items").json()
+    items = client.get("/bom/items", headers=auth_header).json()
     assert items[0]["project_id"] == proj["id"]
     assert len(items) > 0
     client.delete(f"/customers/{cust['id']}")
-    assert client.get("/bom/items").json() == []
+    assert client.get("/bom/items", headers=auth_header).json() == []
 

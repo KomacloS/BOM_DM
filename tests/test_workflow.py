@@ -23,7 +23,16 @@ def client_fixture():
         yield c
 
 
-def test_customer_project_and_save(client):
+@pytest.fixture
+def auth_header(client):
+    token = client.post(
+        "/auth/token",
+        data={"username": "admin", "password": "change_me"},
+    ).json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_customer_project_and_save(client, auth_header):
     c = client.post("/ui/workflow/customers", json={"name": "Acme"})
     assert c.status_code == 201
     cid = c.json()["id"]
@@ -33,7 +42,7 @@ def test_customer_project_and_save(client):
     items = [{"part_number": "P1", "description": "A", "quantity": 1}]
     save = client.post("/ui/workflow/save", json={"project_id": pid, "items": items})
     assert save.status_code == 200
-    all_items = client.get("/bom/items").json()
+    all_items = client.get("/bom/items", headers=auth_header).json()
     assert any(i["part_number"] == "P1" for i in all_items)
 
 

@@ -74,14 +74,14 @@ def test_crud_lifecycle(client, auth_header):
 
 def test_list_search_pagination(client, auth_header):
     items = create_sample_items(client, auth_header)
-    resp = client.get("/bom/items", params={"search": "find", "limit": 2})
+    resp = client.get("/bom/items", params={"search": "find", "limit": 2}, headers=auth_header)
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
     assert data[0]["part_number"] == "FINDME"
 
     # pagination
-    resp_all = client.get("/bom/items", params={"skip": 1, "limit": 1})
+    resp_all = client.get("/bom/items", params={"skip": 1, "limit": 1}, headers=auth_header)
     assert resp_all.status_code == 200
     assert len(resp_all.json()) == 1
 

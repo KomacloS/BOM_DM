@@ -610,6 +610,7 @@ def project_bom(
     search: str | None = None,
     skip: int = 0,
     limit: int = 50,
+    current_user: User = Depends(get_current_user),
 ) -> list[BOMItemRead]:
     """List BOM items for a specific project."""
 
@@ -651,6 +652,7 @@ def list_items(
     max_qty: int | None = None,
     skip: int = 0,
     limit: int = 50,
+    current_user: User = Depends(get_current_user),
 ) -> list[BOMItemRead]:
     """Return BOM items with optional filtering and pagination."""
 
