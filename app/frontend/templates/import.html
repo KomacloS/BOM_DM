@@ -1,8 +1,8 @@
 {% extends 'base.html' %}
 {% block content %}
-<h1 class="text-2xl mb-4">Import PDF</h1>
+<h1 class="text-2xl mb-4">Import BOM</h1>
 <form hx-post="/bom/import" enctype="multipart/form-data" class="space-y-2">
-  <input type="file" name="file" accept="application/pdf" required>
-  <button type="submit" class="bg-blue-500 text-white px-2">Upload</button>
+  <input type="file" name="file" accept=".pdf,.csv,.xlsx" required>
+  <button id="import-btn" type="submit" class="bg-blue-500 text-white px-2">Upload</button>
 </form>
 {% endblock %}

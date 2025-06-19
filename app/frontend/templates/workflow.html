@@ -5,7 +5,7 @@
   #toast{bottom:6rem;}
 }
 </style>
-<script>const MAX_DS_MB={{ max_ds_mb }};</script>
+<script>const MAX_DS_MB={{ max_ds_mb }};const HOURLY={{ hourly }};</script>
 <h1 class="text-2xl mb-4">Customer Workflow</h1>
 <div id="login" class="mb-4">
   <input type="text" id="login-user" placeholder="Username" class="border" />
@@ -33,7 +33,7 @@
 </div>
 <div id="step-4" class="mb-4 hidden">
   <h2 class="font-bold">4. Review</h2>
-  <table class="min-w-full"><thead><tr><th>Part</th><th>Description</th><th>Qty</th><th>Ref</th><th>Mfr</th><th>MPN</th><th>Footprint</th><th>Unit$</th><th>DS</th><th></th></tr></thead><tbody id="bom-table"></tbody></table>
+  <table class="min-w-full"><thead><tr><th>Part</th><th>Description</th><th>Qty</th><th>Ref</th><th>Mfr</th><th>MPN</th><th>Footprint</th><th>Unit$</th><th>Total $</th><th>DS</th><th></th></tr></thead><tbody id="bom-table"></tbody></table>
   <div id="pagination" class="mt-2 flex items-center space-x-2">
     <button id="prev-page" class="border px-2">Prev</button>
     <span id="page-info"></span>
@@ -50,12 +50,7 @@
   <button id="export-csv" class="bg-blue-500 text-white px-2 mt-2">Export CSV</button>
 </div>
 <script>
-function authFetch(url, opts={}){
-  opts.headers=opts.headers||{};
-  const t=sessionStorage.getItem('token');
-  if(t) opts.headers['Authorization']='Bearer '+t;
-  return fetch(url, opts);
-}
+const usd=new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'});
 document.getElementById('login-btn').onclick=async()=>{
   const u=document.getElementById('login-user').value;
   const p=document.getElementById('login-pass').value;
@@ -64,6 +59,7 @@ document.getElementById('login-btn').onclick=async()=>{
     const tok=(await r.json()).access_token;
     sessionStorage.setItem('token',tok);
     document.getElementById('login').classList.add('hidden');
+    checkOperator();
   }else{alert('Login failed');}
 };
 async function loadCustomers(){
@@ -132,8 +128,16 @@ function showToast(msg="Saved!", ok=true){
 async function updateCost(){
   const pid=document.getElementById('project-select').value;
   if(!pid) return;
-  const r=await authFetch(`/projects/${pid}/cost`);
-  if(r.ok){const d=await r.json();document.getElementById('cost-bar').textContent=`Est. cost $${d.total_cost}`;} }
+  const r=await authFetch(`/projects/${pid}/quote`);
+  if(r.ok){
+    const d=await r.json();
+    const parts=d.total_cost||0;
+    const labor=d.estimated_time_s/3600*HOURLY;
+    const total=parts+labor;
+    const qty=d.total_components;
+    document.getElementById('cost-bar').textContent=`Components ${items.length} \u2022 Qty ${qty} \u2022 Parts ${usd.format(parts)} \u2022 Labor ${usd.format(labor)} \u2022 Total ${usd.format(total)}`;
+  }
+ }
 
 let acTimer;
 function autocomplete(field,q){
@@ -174,7 +178,14 @@ function triggerUpload(id,idx){
 
 async function patchField(idx,field,value){
   const item=items[idx];
-  if(!item.id){item[field]=value;return;}
+  if(!item.id){
+    if(field==='quantity') item[field]=parseInt(value,10)||1;
+    else if(field==='unit_cost') item[field]=value?parseFloat(value):null;
+    else item[field]=value||null;
+    renderPage();
+    updateCost();
+    return;
+  }
   const body={};
   if(field==="quantity") body[field]=parseInt(value,10)||1;
   else if(field==="unit_cost") body[field]=value?parseFloat(value):null;
@@ -183,6 +194,8 @@ async function patchField(idx,field,value){
   if(r.ok){
     items[idx]=await r.json();
     showToast();
+    renderPage();
+    updateCost();
   }else{
     showToast("Error",false);
   }
@@ -200,6 +213,7 @@ async function deleteRow(idx){
   if(page>0 && page*pageSize>=items.length) page--;
   renderPage();
   showToast("Deleted");
+  updateCost();
 }
 
 
@@ -222,6 +236,12 @@ function renderPage(){
       if(k==='mpn'){inp.setAttribute('list','mpn-suggest');inp.oninput=()=>autocomplete('mpn',inp.value);}
       inp.onblur=()=>patchField(realIdx,k,inp.value);
       td.appendChild(inp);tr.appendChild(td);
+      if(k==='unit_cost'){
+        const ttd=document.createElement('td');
+        ttd.textContent=usd.format((row.unit_cost||0)*row.quantity);
+        tr.appendChild(ttd);
+      }
+    });
     const td=document.createElement('td');
     if(row.datasheet_url){
       const a=document.createElement('a');
@@ -233,6 +253,7 @@ function renderPage(){
       const btn=document.createElement('button');
       btn.textContent='Upload';
       btn.id=`upload-ds-btn-${realIdx}`;
+      btn.className='upload-btn';
       btn.onclick=()=>triggerUpload(row.id,realIdx);
       td.appendChild(btn);
     }
@@ -240,6 +261,7 @@ function renderPage(){
     const deltd=document.createElement("td");
     const delbtn=document.createElement("button");
     delbtn.textContent="🗑";
+    delbtn.className='del-btn';
     delbtn.onclick=()=>deleteRow(realIdx);
     deltd.appendChild(delbtn);
     tr.appendChild(deltd);
@@ -316,6 +338,7 @@ document.getElementById('export-csv').onclick=async()=>{
   URL.revokeObjectURL(url);
 };
 
+checkOperator();
 loadCustomers();
 </script>
 {% endblock %}

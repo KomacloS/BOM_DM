@@ -35,6 +35,7 @@ from .config import (
     ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     MAX_DATASHEET_MB,
+    BOM_HOURLY_USD,
     DATABASE_URL,
     load_settings,
     save_database_url,
@@ -367,9 +368,9 @@ def migrate_db() -> None:
         if "unit_cost" not in columns:
             with engine.begin() as conn:
                 if engine.dialect.name == "sqlite":
-                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN unit_cost NUMERIC"))
+                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN unit_cost NUMERIC DEFAULT 0"))
                 else:
-                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(10,4)"))
+                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(10,4) DEFAULT 0"))
         with engine.begin() as conn:
             if engine.dialect.name == "postgresql":
                 conn.execute(
@@ -503,6 +504,12 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()) -> 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     token = create_access_token({"sub": user.username, "role": user.role}, access_token_expires)
     return {"access_token": token, "token_type": "bearer"}
+
+
+@app.get("/auth/me")
+def auth_me(current_user: User = Depends(get_current_user)) -> dict:
+    """Return currently authenticated user."""
+    return {"username": current_user.username, "role": current_user.role}
 
 
 @app.post("/auth/register", dependencies=[Depends(admin_required)], status_code=status.HTTP_201_CREATED)
@@ -683,6 +690,17 @@ def project_cost(project_id: int, current_user: User = Depends(get_current_user)
         items = session.exec(select(BOMItem).where(BOMItem.project_id == project_id)).all()
     total = sum((item.unit_cost or 0) * item.quantity for item in items if item.unit_cost and item.unit_cost > 0)
     return {"total_cost": float(round(total, 2))}
+
+
+@app.get("/projects/{project_id}/quote", response_model=QuoteResponse)
+def project_quote(project_id: int, current_user: User = Depends(get_current_user)) -> QuoteResponse:
+    """Return cost/time estimate for a single project's BOM."""
+    with Session(engine) as session:
+        items = session.exec(select(BOMItem).where(BOMItem.project_id == project_id)).all()
+    data = calculate_quote(items)
+    total = sum((i.unit_cost or 0) * i.quantity for i in items if i.unit_cost and i.unit_cost > 0)
+    data["total_cost"] = round(float(total), 2)
+    return QuoteResponse(**data)
 
 
 @app.get("/bom/items", response_model=list[BOMItemRead])
@@ -878,6 +896,10 @@ async def import_bom(
                         "description": data.get("description") or data.get("desc") or "",
                         "quantity": int(data.get("quantity") or data.get("qty") or 1),
                         "reference": data.get("reference") or data.get("ref") or None,
+                        "manufacturer": data.get("manufacturer"),
+                        "mpn": data.get("mpn"),
+                        "footprint": data.get("footprint"),
+                        "unit_cost": float(data.get("unit_cost")) if data.get("unit_cost") else None,
                     }
                 )
         else:
@@ -893,8 +915,31 @@ async def import_bom(
                         "description": data.get("description") or data.get("desc") or "",
                         "quantity": int(data.get("quantity") or data.get("qty") or 1),
                         "reference": data.get("reference") or data.get("ref") or None,
+                        "manufacturer": data.get("manufacturer"),
+                        "mpn": data.get("mpn"),
+                        "footprint": data.get("footprint"),
+                        "unit_cost": float(data.get("unit_cost")) if data.get("unit_cost") else None,
                     }
                 )
+    elif ext == "csv":
+        text = contents.decode("utf-8", errors="ignore")
+        lines = text.splitlines()
+        delimiter = ";" if lines and lines[0].count(";") > lines[0].count(",") else ","
+        reader = csv.DictReader(lines, delimiter=delimiter)
+        records = []
+        for row in reader:
+            records.append(
+                {
+                    "part_number": row.get("part_number") or row.get("part number") or "",
+                    "description": row.get("description") or row.get("desc") or "",
+                    "quantity": int(row.get("quantity") or row.get("qty") or 1),
+                    "reference": row.get("reference") or row.get("ref") or None,
+                    "manufacturer": row.get("manufacturer"),
+                    "mpn": row.get("mpn"),
+                    "footprint": row.get("footprint"),
+                    "unit_cost": float(row.get("unit_cost")) if row.get("unit_cost") else None,
+                }
+            )
     else:
         raise HTTPException(status_code=400, detail="Unsupported file type")
 
@@ -1122,7 +1167,7 @@ async def ui_save_settings(request: Request):
 def ui_workflow(request: Request):
     return templates.TemplateResponse(
         "workflow.html",
-        {"request": request, "title": "Workflow", "max_ds_mb": MAX_DATASHEET_MB},
+        {"request": request, "title": "Workflow", "max_ds_mb": MAX_DATASHEET_MB, "hourly": BOM_HOURLY_USD},
     )
 
 
@@ -1224,7 +1269,9 @@ async def wf_upload_bom(file: UploadFile = File(...)):
     items: list[dict] = []
     if ext == "csv":
         text = contents.decode("utf-8", errors="ignore")
-        reader = csv.DictReader(io.StringIO(text))
+        lines = text.splitlines()
+        delim = ";" if lines and lines[0].count(";") > lines[0].count(",") else ","
+        reader = csv.DictReader(lines, delimiter=delim)
         for row in reader:
             items.append(
                 {
@@ -1232,6 +1279,10 @@ async def wf_upload_bom(file: UploadFile = File(...)):
                     "description": row.get("description") or row.get("desc") or "",
                     "quantity": int(row.get("quantity") or row.get("qty") or 1),
                     "reference": row.get("reference") or row.get("ref") or None,
+                    "manufacturer": row.get("manufacturer"),
+                    "mpn": row.get("mpn"),
+                    "footprint": row.get("footprint"),
+                    "unit_cost": float(row.get("unit_cost")) if row.get("unit_cost") else None,
                 }
             )
     elif ext in {"xlsx", "xls"}:
@@ -1246,6 +1297,10 @@ async def wf_upload_bom(file: UploadFile = File(...)):
                     "description": data.get("description") or data.get("desc") or "",
                     "quantity": int(data.get("quantity") or data.get("qty") or 1),
                     "reference": data.get("reference") or data.get("ref") or None,
+                    "manufacturer": data.get("manufacturer"),
+                    "mpn": data.get("mpn"),
+                    "footprint": data.get("footprint"),
+                    "unit_cost": float(data.get("unit_cost")) if data.get("unit_cost") else None,
                 }
             )
     else:
