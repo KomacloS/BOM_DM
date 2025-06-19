@@ -25,4 +25,4 @@ def test_project_quote_endpoint(client, auth_header):
     assert r.status_code == 200
     d = r.json()
     assert d['total_components'] == 5
-    assert d['total_cost'] == pytest.approx(2*0.5+3*1, rel=1e-2)
+    assert d['parts_cost'] == pytest.approx(2*0.5+3*1, rel=1e-2)

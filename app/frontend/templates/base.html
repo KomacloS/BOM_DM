@@ -20,7 +20,7 @@
             const u = await r.json();
             if(u.role === 'operator'){
                 document.querySelectorAll('input').forEach(el=>el.disabled=true);
-                document.querySelectorAll('#save-bom,.del-btn,#upload-bom,#import-btn,.upload-btn').forEach(el=>el && el.classList.add('hidden'));
+                document.querySelectorAll('#save-bom,.del-btn,#upload-bom,#import-btn,.upload-btn,#po-btn').forEach(el=>el && el.classList.add('hidden'));
             }
         }
     }

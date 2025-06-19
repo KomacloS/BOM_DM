@@ -100,6 +100,26 @@ Fetch latest pricing with `POST /bom/items/{id}/fetch_price` and body `{"source"
 Set `OCTOPART_TOKEN` for live lookups or rely on built-in mock data.
 The default currency is set via `BOM_DEFAULT_CURRENCY` (defaults to USD).
 
+### Purchase orders
+
+Generate a simple purchase order PDF for a project:
+
+```bash
+TOKEN=<token>
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+     -o po.pdf http://localhost:8000/projects/1/po.pdf
+```
+Inventory levels are adjusted automatically.
+
+### Inventory
+
+Track stock levels via the `/inventory` endpoints:
+
+```bash
+curl http://localhost:8000/inventory
+```
+Inline edits are available under `/ui/inventory`.
+
 ### Test results
 
 Log a new flying-probe test result:
@@ -223,6 +243,7 @@ Use `?comma=false` for semicolon-separated files.
 
 The datasheet upload size limit defaults to 10 MB. Set `BOM_MAX_DS_MB` to
 override this cap.
+`FX_CACHE_HOURS` controls how long exchange rates are cached (default 24).
 
 Workflow inline editing with the clip icon is shown in the documentation.
 

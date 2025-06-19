@@ -7,6 +7,7 @@
 </style>
 <script>const MAX_DS_MB={{ max_ds_mb }};const HOURLY={{ hourly }};const DEFAULT_CURRENCY='{{ default_currency }}';</script>
 <h1 class="text-2xl mb-4">Customer Workflow</h1>
+<input type="checkbox" class="hidden" />
 <div id="login" class="mb-4">
   <input type="text" id="login-user" placeholder="Username" class="border" />
   <input type="password" id="login-pass" placeholder="Password" class="border" />
@@ -48,6 +49,7 @@
   <button id="save-bom" class="bg-blue-500 text-white px-2 mt-2">Save BOM</button>
   <button id="cancel-bom" class="bg-gray-500 text-white px-2 mt-2">Cancel</button>
   <button id="export-csv" class="bg-blue-500 text-white px-2 mt-2">Export CSV</button>
+  {% if not hide_po %}<button id="po-btn" class="bg-blue-500 text-white px-2 mt-2">Create PO</button>{% endif %}
 </div>
 <script>
 function money(cur){return new Intl.NumberFormat('en-US',{style:'currency',currency:cur});}
@@ -119,9 +121,9 @@ let items=[];
 let page=0;
 const pageSize=10;
 
-function showToast(msg="Saved!", ok=true){
+function showToast(msg="Saved!", ok=true, link=null){
   const t=document.getElementById("toast");
-  t.textContent=msg;
+  t.innerHTML=link?`<a href="${link}" download class="underline">${msg}</a>`:msg;
   t.className=`fixed bottom-4 right-4 ${ok?"bg-green-600":"bg-red-600"} text-white px-2 py-1 rounded`;
   t.classList.remove("hidden");
   setTimeout(()=>t.classList.add("hidden"),1500);
@@ -364,6 +366,21 @@ document.getElementById('export-csv').onclick=async()=>{
   a.click();
   URL.revokeObjectURL(url);
 };
+
+if(document.getElementById('po-btn')){
+document.getElementById('po-btn').onclick=async()=>{
+  const pid=document.getElementById('project-select').value;
+  if(!pid) return;
+  const r=await authFetch(`/projects/${pid}/po.pdf`,{method:'POST'});
+  if(r.ok){
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    showToast('PO ready',true,url);
+  }else{
+    showToast('Error',false);
+  }
+};
+}
 
 checkOperator();
 loadCustomers();
