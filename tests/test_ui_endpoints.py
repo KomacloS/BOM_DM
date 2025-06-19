@@ -28,6 +28,11 @@ def test_workflow_page_has_wizard():
     r = client.get("/ui/workflow/")
     assert '<div id="step-1"' in r.text
 
+def test_wizard_has_checkbox_and_select():
+    r = client.get("/ui/workflow/")
+    assert '<input type="checkbox"' in r.text
+    assert '<select' in r.text and 'USD' in r.text
+
 
 def test_htmx_create_item():
     token = client.post(

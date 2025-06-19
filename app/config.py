@@ -64,3 +64,6 @@ MAX_DATASHEET_MB = int(os.getenv("BOM_MAX_DS_MB", 10))
 
 # Hourly assembly cost used for quotes
 BOM_HOURLY_USD = float(os.getenv("BOM_HOURLY_USD", 25))
+
+# Default currency for BOM items and quotes
+BOM_DEFAULT_CURRENCY = os.getenv("BOM_DEFAULT_CURRENCY", "USD")

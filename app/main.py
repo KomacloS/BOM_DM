@@ -36,6 +36,7 @@ from .config import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     MAX_DATASHEET_MB,
     BOM_HOURLY_USD,
+    BOM_DEFAULT_CURRENCY,
     DATABASE_URL,
     load_settings,
     save_database_url,
@@ -46,6 +47,7 @@ from .config import (
 from .pdf_utils import extract_bom_text, parse_bom_lines
 from .quote_utils import calculate_quote
 from .trace_utils import component_trace, board_trace
+from .vendor import octopart, fixer
 
 engine = get_engine()
 if engine.dialect.name == "sqlite":
@@ -84,6 +86,8 @@ class BOMItemBase(SQLModel):
     mpn: str | None = None
     footprint: str | None = None
     unit_cost: float | None = Field(default=None, sa_column=Column(sqlalchemy.Numeric(10,4)))
+    dnp: bool | None = Field(default=False)
+    currency: str = Field(default=BOM_DEFAULT_CURRENCY, max_length=3)
 
     project_id: int | None = Field(
         default=None,
@@ -126,6 +130,8 @@ class BOMItemUpdate(SQLModel):
     mpn: str | None = None
     footprint: str | None = None
     unit_cost: float | None = None
+    dnp: bool | None = None
+    currency: str | None = None
 
 
 class Customer(SQLModel, table=True):
@@ -210,6 +216,7 @@ class QuoteResponse(SQLModel):
     estimated_time_s: int
     estimated_cost_usd: float
     total_cost: float
+    currency: str
 
 
 class TestResult(SQLModel, table=True):
@@ -371,6 +378,12 @@ def migrate_db() -> None:
                     conn.execute(text("ALTER TABLE bomitem ADD COLUMN unit_cost NUMERIC DEFAULT 0"))
                 else:
                     conn.execute(text("ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(10,4) DEFAULT 0"))
+        if "dnp" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN dnp BOOLEAN DEFAULT 0"))
+        if "currency" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN currency VARCHAR(3) DEFAULT 'USD'"))
         with engine.begin() as conn:
             if engine.dialect.name == "postgresql":
                 conn.execute(
@@ -684,22 +697,53 @@ def project_export_csv(project_id: int, comma: bool = True):
 
 
 @app.get("/projects/{project_id}/cost")
-def project_cost(project_id: int, current_user: User = Depends(get_current_user)) -> dict:
+def project_cost(
+    project_id: int,
+    currency: str | None = None,
+    current_user: User = Depends(get_current_user),
+) -> dict:
     """Return estimated total cost for a project's BOM."""
+    cur = currency or BOM_DEFAULT_CURRENCY
+    rates = fixer.today()
     with Session(engine) as session:
-        items = session.exec(select(BOMItem).where(BOMItem.project_id == project_id)).all()
-    total = sum((item.unit_cost or 0) * item.quantity for item in items if item.unit_cost and item.unit_cost > 0)
-    return {"total_cost": float(round(total, 2))}
+        items = session.exec(
+            select(BOMItem).where(
+                BOMItem.project_id == project_id, BOMItem.dnp == False
+            )
+        ).all()
+    rate_to = rates.get(cur, 1)
+    total = 0.0
+    for item in items:
+        if item.unit_cost and item.unit_cost > 0:
+            rate_from = rates.get(item.currency or BOM_DEFAULT_CURRENCY, 1)
+            total += item.unit_cost * item.quantity * rate_to / rate_from
+    return {"total_cost": round(float(total), 2)}
 
 
 @app.get("/projects/{project_id}/quote", response_model=QuoteResponse)
-def project_quote(project_id: int, current_user: User = Depends(get_current_user)) -> QuoteResponse:
+def project_quote(
+    project_id: int,
+    currency: str | None = None,
+    current_user: User = Depends(get_current_user),
+) -> QuoteResponse:
     """Return cost/time estimate for a single project's BOM."""
+    cur = currency or BOM_DEFAULT_CURRENCY
+    rates = fixer.today()
     with Session(engine) as session:
-        items = session.exec(select(BOMItem).where(BOMItem.project_id == project_id)).all()
+        items = session.exec(
+            select(BOMItem).where(
+                BOMItem.project_id == project_id, BOMItem.dnp == False
+            )
+        ).all()
     data = calculate_quote(items)
-    total = sum((i.unit_cost or 0) * i.quantity for i in items if i.unit_cost and i.unit_cost > 0)
+    rate_to = rates.get(cur, 1)
+    total = 0.0
+    for i in items:
+        if i.unit_cost and i.unit_cost > 0:
+            rate_from = rates.get(i.currency or BOM_DEFAULT_CURRENCY, 1)
+            total += i.unit_cost * i.quantity * rate_to / rate_from
     data["total_cost"] = round(float(total), 2)
+    data["currency"] = cur
     return QuoteResponse(**data)
 
 
@@ -865,6 +909,32 @@ async def upload_datasheet(
         return db_item
 
 
+@app.post("/bom/items/{item_id}/fetch_price", response_model=BOMItemRead)
+def fetch_price(
+    item_id: int,
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+) -> BOMItemRead:
+    """Fetch vendor price and update unit_cost."""
+    source = payload.get("source")
+    if source != "octopart":
+        raise HTTPException(status_code=400, detail="Unsupported source")
+    with Session(engine) as session:
+        item = session.get(BOMItem, item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+        mpn = item.mpn or item.part_number
+        try:
+            data = octopart.lookup(mpn)
+        except KeyError:
+            raise HTTPException(status_code=413, detail="MPN not found")
+        item.unit_cost = data["price"]
+        session.add(item)
+        session.commit()
+        session.refresh(item)
+        return item
+
+
 @app.post("/bom/import", response_model=list[BOMItemRead])
 async def import_bom(
     file: UploadFile = File(...),
@@ -938,6 +1008,8 @@ async def import_bom(
                     "mpn": row.get("mpn"),
                     "footprint": row.get("footprint"),
                     "unit_cost": float(row.get("unit_cost")) if row.get("unit_cost") else None,
+                    "dnp": False,
+                    "currency": BOM_DEFAULT_CURRENCY,
                 }
             )
     else:
@@ -965,14 +1037,22 @@ async def import_bom(
 
 
 @app.get("/bom/quote", response_model=QuoteResponse)
-def get_quote() -> QuoteResponse:
+def get_quote(currency: str | None = None) -> QuoteResponse:
     """Return quick cost/time estimates for all BOM items."""
 
+    cur = currency or BOM_DEFAULT_CURRENCY
+    rates = fixer.today()
     with Session(engine) as session:
-        items = session.exec(select(BOMItem)).all()
+        items = session.exec(select(BOMItem).where(BOMItem.dnp == False)).all()
     data = calculate_quote(items)
-    total = sum((i.unit_cost or 0) * i.quantity for i in items if i.unit_cost and i.unit_cost > 0)
+    rate_to = rates.get(cur, 1)
+    total = 0.0
+    for i in items:
+        if i.unit_cost and i.unit_cost > 0:
+            rate_from = rates.get(i.currency or BOM_DEFAULT_CURRENCY, 1)
+            total += i.unit_cost * i.quantity * rate_to / rate_from
     data["total_cost"] = round(float(total), 2)
+    data["currency"] = cur
     return QuoteResponse(**data)
 
 
@@ -1167,7 +1247,13 @@ async def ui_save_settings(request: Request):
 def ui_workflow(request: Request):
     return templates.TemplateResponse(
         "workflow.html",
-        {"request": request, "title": "Workflow", "max_ds_mb": MAX_DATASHEET_MB, "hourly": BOM_HOURLY_USD},
+        {
+            "request": request,
+            "title": "Workflow",
+            "max_ds_mb": MAX_DATASHEET_MB,
+            "hourly": BOM_HOURLY_USD,
+            "default_currency": BOM_DEFAULT_CURRENCY,
+        },
     )
 
 
@@ -1301,6 +1387,8 @@ async def wf_upload_bom(file: UploadFile = File(...)):
                     "mpn": data.get("mpn"),
                     "footprint": data.get("footprint"),
                     "unit_cost": float(data.get("unit_cost")) if data.get("unit_cost") else None,
+                    "dnp": False,
+                    "currency": BOM_DEFAULT_CURRENCY,
                 }
             )
     else:
