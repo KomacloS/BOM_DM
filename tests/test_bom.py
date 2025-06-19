@@ -53,7 +53,10 @@ def test_list_items(client, auth_header):
     item = {"part_number": "XYZ-1", "description": "Resistor", "quantity": 1}
     client.post("/bom/items", json=item, headers=auth_header)
 
-    response = client.get("/bom/items")
+    unauthorized = client.get("/bom/items")
+    assert unauthorized.status_code == 401
+
+    response = client.get("/bom/items", headers=auth_header)
     assert response.status_code == 200
     data = response.json()
     assert len(data) >= 1

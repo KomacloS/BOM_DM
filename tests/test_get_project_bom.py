@@ -38,7 +38,10 @@ def test_get_project_bom(client, auth_header):
         json={"part_number": "P2", "description": "D2", "quantity": 2, "project_id": proj["id"]},
         headers=auth_header,
     ).json()
-    r = client.get(f"/projects/{proj['id']}/bom")
+    unauthorized = client.get(f"/projects/{proj['id']}/bom")
+    assert unauthorized.status_code == 401
+
+    r = client.get(f"/projects/{proj['id']}/bom", headers=auth_header)
     assert r.status_code == 200
     data = r.json()
     assert len(data) == 2

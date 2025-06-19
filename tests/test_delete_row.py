@@ -33,5 +33,5 @@ def test_delete_row(client, auth_header):
     ).json()
     r = client.delete(f"/bom/items/{item['id']}", headers=auth_header)
     assert r.status_code == 204
-    all_items = client.get("/bom/items").json()
+    all_items = client.get("/bom/items", headers=auth_header).json()
     assert all(i["id"] != item["id"] for i in all_items)

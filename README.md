@@ -55,7 +55,9 @@ curl -X DELETE http://localhost:8000/bom/items/1
 
 List items with search and pagination:
 ```bash
-curl "http://localhost:8000/bom/items?search=Cap&min_qty=1&max_qty=10&skip=0&limit=20"
+TOKEN=<token>
+curl -H "Authorization: Bearer $TOKEN" \
+     "http://localhost:8000/bom/items?search=Cap&min_qty=1&max_qty=10&skip=0&limit=20"
 ```
 
 Import a BOM PDF:
@@ -138,6 +140,9 @@ curl -H "Authorization: Bearer $TOKEN" \
      http://localhost:8000/bom/items
 ```
 
+The same token is required when **listing** BOM items or retrieving a
+project's BOM.
+
 ### Traceability
 
 Identify which boards failed because of a component:
@@ -188,7 +193,9 @@ confirmation toast. Uploaded datasheets turn the button into a 📎 link.
 Saved BOM items can be retrieved for further editing:
 
 ```bash
-curl http://localhost:8000/projects/1/bom
+TOKEN=<token>
+curl -H "Authorization: Bearer $TOKEN" \
+     http://localhost:8000/projects/1/bom
 ```
 
 Export the project BOM to CSV:

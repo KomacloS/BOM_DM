@@ -57,5 +57,5 @@ def test_import_endpoint(client, auth_header):
     assert len(data) == 1
     assert data[0]["part_number"] == "PN9"
     # ensure item persisted
-    list_resp = client.get("/bom/items")
+    list_resp = client.get("/bom/items", headers=auth_header)
     assert any(i["part_number"] == "PN9" for i in list_resp.json())
