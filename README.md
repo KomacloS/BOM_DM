@@ -60,12 +60,12 @@ curl -H "Authorization: Bearer $TOKEN" \
      "http://localhost:8000/bom/items?search=Cap&min_qty=1&max_qty=10&skip=0&limit=20"
 ```
 
-Import a BOM PDF:
+Import a BOM file:
 ```bash
 curl -F file=@sample.pdf http://localhost:8000/bom/import
+curl -F file=@bom.csv http://localhost:8000/bom/import
 ```
-The parser assumes table columns are separated by multiple spaces or tabs. Real
-world PDFs may require tweaks.
+CSV columns may include `manufacturer`, `mpn`, `footprint` and `unit_cost`.
 
 ### Customers & Projects
 
@@ -89,11 +89,12 @@ Get a quick time and cost estimate for the current BOM:
 ```bash
 curl http://localhost:8000/bom/quote
 ```
-Get total cost for a specific project:
+Get a quote for a specific project:
 ```bash
 TOKEN=<token>
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/projects/1/cost
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/projects/1/quote
 ```
+Labor cost is calculated using `BOM_HOURLY_USD` (default `$25/hr`).
 
 ### Test results
 

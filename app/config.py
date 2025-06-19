@@ -61,3 +61,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Max allowed datasheet upload size in megabytes
 MAX_DATASHEET_MB = int(os.getenv("BOM_MAX_DS_MB", 10))
+
+# Hourly assembly cost used for quotes
+BOM_HOURLY_USD = float(os.getenv("BOM_HOURLY_USD", 25))
