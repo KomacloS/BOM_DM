@@ -232,6 +232,21 @@ class Part(SQLModel, table=True):
     description: str | None = None
 
 
+class PartCreate(SQLModel):
+    number: str
+    description: str | None = None
+
+
+class PartRead(PartCreate):
+    id: int
+    usage_count: int | None = None
+
+
+class PartUpdate(SQLModel):
+    number: str | None = None
+    description: str | None = None
+
+
 class TestMacro(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
@@ -389,6 +404,25 @@ def get_default_assembly(project_id: int, session: Session) -> Assembly:
         session.commit()
         session.refresh(asm)
     return asm
+
+
+def get_or_create_part(number: str, description: str | None, session: Session) -> Part:
+    """Return existing Part matching number (case-insensitive) or create it."""
+    part = session.exec(select(Part).where(Part.number.ilike(number))).first()
+    if part:
+        return part
+    part = Part(number=number, description=description)
+    session.add(part)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        part = session.exec(select(Part).where(Part.number.ilike(number))).first()
+        if not part:
+            raise
+    else:
+        session.refresh(part)
+    return part
 
 
 def csv_generator(items: list[BOMItem], delimiter: str = ","):
@@ -707,6 +741,82 @@ def customer_projects(customer_id: int) -> list[ProjectRead]:
         return session.exec(select(Project).where(Project.customer_id == customer_id)).all()
 
 
+@app.get("/parts", response_model=list[PartRead])
+def list_parts(
+    search: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+) -> list[PartRead]:
+    if limit > 200:
+        limit = 200
+    with Session(engine) as session:
+        stmt = select(Part)
+        if search:
+            stmt = stmt.where(Part.number.ilike(f"%{search}%"))
+        stmt = stmt.offset(skip).limit(limit)
+        parts = session.exec(stmt).all()
+        result: list[PartRead] = []
+        for p in parts:
+            count = session.exec(
+                select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+            ).one()
+            result.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=count))
+        return result
+
+
+@app.post("/parts", response_model=PartRead, status_code=status.HTTP_201_CREATED)
+def create_part(part_in: PartCreate, current_user: User = Depends(edit_allowed)) -> PartRead:
+    with Session(engine) as session:
+        existing = session.exec(select(Part).where(Part.number.ilike(part_in.number))).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Part exists")
+        db_part = Part.from_orm(part_in)
+        session.add(db_part)
+        session.commit()
+        session.refresh(db_part)
+        return PartRead(id=db_part.id, number=db_part.number, description=db_part.description, usage_count=0)
+
+
+@app.patch("/parts/{part_id}", response_model=PartRead)
+def update_part(part_id: int, part_in: PartUpdate, current_user: User = Depends(edit_allowed)) -> PartRead:
+    with Session(engine) as session:
+        db_part = session.get(Part, part_id)
+        if not db_part:
+            raise HTTPException(status_code=404, detail="Part not found")
+        if part_in.number is not None:
+            existing = session.exec(
+                select(Part).where(Part.number.ilike(part_in.number), Part.id != part_id)
+            ).first()
+            if existing:
+                raise HTTPException(status_code=409, detail="Part exists")
+        for f, v in part_in.dict(exclude_unset=True).items():
+            setattr(db_part, f, v)
+        session.add(db_part)
+        session.commit()
+        session.refresh(db_part)
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == db_part.id)
+        ).one()
+        return PartRead(id=db_part.id, number=db_part.number, description=db_part.description, usage_count=count)
+
+
+@app.delete(
+    "/parts/{part_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(admin_required)],
+)
+def delete_part(part_id: int) -> Response:
+    with Session(engine) as session:
+        db_part = session.get(Part, part_id)
+        if not db_part:
+            raise HTTPException(status_code=404, detail="Part not found")
+        session.delete(db_part)
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.get("/projects/{project_id}/assemblies", response_model=list[Assembly])
 def list_project_assemblies(project_id: int) -> list[Assembly]:
     with Session(engine) as session:
@@ -979,6 +1089,8 @@ def create_item(item: BOMItemCreate, current_user: User = Depends(edit_allowed))
         if db_item.assembly_id is None and hasattr(item, "project_id") and item.project_id is not None:
             asm = get_default_assembly(item.project_id, session)
             db_item.assembly_id = asm.id
+        part = get_or_create_part(db_item.part_number, db_item.description, session)
+        db_item.part_id = part.id
         session.add(db_item)
         try:
             session.commit()
@@ -1017,6 +1129,8 @@ def replace_item(
             raise HTTPException(status_code=404, detail="Item not found")
         for field, value in item_in.dict().items():
             setattr(db_item, field, value)
+        part = get_or_create_part(db_item.part_number, db_item.description, session)
+        db_item.part_id = part.id
         try:
             session.add(db_item)
             session.commit()
@@ -1046,6 +1160,10 @@ def update_item(
         if "project_id" in update_data:
             asm = get_default_assembly(update_data.pop("project_id"), session)
             update_data["assembly_id"] = asm.id
+        new_part_number = update_data.get("part_number")
+        if new_part_number is not None:
+            part = get_or_create_part(new_part_number, update_data.get("description", db_item.description), session)
+            db_item.part_id = part.id
         for field, value in update_data.items():
             setattr(db_item, field, value)
         try:
@@ -1223,6 +1341,8 @@ async def import_bom(
             item = BOMItem(**rec)
             if asm:
                 item.assembly_id = asm.id
+            part = get_or_create_part(item.part_number, item.description, session)
+            item.part_id = part.id
             session.add(item)
             try:
                 session.commit()
@@ -1661,6 +1781,8 @@ def wf_save_bom(payload: BOMSave):
         for itm in payload.items:
             db_item = BOMItem.from_orm(itm)
             db_item.assembly_id = payload.assembly_id
+            part = get_or_create_part(db_item.part_number, db_item.description, session)
+            db_item.part_id = part.id
             session.add(db_item)
             try:
                 session.commit()

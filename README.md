@@ -137,7 +137,7 @@ curl http://localhost:8000/testresults?skip=0&limit=10
 ```
 
 ### BOMItem fields
-- **part_number**: unique identifier for the part (string, required)
+- **part_number**: unique identifier for the part (string, required; deduplicated via the Parts catalogue)
 - **description**: human-friendly description (string, required)
 - **quantity**: number of parts required (integer, min 1, default 1)
 - **reference**: optional reference designator or notes
