@@ -120,6 +120,9 @@ curl http://localhost:8000/inventory
 ```
 Inline edits are available under `/ui/inventory`.
 
+Each Part can have one-or-more "Test Macros" attached (fixtures, Python tests, 3-D models, etc.).
+Use `/parts/{id}/testmacros` to manage these links.
+
 ### Test results
 
 Log a new flying-probe test result:
