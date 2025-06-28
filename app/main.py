@@ -32,6 +32,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import csv
 import io
 import os
+import re
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
@@ -250,19 +251,75 @@ class PartUpdate(SQLModel):
 class TestMacro(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
-    part_id: int = Field(foreign_key="part.id")
+    glb_path: str | None = None
+    notes: str | None = None
 
 
 class Complex(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
-    part_id: int = Field(foreign_key="part.id")
+    eda_path: str | None = None
+    notes: str | None = None
 
 
 class PythonTest(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
-    part_id: int = Field(foreign_key="part.id")
+    file_path: str | None = None
+    notes: str | None = None
+
+
+class TestMacroCreate(SQLModel):
+    name: str
+    glb_path: str | None = None
+    notes: str | None = None
+
+
+class TestMacroRead(TestMacroCreate):
+    id: int
+    usage_count: int | None = None
+
+
+class TestMacroUpdate(SQLModel):
+    name: str | None = None
+    glb_path: str | None = None
+    notes: str | None = None
+
+
+class ComplexCreate(SQLModel):
+    name: str
+    eda_path: str | None = None
+    notes: str | None = None
+
+
+class ComplexRead(ComplexCreate):
+    id: int
+
+
+class ComplexUpdate(SQLModel):
+    name: str | None = None
+    eda_path: str | None = None
+    notes: str | None = None
+
+
+class PythonTestCreate(SQLModel):
+    name: str
+    file_path: str | None = None
+    notes: str | None = None
+
+
+class PythonTestRead(PythonTestCreate):
+    id: int
+
+
+class PythonTestUpdate(SQLModel):
+    name: str | None = None
+    file_path: str | None = None
+    notes: str | None = None
+
+
+class MacroLink(SQLModel):
+    test_macro_id: int
 
 
 class PartTestMap(SQLModel, table=True):
@@ -775,6 +832,19 @@ def create_part(part_in: PartCreate, current_user: User = Depends(edit_allowed))
         session.add(db_part)
         session.commit()
         session.refresh(db_part)
+        if re.match(r"(?i)^U\d+", db_part.number):
+            default = session.exec(select(TestMacro).where(TestMacro.name == "Continuity")).first()
+            if not default:
+                default = TestMacro(name="Continuity")
+                session.add(default)
+                session.commit()
+                session.refresh(default)
+            link = PartTestMap(part_id=db_part.id, test_macro_id=default.id)
+            session.add(link)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
         return PartRead(id=db_part.id, number=db_part.number, description=db_part.description, usage_count=0)
 
 
@@ -813,6 +883,217 @@ def delete_part(part_id: int) -> Response:
         if not db_part:
             raise HTTPException(status_code=404, detail="Part not found")
         session.delete(db_part)
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/testmacros", response_model=list[TestMacroRead])
+def list_testmacros(
+    search: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+) -> list[TestMacroRead]:
+    if limit > 200:
+        limit = 200
+    with Session(engine) as session:
+        stmt = select(TestMacro)
+        if search:
+            stmt = stmt.where(TestMacro.name.ilike(f"%{search}%"))
+        stmt = stmt.offset(skip).limit(limit)
+        macros = session.exec(stmt).all()
+        result: list[TestMacroRead] = []
+        for m in macros:
+            count = session.exec(
+                select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == m.id)
+            ).one()
+            result.append(
+                TestMacroRead(id=m.id, name=m.name, glb_path=m.glb_path, notes=m.notes, usage_count=count)
+            )
+        return result
+
+
+@app.post("/testmacros", response_model=TestMacroRead, status_code=status.HTTP_201_CREATED)
+def create_testmacro(macro: TestMacroCreate, current_user: User = Depends(edit_allowed)) -> TestMacroRead:
+    with Session(engine) as session:
+        db_macro = TestMacro.from_orm(macro)
+        session.add(db_macro)
+        session.commit()
+        session.refresh(db_macro)
+        return TestMacroRead(id=db_macro.id, name=db_macro.name, glb_path=db_macro.glb_path, notes=db_macro.notes, usage_count=0)
+
+
+@app.patch("/testmacros/{macro_id}", response_model=TestMacroRead)
+def update_testmacro(macro_id: int, macro: TestMacroUpdate, current_user: User = Depends(edit_allowed)) -> TestMacroRead:
+    with Session(engine) as session:
+        db_macro = session.get(TestMacro, macro_id)
+        if not db_macro:
+            raise HTTPException(status_code=404, detail="Macro not found")
+        for f, v in macro.model_dump(exclude_unset=True).items():
+            setattr(db_macro, f, v)
+        session.add(db_macro)
+        session.commit()
+        session.refresh(db_macro)
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == db_macro.id)
+        ).one()
+        return TestMacroRead(id=db_macro.id, name=db_macro.name, glb_path=db_macro.glb_path, notes=db_macro.notes, usage_count=count)
+
+
+@app.delete(
+    "/testmacros/{macro_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(admin_required)],
+)
+def delete_testmacro(macro_id: int) -> Response:
+    with Session(engine) as session:
+        db_macro = session.get(TestMacro, macro_id)
+        if not db_macro:
+            raise HTTPException(status_code=404, detail="Macro not found")
+        session.delete(db_macro)
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/parts/{part_id}/testmacros", response_model=list[TestMacroRead])
+def part_macros(part_id: int, current_user: User = Depends(get_current_user)) -> list[TestMacroRead]:
+    with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part:
+            raise HTTPException(status_code=404, detail="Part not found")
+        stmt = (
+            select(TestMacro)
+            .join(PartTestMap, TestMacro.id == PartTestMap.test_macro_id)
+            .where(PartTestMap.part_id == part_id)
+        )
+        macros = session.exec(stmt).all()
+        result: list[TestMacroRead] = []
+        for m in macros:
+            count = session.exec(
+                select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == m.id)
+            ).one()
+            result.append(
+                TestMacroRead(id=m.id, name=m.name, glb_path=m.glb_path, notes=m.notes, usage_count=count)
+            )
+        return result
+
+
+@app.post("/parts/{part_id}/testmacros", response_model=TestMacroRead, status_code=status.HTTP_201_CREATED)
+def add_part_macro(part_id: int, link: MacroLink, current_user: User = Depends(edit_allowed)) -> TestMacroRead:
+    with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part:
+            raise HTTPException(status_code=404, detail="Part not found")
+        macro = session.get(TestMacro, link.test_macro_id)
+        if not macro:
+            raise HTTPException(status_code=404, detail="Macro not found")
+        mapping = PartTestMap(part_id=part_id, test_macro_id=macro.id)
+        session.add(mapping)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == macro.id)
+        ).one()
+        return TestMacroRead(id=macro.id, name=macro.name, glb_path=macro.glb_path, notes=macro.notes, usage_count=count)
+
+
+@app.delete("/parts/{part_id}/testmacros/{macro_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def remove_part_macro(part_id: int, macro_id: int, current_user: User = Depends(edit_allowed)) -> Response:
+    with Session(engine) as session:
+        mapping = session.get(PartTestMap, {"part_id": part_id, "test_macro_id": macro_id})
+        if mapping:
+            session.delete(mapping)
+            session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/complexes", response_model=list[ComplexRead])
+def list_complexes(skip: int = 0, limit: int = 50, current_user: User = Depends(get_current_user)) -> list[ComplexRead]:
+    if limit > 200:
+        limit = 200
+    with Session(engine) as session:
+        stmt = select(Complex).offset(skip).limit(limit)
+        return session.exec(stmt).all()
+
+
+@app.post("/complexes", response_model=ComplexRead, status_code=status.HTTP_201_CREATED)
+def create_complex(obj: ComplexCreate, current_user: User = Depends(edit_allowed)) -> ComplexRead:
+    with Session(engine) as session:
+        db = Complex.from_orm(obj)
+        session.add(db)
+        session.commit()
+        session.refresh(db)
+        return db
+
+
+@app.patch("/complexes/{cid}", response_model=ComplexRead)
+def update_complex(cid: int, obj: ComplexUpdate, current_user: User = Depends(edit_allowed)) -> ComplexRead:
+    with Session(engine) as session:
+        db = session.get(Complex, cid)
+        if not db:
+            raise HTTPException(status_code=404, detail="Complex not found")
+        for f, v in obj.model_dump(exclude_unset=True).items():
+            setattr(db, f, v)
+        session.add(db)
+        session.commit()
+        session.refresh(db)
+        return db
+
+
+@app.delete("/complexes/{cid}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_complex(cid: int, current_user: User = Depends(admin_required)) -> Response:
+    with Session(engine) as session:
+        db = session.get(Complex, cid)
+        if not db:
+            raise HTTPException(status_code=404, detail="Complex not found")
+        session.delete(db)
+        session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/pythontests", response_model=list[PythonTestRead])
+def list_pythontests(skip: int = 0, limit: int = 50, current_user: User = Depends(get_current_user)) -> list[PythonTestRead]:
+    if limit > 200:
+        limit = 200
+    with Session(engine) as session:
+        stmt = select(PythonTest).offset(skip).limit(limit)
+        return session.exec(stmt).all()
+
+
+@app.post("/pythontests", response_model=PythonTestRead, status_code=status.HTTP_201_CREATED)
+def create_pythontest(obj: PythonTestCreate, current_user: User = Depends(edit_allowed)) -> PythonTestRead:
+    with Session(engine) as session:
+        db = PythonTest.from_orm(obj)
+        session.add(db)
+        session.commit()
+        session.refresh(db)
+        return db
+
+
+@app.patch("/pythontests/{pid}", response_model=PythonTestRead)
+def update_pythontest(pid: int, obj: PythonTestUpdate, current_user: User = Depends(edit_allowed)) -> PythonTestRead:
+    with Session(engine) as session:
+        db = session.get(PythonTest, pid)
+        if not db:
+            raise HTTPException(status_code=404, detail="PythonTest not found")
+        for f, v in obj.model_dump(exclude_unset=True).items():
+            setattr(db, f, v)
+        session.add(db)
+        session.commit()
+        session.refresh(db)
+        return db
+
+
+@app.delete("/pythontests/{pid}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def delete_pythontest(pid: int, current_user: User = Depends(admin_required)) -> Response:
+    with Session(engine) as session:
+        db = session.get(PythonTest, pid)
+        if not db:
+            raise HTTPException(status_code=404, detail="PythonTest not found")
+        session.delete(db)
         session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -1579,6 +1860,11 @@ def ui_inventory(request: Request):
     return templates.TemplateResponse(
         "inventory.html", {"request": request, "title": "Inventory", "items": items}
     )
+
+
+@ui_router.get("/testassets/", response_class=HTMLResponse)
+def ui_testassets(request: Request):
+    return templates.TemplateResponse("testassets.html", {"request": request, "title": "Test Assets"})
 
 
 @ui_router.get("/users/", response_class=HTMLResponse)
