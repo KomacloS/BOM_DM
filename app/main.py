@@ -33,6 +33,7 @@ import csv
 import io
 import os
 import re
+import hashlib
 from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
@@ -42,6 +43,9 @@ from .config import (
     ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     MAX_DATASHEET_MB,
+    MAX_GLB_MB,
+    MAX_EDA_MB,
+    MAX_PY_MB,
     BOM_HOURLY_USD,
     BOM_DEFAULT_CURRENCY,
     DATABASE_URL,
@@ -548,6 +552,58 @@ def nightly_backup(dest: str = "backups") -> None:
         f.write(excel_data)
 
 
+def save_blob(data: bytes, ext: str) -> str:
+    """Store bytes on disk and record/update Blob row."""
+    sha = hashlib.sha256(data).hexdigest()
+    prefix = sha[:2]
+    os.makedirs(os.path.join("assets", prefix), exist_ok=True)
+    filename = f"{sha}.{ext.lstrip('.')}"
+    path = os.path.join("assets", prefix, filename)
+    if not os.path.exists(path):
+        with open(path, "wb") as f:
+            f.write(data)
+    with Session(engine) as session:
+        blob = session.get(Blob, sha)
+        if not blob:
+            blob = Blob(sha256=sha, size=len(data))
+            session.add(blob)
+        else:
+            blob.size = len(data)
+            session.add(blob)
+        session.commit()
+    return f"assets/{prefix}/{filename}"
+
+
+def _count_refs(sha: str) -> int:
+    with Session(engine) as session:
+        t = session.exec(
+            select(sqlalchemy.func.count()).select_from(TestMacro).where(TestMacro.glb_path.like(f"%{sha}%"))
+        ).one()
+        c = session.exec(
+            select(sqlalchemy.func.count()).select_from(Complex).where(Complex.eda_path.like(f"%{sha}%"))
+        ).one()
+        p = session.exec(
+            select(sqlalchemy.func.count()).select_from(PythonTest).where(PythonTest.file_path.like(f"%{sha}%"))
+        ).one()
+    return t + c + p
+
+
+def cleanup_blob(path: str) -> None:
+    if not path:
+        return
+    m = re.search(r"([0-9a-f]{64})", path)
+    if not m:
+        return
+    sha = m.group(1)
+    if _count_refs(sha) == 0:
+        p = Path(path)
+        if p.exists():
+            try:
+                p.unlink()
+            except Exception:
+                pass
+
+
 def migrate_db() -> None:
     """Apply simple in-place migrations for older database schemas."""
     SQLModel.metadata.create_all(engine)
@@ -611,6 +667,7 @@ def init_db() -> None:
             session.commit()
 
 os.makedirs("datasheets", exist_ok=True)
+os.makedirs("assets", exist_ok=True)
 
 app = FastAPI()
 app.mount("/datasheets", StaticFiles(directory="datasheets"), name="datasheets")
@@ -940,6 +997,32 @@ def update_testmacro(macro_id: int, macro: TestMacroUpdate, current_user: User =
         return TestMacroRead(id=db_macro.id, name=db_macro.name, glb_path=db_macro.glb_path, notes=db_macro.notes, usage_count=count)
 
 
+@app.post("/testmacros/{macro_id}/upload_glb", response_model=TestMacroRead)
+async def upload_glb(
+    macro_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(edit_allowed),
+) -> TestMacroRead:
+    contents = await file.read()
+    if not file.filename.lower().endswith(".glb"):
+        raise HTTPException(status_code=400, detail="Only .glb files allowed")
+    if len(contents) > MAX_GLB_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"File exceeds {MAX_GLB_MB} MB")
+    path = save_blob(contents, "glb")
+    with Session(engine) as session:
+        db_macro = session.get(TestMacro, macro_id)
+        if not db_macro:
+            raise HTTPException(status_code=404, detail="Macro not found")
+        db_macro.glb_path = path
+        session.add(db_macro)
+        session.commit()
+        session.refresh(db_macro)
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == db_macro.id)
+        ).one()
+        return TestMacroRead(id=db_macro.id, name=db_macro.name, glb_path=db_macro.glb_path, notes=db_macro.notes, usage_count=count)
+
+
 @app.delete(
     "/testmacros/{macro_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -951,8 +1034,10 @@ def delete_testmacro(macro_id: int) -> Response:
         db_macro = session.get(TestMacro, macro_id)
         if not db_macro:
             raise HTTPException(status_code=404, detail="Macro not found")
+        path = db_macro.glb_path
         session.delete(db_macro)
         session.commit()
+    cleanup_blob(path or "")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1043,14 +1128,39 @@ def update_complex(cid: int, obj: ComplexUpdate, current_user: User = Depends(ed
         return db
 
 
+@app.post("/complexes/{cid}/upload_eda", response_model=ComplexRead)
+async def upload_eda(
+    cid: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(edit_allowed),
+) -> ComplexRead:
+    contents = await file.read()
+    if not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Only .zip files allowed")
+    if len(contents) > MAX_EDA_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"File exceeds {MAX_EDA_MB} MB")
+    path = save_blob(contents, "zip")
+    with Session(engine) as session:
+        db = session.get(Complex, cid)
+        if not db:
+            raise HTTPException(status_code=404, detail="Complex not found")
+        db.eda_path = path
+        session.add(db)
+        session.commit()
+        session.refresh(db)
+        return db
+
+
 @app.delete("/complexes/{cid}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def delete_complex(cid: int, current_user: User = Depends(admin_required)) -> Response:
     with Session(engine) as session:
         db = session.get(Complex, cid)
         if not db:
             raise HTTPException(status_code=404, detail="Complex not found")
+        path = db.eda_path
         session.delete(db)
         session.commit()
+    cleanup_blob(path or "")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1087,14 +1197,39 @@ def update_pythontest(pid: int, obj: PythonTestUpdate, current_user: User = Depe
         return db
 
 
+@app.post("/pythontests/{pid}/upload_file", response_model=PythonTestRead)
+async def upload_pythontest_file(
+    pid: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(edit_allowed),
+) -> PythonTestRead:
+    contents = await file.read()
+    if not file.filename.lower().endswith(".py"):
+        raise HTTPException(status_code=400, detail="Only .py files allowed")
+    if len(contents) > MAX_PY_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"File exceeds {MAX_PY_MB} MB")
+    path = save_blob(contents, "py")
+    with Session(engine) as session:
+        db = session.get(PythonTest, pid)
+        if not db:
+            raise HTTPException(status_code=404, detail="PythonTest not found")
+        db.file_path = path
+        session.add(db)
+        session.commit()
+        session.refresh(db)
+        return db
+
+
 @app.delete("/pythontests/{pid}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 def delete_pythontest(pid: int, current_user: User = Depends(admin_required)) -> Response:
     with Session(engine) as session:
         db = session.get(PythonTest, pid)
         if not db:
             raise HTTPException(status_code=404, detail="PythonTest not found")
+        path = db.file_path
         session.delete(db)
         session.commit()
+    cleanup_blob(path or "")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -1423,6 +1558,16 @@ def replace_item(
             )
         session.refresh(db_item)
         return db_item
+
+
+@app.get("/assets/{sha}/{fname}")
+def download_asset(sha: str, fname: str):
+    path = Path("assets") / sha[:2] / fname
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    media_type = "application/octet-stream"
+    headers = {"Content-Disposition": f"attachment; filename={fname}"}
+    return StreamingResponse(open(path, "rb"), headers=headers, media_type=media_type)
 
 
 @app.patch("/bom/items/{item_id}", response_model=BOMItemRead)

@@ -248,6 +248,16 @@ The datasheet upload size limit defaults to 10 MB. Set `BOM_MAX_DS_MB` to
 override this cap.
 `FX_CACHE_HOURS` controls how long exchange rates are cached (default 24).
 
+### Test Assets
+
+Upload       Endpoint                       Accepted/limit
+-----------  -----------------------------  ----------------------
+3-D Model    POST /testmacros/{id}/upload_glb    .glb ≤ 10 MB
+EDA Bundle   POST /complexes/{id}/upload_eda     .zip ≤ 20 MB
+Python Test  POST /pythontests/{id}/upload_file  .py ≤ 1 MB
+
+Download files via `/assets/{sha}/{name}`.
+
 Workflow inline editing with the clip icon is shown in the documentation.
 
 
