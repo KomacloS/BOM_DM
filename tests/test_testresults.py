@@ -34,22 +34,28 @@ def auth_header(client):
 
 
 def test_create_test_result(client, auth_header):
-    payload = {"serial_number": "SN1", "result": True}
+    cust = client.post('/customers', json={'name':'C'}).json()
+    proj = client.post('/projects', json={'customer_id':cust['id'], 'name':'P'}).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    payload = {"serial_number": "SN1", "result": True, "assembly_id": aid}
     resp = client.post("/testresults", json=payload, headers=auth_header)
     assert resp.status_code == 201
     data = resp.json()
     assert data["test_id"] == 1
     assert data["serial_number"] == "SN1"
-    assert data["assembly_id"] == 1
+    assert data["assembly_id"] == aid
     assert data["result"] is True
     assert data["failure_details"] is None
 
 
 def test_list_and_get_results(client, auth_header):
-    r1 = client.post("/testresults", json={"serial_number": "SN2", "result": True}, headers=auth_header)
+    cust = client.post('/customers', json={'name':'C'}).json()
+    proj = client.post('/projects', json={'customer_id':cust['id'], 'name':'P'}).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    r1 = client.post("/testresults", json={"serial_number": "SN2", "result": True, "assembly_id": aid}, headers=auth_header)
     r2 = client.post(
         "/testresults",
-        json={"serial_number": "SN3", "result": False, "failure_details": "bad"},
+        json={"serial_number": "SN3", "result": False, "failure_details": "bad", "assembly_id": aid},
         headers=auth_header,
     )
     assert r1.status_code == 201

@@ -19,8 +19,9 @@ def auth_header(client):
 def test_project_quote_endpoint(client, auth_header):
     cust = client.post('/customers', json={'name':'C'}).json()
     proj = client.post('/projects', json={'customer_id':cust['id'], 'name':'P'}).json()
-    client.post('/bom/items', json={'part_number':'A','description':'d','quantity':2,'unit_cost':0.5,'project_id':proj['id']}, headers=auth_header)
-    client.post('/bom/items', json={'part_number':'B','description':'d','quantity':3,'unit_cost':1,'project_id':proj['id']}, headers=auth_header)
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    client.post('/bom/items', json={'part_number':'A','description':'d','quantity':2,'unit_cost':0.5,'assembly_id':aid}, headers=auth_header)
+    client.post('/bom/items', json={'part_number':'B','description':'d','quantity':3,'unit_cost':1,'assembly_id':aid}, headers=auth_header)
     r = client.get(f"/projects/{proj['id']}/quote", headers=auth_header)
     assert r.status_code == 200
     d = r.json()

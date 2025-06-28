@@ -28,14 +28,15 @@ def auth_header(client):
 def test_get_project_bom(client, auth_header):
     cust = client.post("/customers", json={"name": "C"}).json()
     proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
     item1 = client.post(
         "/bom/items",
-        json={"part_number": "P1", "description": "D1", "quantity": 1, "project_id": proj["id"]},
+        json={"part_number": "P1", "description": "D1", "quantity": 1, "assembly_id": aid},
         headers=auth_header,
     ).json()
     item2 = client.post(
         "/bom/items",
-        json={"part_number": "P2", "description": "D2", "quantity": 2, "project_id": proj["id"]},
+        json={"part_number": "P2", "description": "D2", "quantity": 2, "assembly_id": aid},
         headers=auth_header,
     ).json()
     unauthorized = client.get(f"/projects/{proj['id']}/bom")
