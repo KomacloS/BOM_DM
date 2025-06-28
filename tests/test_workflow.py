@@ -39,8 +39,9 @@ def test_customer_project_and_save(client, auth_header):
     plist = client.post("/ui/workflow/projects", json={"customer_id": cid, "name": "Proj"})
     assert plist.status_code == 201
     pid = plist.json()["id"]
+    aid = client.get(f"/projects/{pid}/assemblies").json()[0]['id']
     items = [{"part_number": "P1", "description": "A", "quantity": 1}]
-    save = client.post("/ui/workflow/save", json={"project_id": pid, "items": items})
+    save = client.post("/ui/workflow/save", json={"assembly_id": aid, "items": items})
     assert save.status_code == 200
     all_items = client.get("/bom/items", headers=auth_header).json()
     assert any(i["part_number"] == "P1" for i in all_items)

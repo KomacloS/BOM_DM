@@ -30,9 +30,10 @@ def auth_header(client):
 def test_upload_datasheet(client, auth_header, tmp_path):
     cust = client.post("/customers", json={"name": "C"}).json()
     proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
     item = client.post(
         "/bom/items",
-        json={"part_number": "P1", "description": "D", "quantity": 1, "project_id": proj["id"]},
+        json={"part_number": "P1", "description": "D", "quantity": 1, "assembly_id": aid},
         headers=auth_header,
     ).json()
     pdf_bytes = b"%PDF-1.3\n%%EOF"
@@ -50,9 +51,10 @@ def test_upload_datasheet(client, auth_header, tmp_path):
 def test_replace_datasheet(client, auth_header):
     cust = client.post("/customers", json={"name": "C2"}).json()
     proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
     item = client.post(
         "/bom/items",
-        json={"part_number": "P2", "description": "D", "quantity": 1, "project_id": proj["id"]},
+        json={"part_number": "P2", "description": "D", "quantity": 1, "assembly_id": aid},
         headers=auth_header,
     ).json()
     pdf1 = b"%PDF-1.3\n%%EOF"

@@ -25,10 +25,11 @@ def auth_header(client):
 def test_project_csv(client, auth_header):
     cust = client.post("/customers", json={"name": "C"}).json()
     proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
     for pn in ("P1", "P2"):
         client.post(
             "/bom/items",
-            json={"part_number": pn, "description": "d", "quantity": 1, "project_id": proj["id"]},
+            json={"part_number": pn, "description": "d", "quantity": 1, "assembly_id": aid},
             headers=auth_header,
         )
     r = client.get(f"/projects/{proj['id']}/export.csv")

@@ -37,8 +37,9 @@ def test_edit_quantity_after_save(client):
         "/ui/workflow/upload", files={"file": ("bom.csv", csv, "text/csv")}
     )
     items = upload.json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
     save = client.post(
-        "/ui/workflow/save", json={"project_id": proj["id"], "items": items}
+        "/ui/workflow/save", json={"assembly_id": aid, "items": items}
     )
     item = save.json()[0]
     token = get_token(client)

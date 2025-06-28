@@ -21,7 +21,8 @@ def test_po_pdf_updates_inventory(client, auth_header):
     cust = client.post('/customers', json={'name':'C'}).json()
     proj = client.post('/projects', json={'customer_id':cust['id'], 'name':'P'}).json()
     client.post('/inventory', json={'mpn':'X', 'on_hand':5, 'on_order':0}, headers=auth_header)
-    client.post('/bom/items', json={'part_number':'A','description':'d','quantity':2,'mpn':'X','unit_cost':1,'project_id':proj['id']}, headers=auth_header)
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    client.post('/bom/items', json={'part_number':'A','description':'d','quantity':2,'mpn':'X','unit_cost':1,'assembly_id':aid}, headers=auth_header)
     r = client.post(f"/projects/{proj['id']}/po.pdf", headers=auth_header)
     assert r.status_code == 200
     assert r.content.startswith(b'%PDF')

@@ -18,7 +18,13 @@ from fastapi.staticfiles import StaticFiles
 from typing import Optional
 import jwt
 from sqlmodel import SQLModel, Field, Session, select
-from sqlalchemy import text, UniqueConstraint, Column, ForeignKey, Integer
+from sqlalchemy import (
+    text,
+    UniqueConstraint,
+    Column,
+    ForeignKey,
+    Integer,
+)
 import sqlalchemy
 from sqlalchemy.exc import IntegrityError
 from datetime import datetime, timedelta
@@ -47,6 +53,10 @@ from .config import (
 from .pdf_utils import extract_bom_text, parse_bom_lines
 from .quote_utils import calculate_quote
 from .trace_utils import component_trace, board_trace
+
+if SQLModel.metadata.tables:
+    SQLModel.metadata.clear()
+
 from .vendor import octopart, fixer
 from . import fx
 from .fx import FXRate
@@ -91,9 +101,13 @@ class BOMItemBase(SQLModel):
     dnp: bool | None = Field(default=False)
     currency: str = Field(default=BOM_DEFAULT_CURRENCY, max_length=3)
 
-    project_id: int | None = Field(
+    assembly_id: int | None = Field(
         default=None,
-        sa_column=Column(Integer, ForeignKey("project.id", ondelete="CASCADE")),
+        sa_column=Column(Integer, ForeignKey("assembly.id", ondelete="CASCADE")),
+    )
+    part_id: int | None = Field(
+        default=None,
+        sa_column=Column(Integer, ForeignKey("part.id", ondelete="SET NULL")),
     )
 
 
@@ -127,7 +141,8 @@ class BOMItemUpdate(SQLModel):
     quantity: int | None = Field(default=None, ge=1)
     reference: str | None = None
     datasheet_url: str | None = None
-    project_id: int | None = None
+    assembly_id: int | None = None
+    part_id: int | None = None
     manufacturer: str | None = None
     mpn: str | None = None
     footprint: str | None = None
@@ -196,6 +211,67 @@ class ProjectUpdate(SQLModel):
     code: str | None = None
     notes: str | None = None
     description: str | None = None
+
+
+class Assembly(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    project_id: int = Field(
+        sa_column=Column(Integer, ForeignKey("project.id", ondelete="CASCADE"))
+    )
+    rev: str = Field(default="A", max_length=16)
+    vault_sha: str | None = Field(
+        default=None, sa_column=Column(sqlalchemy.String(64), ForeignKey("blob.sha256"))
+    )
+    notes: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Part(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    number: str = Field(index=True, unique=True)
+    description: str | None = None
+
+
+class TestMacro(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    part_id: int = Field(foreign_key="part.id")
+
+
+class Complex(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    part_id: int = Field(foreign_key="part.id")
+
+
+class PythonTest(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    part_id: int = Field(foreign_key="part.id")
+
+
+class PartTestMap(SQLModel, table=True):
+    part_id: int = Field(foreign_key="part.id", primary_key=True)
+    test_macro_id: int = Field(foreign_key="testmacro.id", primary_key=True)
+
+
+class Blob(SQLModel, table=True):
+    sha256: str = Field(sa_column=Column(sqlalchemy.String(64), primary_key=True))
+    size: int | None = None
+
+
+class Quote(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    assembly_id: int = Field(foreign_key="assembly.id")
+    total_cost: float | None = None
+
+
+class AuditEvent(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    table_name: str
+    row_id: int
+    diff: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class User(SQLModel, table=True):
@@ -305,6 +381,16 @@ def get_all_testresults() -> list[TestResult]:
         return session.exec(select(TestResult)).all()
 
 
+def get_default_assembly(project_id: int, session: Session) -> Assembly:
+    asm = session.exec(select(Assembly).where(Assembly.project_id == project_id)).first()
+    if not asm:
+        asm = Assembly(project_id=project_id, rev="A")
+        session.add(asm)
+        session.commit()
+        session.refresh(asm)
+    return asm
+
+
 def csv_generator(items: list[BOMItem], delimiter: str = ","):
     output = io.StringIO()
     writer = csv.writer(output, delimiter=delimiter)
@@ -377,16 +463,12 @@ def migrate_db() -> None:
     inspector = sqlalchemy.inspect(engine)
     if "bomitem" in inspector.get_table_names():
         columns = {c["name"] for c in inspector.get_columns("bomitem")}
-        if "project_id" not in columns:
+        if "assembly_id" not in columns:
             with engine.begin() as conn:
-                if engine.dialect.name == "sqlite":
-                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN project_id INTEGER"))
-                else:
-                    conn.execute(
-                        text(
-                            "ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES project(id)"
-                        )
-                    )
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN assembly_id INTEGER"))
+        if "part_id" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE bomitem ADD COLUMN part_id INTEGER"))
         if "datasheet_url" not in columns:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE bomitem ADD COLUMN datasheet_url TEXT"))
@@ -412,21 +494,7 @@ def migrate_db() -> None:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE bomitem ADD COLUMN currency VARCHAR(3) DEFAULT 'USD'"))
         with engine.begin() as conn:
-            if engine.dialect.name == "postgresql":
-                conn.execute(
-                    text(
-                        "ALTER TABLE bomitem DROP CONSTRAINT IF EXISTS bomitem_project_id_fkey"
-                    )
-                )
-                conn.execute(
-                    text(
-                        "ALTER TABLE bomitem ADD CONSTRAINT bomitem_project_id_fkey FOREIGN KEY(project_id) REFERENCES project(id) ON DELETE CASCADE"
-                    )
-                )
-            elif engine.dialect.name == "sqlite":
-                ver = conn.exec_driver_sql("select sqlite_version()").scalar()
-                if tuple(map(int, ver.split("."))) >= (3, 35):
-                    pass
+            pass
 
 
 def init_db() -> None:
@@ -639,6 +707,12 @@ def customer_projects(customer_id: int) -> list[ProjectRead]:
         return session.exec(select(Project).where(Project.customer_id == customer_id)).all()
 
 
+@app.get("/projects/{project_id}/assemblies", response_model=list[Assembly])
+def list_project_assemblies(project_id: int) -> list[Assembly]:
+    with Session(engine) as session:
+        return session.exec(select(Assembly).where(Assembly.project_id == project_id)).all()
+
+
 @app.get("/projects", response_model=list[ProjectRead])
 def list_projects(
     customer_id: int | None = None,
@@ -665,6 +739,10 @@ def create_project(project: ProjectCreate) -> ProjectRead:
         except IntegrityError:
             session.rollback()
             raise HTTPException(status_code=409, detail="Project exists")
+        session.refresh(db_proj)
+        asm = Assembly(project_id=db_proj.id, rev="A")
+        session.add(asm)
+        session.commit()
         session.refresh(db_proj)
         return db_proj
 
@@ -706,25 +784,27 @@ def project_bom(
 
     if limit > 200:
         limit = 200
-    stmt = select(BOMItem).where(BOMItem.project_id == project_id)
-    if search:
-        pattern = f"%{search}%"
-        stmt = stmt.where(
-            (BOMItem.part_number.ilike(pattern))
-            | (BOMItem.description.ilike(pattern))
-        )
-    stmt = stmt.offset(skip).limit(limit)
     with Session(engine) as session:
+        asm = get_default_assembly(project_id, session)
+        stmt = select(BOMItem).where(BOMItem.assembly_id == asm.id)
+        if search:
+            pattern = f"%{search}%"
+            stmt = stmt.where(
+                (BOMItem.part_number.ilike(pattern))
+                | (BOMItem.description.ilike(pattern))
+            )
+        stmt = stmt.offset(skip).limit(limit)
         items = session.exec(stmt).all()
-    return items
+        return items
 
 
 @app.get("/projects/{project_id}/export.csv")
 def project_export_csv(project_id: int, comma: bool = True):
     """Export a project's BOM as CSV."""
     with Session(engine) as session:
+        asm = get_default_assembly(project_id, session)
         items = session.exec(
-            select(BOMItem).where(BOMItem.project_id == project_id)
+            select(BOMItem).where(BOMItem.assembly_id == asm.id)
         ).all()
     delim = "," if comma else ";"
     headers = {"Content-Disposition": "attachment; filename=export.csv"}
@@ -744,9 +824,10 @@ def project_cost(
     """Return estimated total cost for a project's BOM."""
     cur = (currency or BOM_DEFAULT_CURRENCY).upper()
     with Session(engine) as session:
+        asm = get_default_assembly(project_id, session)
         items = session.exec(
             select(BOMItem).where(
-                BOMItem.project_id == project_id, BOMItem.dnp == False
+                BOMItem.assembly_id == asm.id, BOMItem.dnp == False
             )
         ).all()
     rate_to = fx.get(cur)
@@ -774,9 +855,10 @@ def project_quote(
     """Return cost/time estimate for a single project's BOM."""
     cur = (currency or BOM_DEFAULT_CURRENCY).upper()
     with Session(engine) as session:
+        asm = get_default_assembly(project_id, session)
         items = session.exec(
             select(BOMItem).where(
-                BOMItem.project_id == project_id, BOMItem.dnp == False
+                BOMItem.assembly_id == asm.id, BOMItem.dnp == False
             )
         ).all()
     data = calculate_quote(items)
@@ -802,9 +884,10 @@ def project_po_pdf(project_id: int, current_user: User = Depends(edit_allowed)):
         if not proj:
             raise HTTPException(status_code=404, detail="Project not found")
         cust = session.get(Customer, proj.customer_id)
+        asm = get_default_assembly(project_id, session)
         items = session.exec(
             select(BOMItem).where(
-                BOMItem.project_id == project_id, BOMItem.dnp == False
+                BOMItem.assembly_id == asm.id, BOMItem.dnp == False
             )
         ).all()
         groups: dict[tuple[str, str, str], dict[str, float]] = {}
@@ -893,6 +976,9 @@ def create_item(item: BOMItemCreate, current_user: User = Depends(edit_allowed))
 
     db_item = BOMItem.from_orm(item)
     with Session(engine) as session:
+        if db_item.assembly_id is None and hasattr(item, "project_id") and item.project_id is not None:
+            asm = get_default_assembly(item.project_id, session)
+            db_item.assembly_id = asm.id
         session.add(db_item)
         try:
             session.commit()
@@ -957,6 +1043,9 @@ def update_item(
         if not db_item:
             raise HTTPException(status_code=404, detail="Item not found")
         update_data = item_in.dict(exclude_unset=True)
+        if "project_id" in update_data:
+            asm = get_default_assembly(update_data.pop("project_id"), session)
+            update_data["assembly_id"] = asm.id
         for field, value in update_data.items():
             setattr(db_item, field, value)
         try:
@@ -1046,7 +1135,7 @@ def fetch_price(
 @app.post("/bom/import", response_model=list[BOMItemRead])
 async def import_bom(
     file: UploadFile = File(...),
-    project_id: int | None = None,
+    assembly_id: int | None = None,
     current_user: User = Depends(edit_allowed),
 ) -> list[BOMItemRead]:
     """Import BOM items from an uploaded PDF or Excel file."""
@@ -1125,11 +1214,15 @@ async def import_bom(
 
     inserted: list[BOMItem] = []
     with Session(engine) as session:
+        asm = None
+        if assembly_id is not None:
+            asm = session.get(Assembly, assembly_id)
         for rec in records:
             if not rec.get("part_number") or not rec.get("description"):
                 continue
             item = BOMItem(**rec)
-            item.project_id = project_id
+            if asm:
+                item.assembly_id = asm.id
             session.add(item)
             try:
                 session.commit()
@@ -1476,6 +1569,10 @@ def wf_create_project(project: ProjectCreate):
         session.add(db_proj)
         session.commit()
         session.refresh(db_proj)
+        asm = Assembly(project_id=db_proj.id, rev="A")
+        session.add(asm)
+        session.commit()
+        session.refresh(db_proj)
         return db_proj
 
 
@@ -1505,7 +1602,7 @@ def wf_delete_project(project_id: int):
 
 
 class BOMSave(SQLModel):
-    project_id: int
+    assembly_id: int
     items: list[BOMItemCreate]
 
 
@@ -1563,7 +1660,7 @@ def wf_save_bom(payload: BOMSave):
     with Session(engine) as session:
         for itm in payload.items:
             db_item = BOMItem.from_orm(itm)
-            db_item.project_id = payload.project_id
+            db_item.assembly_id = payload.assembly_id
             session.add(db_item)
             try:
                 session.commit()

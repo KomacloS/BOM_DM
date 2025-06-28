@@ -42,14 +42,15 @@ def test_link_items_to_project(client, auth_header):
     page = doc.new_page()
     page.insert_text((72, 72), "PNX    Part    1    R1")
     pdf_bytes = doc.tobytes()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
     resp = client.post(
-        f"/bom/import?project_id={proj['id']}",
+        f"/bom/import?assembly_id={aid}",
         files={"file": ("sample.pdf", pdf_bytes, "application/pdf")},
         headers=auth_header,
     )
     assert resp.status_code == 200
     items = client.get("/bom/items", headers=auth_header).json()
-    assert items[0]["project_id"] == proj["id"]
+    assert items[0]["assembly_id"] == aid
     assert len(items) > 0
     client.delete(f"/customers/{cust['id']}")
     assert client.get("/bom/items", headers=auth_header).json() == []
