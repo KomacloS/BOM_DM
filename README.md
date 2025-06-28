@@ -258,6 +258,12 @@ Python Test  POST /pythontests/{id}/upload_file  .py ≤ 1 MB
 
 Download files via `/assets/{sha}/{name}`.
 
+
+Example:
+```bash
+curl http://localhost:8000/ui/testassets/table
+```
+
 Workflow inline editing with the clip icon is shown in the documentation.
 
 

@@ -999,10 +999,11 @@ def update_testmacro(macro_id: int, macro: TestMacroUpdate, current_user: User =
 
 @app.post("/testmacros/{macro_id}/upload_glb", response_model=TestMacroRead)
 async def upload_glb(
+    request: Request,
     macro_id: int,
     file: UploadFile = File(...),
     current_user: User = Depends(edit_allowed),
-) -> TestMacroRead:
+) -> Response:
     contents = await file.read()
     if not file.filename.lower().endswith(".glb"):
         raise HTTPException(status_code=400, detail="Only .glb files allowed")
@@ -1020,7 +1021,33 @@ async def upload_glb(
         count = session.exec(
             select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == db_macro.id)
         ).one()
-        return TestMacroRead(id=db_macro.id, name=db_macro.name, glb_path=db_macro.glb_path, notes=db_macro.notes, usage_count=count)
+        macro_read = TestMacroRead(
+            id=db_macro.id,
+            name=db_macro.name,
+            glb_path=db_macro.glb_path,
+            notes=db_macro.notes,
+            usage_count=count,
+        )
+        if request.headers.get("HX-Request"):
+            parts = []
+            stmt = (
+                select(Part)
+                .join(PartTestMap, Part.id == PartTestMap.part_id)
+                .where(PartTestMap.test_macro_id == db_macro.id)
+            )
+            items = session.exec(stmt).all()
+            for p in items:
+                pc = session.exec(
+                    select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+                ).one()
+                parts.append(
+                    PartRead(id=p.id, number=p.number, description=p.description, usage_count=pc)
+                )
+            return templates.TemplateResponse(
+                "testasset_detail.html",
+                {"request": request, "macro": macro_read, "parts": parts},
+            )
+        return macro_read
 
 
 @app.delete(
@@ -1093,6 +1120,28 @@ def remove_part_macro(part_id: int, macro_id: int, current_user: User = Depends(
             session.delete(mapping)
             session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.get("/testmacros/{macro_id}/parts", response_model=list[PartRead])
+def macro_parts(macro_id: int, current_user: User = Depends(get_current_user)) -> list[PartRead]:
+    """Return Parts linked to a TestMacro."""
+    with Session(engine) as session:
+        macro = session.get(TestMacro, macro_id)
+        if not macro:
+            raise HTTPException(status_code=404, detail="Macro not found")
+        stmt = (
+            select(Part)
+            .join(PartTestMap, Part.id == PartTestMap.part_id)
+            .where(PartTestMap.test_macro_id == macro_id)
+        )
+        parts = session.exec(stmt).all()
+        result: list[PartRead] = []
+        for p in parts:
+            count = session.exec(
+                select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+            ).one()
+            result.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=count))
+        return result
 
 
 @app.get("/complexes", response_model=list[ComplexRead])
@@ -2010,6 +2059,54 @@ def ui_inventory(request: Request):
 @ui_router.get("/testassets/", response_class=HTMLResponse)
 def ui_testassets(request: Request):
     return templates.TemplateResponse("testassets.html", {"request": request, "title": "Test Assets"})
+
+
+@ui_router.get("/testassets/table", response_class=HTMLResponse)
+def ui_testassets_table(request: Request):
+    with Session(engine) as session:
+        macros = session.exec(select(TestMacro)).all()
+        rows: list[TestMacroRead] = []
+        for m in macros:
+            count = session.exec(
+                select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == m.id)
+            ).one()
+            rows.append(
+                TestMacroRead(id=m.id, name=m.name, glb_path=m.glb_path, notes=m.notes, usage_count=count)
+            )
+    return templates.TemplateResponse("testassets_table.html", {"request": request, "macros": rows})
+
+
+@ui_router.get("/testassets/detail/{macro_id}", response_class=HTMLResponse)
+def ui_testassets_detail(macro_id: int, request: Request):
+    with Session(engine) as session:
+        macro = session.get(TestMacro, macro_id)
+        if not macro:
+            raise HTTPException(status_code=404, detail="Macro not found")
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == macro.id)
+        ).one()
+        macro_read = TestMacroRead(
+            id=macro.id,
+            name=macro.name,
+            glb_path=macro.glb_path,
+            notes=macro.notes,
+            usage_count=count,
+        )
+        parts = []
+        stmt = (
+            select(Part)
+            .join(PartTestMap, Part.id == PartTestMap.part_id)
+            .where(PartTestMap.test_macro_id == macro_id)
+        )
+        for p in session.exec(stmt).all():
+            pc = session.exec(
+                select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+            ).one()
+            parts.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=pc))
+    return templates.TemplateResponse(
+        "testasset_detail.html",
+        {"request": request, "macro": macro_read, "parts": parts},
+    )
 
 
 @ui_router.get("/users/", response_class=HTMLResponse)

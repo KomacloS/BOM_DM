@@ -1,5 +1,6 @@
 {% extends 'base.html' %}
 {% block content %}
 <h1 class="text-2xl mb-4">Test Assets</h1>
-<p>Coming soon.</p>
+<table class="min-w-full" hx-get="/ui/testassets/table" hx-trigger="load" hx-target="this"></table>
+<div id="drawer"></div>
 {% endblock %}
