@@ -162,11 +162,19 @@ and the database connection. The endpoint returns:
 
 ### Authentication
 
-Obtain a token using the default admin account (created on first startup):
+Obtain a token using one of the default accounts (created on startup):
 
 ```bash
 curl -X POST http://localhost:8000/auth/token \
-     -d "username=admin&password=change_me"
+     -d "username=admin&password=123456789"
+
+Default logins:
+
+| username | password | role   |
+|----------|----------|-------|
+| admin    | 123456789 | admin |
+| ed       | 123456789 | editor |
+| view     | 123456789 | viewer |
 ```
 
 Use the returned token to access protected routes:
@@ -181,7 +189,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 The same token is required when **listing** BOM items or retrieving a
 project's BOM.
-Users with the **operator** role can only view data; any write attempts return 403.
+Users with the **viewer** role can only view data; any write attempts return 403.
 
 ### Traceability
 

@@ -27,7 +27,7 @@ def client_fixture():
 def auth_header(client):
     resp = client.post(
         "/auth/token",
-        data={"username": "admin", "password": "change_me"},
+        data={"username": "admin", "password": "123456789"},
     )
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -52,20 +52,20 @@ def seed_data(client, auth_header):
 
 def test_component_trace(client, auth_header):
     seed_data(client, auth_header)
-    resp = client.get("/traceability/component/PB")
+    resp = client.get("/traceability/component/PB", headers=auth_header)
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
     assert data[0]["serial_number"] == "SN2"
 
-    resp2 = client.get("/traceability/component/PA")
+    resp2 = client.get("/traceability/component/PA", headers=auth_header)
     assert resp2.status_code == 200
     assert resp2.json()[0]["serial_number"] == "SN1"
 
 
 def test_board_trace(client, auth_header):
     seed_data(client, auth_header)
-    resp = client.get("/traceability/board/SN2")
+    resp = client.get("/traceability/board/SN2", headers=auth_header)
     assert resp.status_code == 200
     body = resp.json()
     assert body["serial_number"] == "SN2"

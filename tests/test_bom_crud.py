@@ -26,7 +26,7 @@ def client_fixture():
 def auth_header(client):
     resp = client.post(
         "/auth/token",
-        data={"username": "admin", "password": "change_me"},
+        data={"username": "admin", "password": "123456789"},
     )
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -50,7 +50,7 @@ def test_crud_lifecycle(client, auth_header):
     item_id = create_resp.json()["id"]
 
     # GET
-    get_resp = client.get(f"/bom/items/{item_id}")
+    get_resp = client.get(f"/bom/items/{item_id}", headers=auth_header)
     assert get_resp.status_code == 200
     assert get_resp.json()["part_number"] == payload["part_number"]
 
@@ -68,7 +68,7 @@ def test_crud_lifecycle(client, auth_header):
     # DELETE
     del_resp = client.delete(f"/bom/items/{item_id}", headers=auth_header)
     assert del_resp.status_code == 204
-    get_after = client.get(f"/bom/items/{item_id}")
+    get_after = client.get(f"/bom/items/{item_id}", headers=auth_header)
     assert get_after.status_code == 404
 
 

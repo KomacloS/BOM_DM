@@ -58,16 +58,16 @@ let usd=money(DEFAULT_CURRENCY);
 document.getElementById('login-btn').onclick=async()=>{
   const u=document.getElementById('login-user').value;
   const p=document.getElementById('login-pass').value;
-  const r=await fetch('/auth/token',{method:'POST',body:new URLSearchParams({username:u,password:p})});
+  const r=await api('/auth/token',{method:'POST',body:new URLSearchParams({username:u,password:p})});
   if(r.ok){
     const tok=(await r.json()).access_token;
-    sessionStorage.setItem('token',tok);
+    localStorage.setItem('bomdb_token',tok);
     document.getElementById('login').classList.add('hidden');
     checkOperator();
   }else{alert('Login failed');}
 };
 async function loadCustomers(){
-  const r=await authFetch('/ui/workflow/customers');
+  const r=await api('/ui/workflow/customers');
   const data=await r.json();
   const sel=document.getElementById('customer-select');
   sel.innerHTML='<option value="">--select--</option>';
@@ -78,7 +78,7 @@ document.getElementById('add-customer').onclick=async ()=>{
   const name=document.getElementById('new-customer-name').value;
   const contact=document.getElementById('new-customer-contact').value;
   if(!name) return;
-  await authFetch('/ui/workflow/customers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,contact})});
+  await api('/ui/workflow/customers',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,contact})});
   loadCustomers();
 };
 
@@ -88,7 +88,7 @@ document.getElementById('customer-select').onchange=()=>{
 };
 
 async function loadProjects(cid){
-  const r=await authFetch('/ui/workflow/projects?customer_id='+cid);
+  const r=await api('/ui/workflow/projects?customer_id='+cid);
   const data=await r.json();
   const sel=document.getElementById('project-select');
   sel.innerHTML='<option value="">--select--</option>';
@@ -100,14 +100,14 @@ document.getElementById('add-project').onclick=async ()=>{
   const name=document.getElementById('new-project-name').value;
   const description=document.getElementById('new-project-desc').value;
   if(!cid || !name) return;
-  await authFetch('/ui/workflow/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customer_id:cid,name,description})});
+  await api('/ui/workflow/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({customer_id:cid,name,description})});
   loadProjects(cid);
 };
 document.getElementById("project-select").onchange=async()=>{
   const pid=document.getElementById("project-select").value;
   if(!pid) return;
   document.getElementById("step-3").classList.remove("hidden");
-  const r=await authFetch(`/projects/${pid}/bom-items?limit=1000`);
+  const r=await api(`/projects/${pid}/bom-items?limit=1000`);
   const data=await r.json();
   updateCost();
   if(data.length && confirm("Edit existing BOM?")){
@@ -132,7 +132,7 @@ function showToast(msg="Saved!", ok=true, link=null){
 async function updateCost(){
   const pid=document.getElementById('project-select').value;
   if(!pid) return;
-  const r=await authFetch(`/projects/${pid}/quote?currency=${DEFAULT_CURRENCY}`);
+  const r=await api(`/projects/${pid}/quote?currency=${DEFAULT_CURRENCY}`);
   if(r.ok){
     const d=await r.json();
     usd=money(d.currency);
@@ -150,7 +150,7 @@ function autocomplete(field,q){
   const pid=document.getElementById('project-select').value;
   if(!pid||!q){return;}
   acTimer=setTimeout(async()=>{
-    const r=await authFetch(`/projects/${pid}/bom-items?search=${encodeURIComponent(q)}`);
+    const r=await api(`/projects/${pid}/bom-items?search=${encodeURIComponent(q)}`);
     if(r.ok){
       const data=await r.json();
       const opts=[...new Set(data.map(it=>it[field]).filter(Boolean))].slice(0,5);
@@ -167,7 +167,7 @@ function triggerUpload(id,idx){
     const f=input.files[0];
     if(!f) return;
     const fd=new FormData();fd.append('file',f);
-    const r=await authFetch(`/bom/items/${id}/datasheet`,{method:'POST',body:fd});
+    const r=await api(`/bom/items/${id}/datasheet`,{method:'POST',body:fd});
     if(r.ok){
       items[idx]=await r.json();
       showToast();
@@ -199,7 +199,7 @@ async function patchField(idx,field,value){
   else if(field==="dnp") body[field]=value;
   else if(field==="currency") body[field]=value;
   else body[field]=value||null;
-  const r=await authFetch(`/bom/items/${item.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const r=await api(`/bom/items/${item.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   if(r.ok){
     items[idx]=await r.json();
     showToast();
@@ -212,7 +212,7 @@ async function patchField(idx,field,value){
 async function deleteRow(idx){
   const item=items[idx];
   if(item.id){
-    const r=await authFetch(`/bom/items/${item.id}`,{method:"DELETE"});
+    const r=await api(`/bom/items/${item.id}`,{method:"DELETE"});
     if(r.status!==204){
       showToast("Error",false);
       return;
@@ -261,7 +261,7 @@ function renderPage(){
         const ft=document.createElement('td');
         const btn=document.createElement('button');
         btn.textContent='🔍';
-        btn.onclick=async()=>{const r=await authFetch(`/bom/items/${row.id}/fetch_price`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'octopart'})});if(r.ok){items[realIdx]=await r.json();renderPage();updateCost();}};
+        btn.onclick=async()=>{const r=await api(`/bom/items/${row.id}/fetch_price`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:'octopart'})});if(r.ok){items[realIdx]=await r.json();renderPage();updateCost();}};
         ft.appendChild(btn);tr.appendChild(ft);
         const ttd=document.createElement('td');
         const fmt=money(row.currency||DEFAULT_CURRENCY);
@@ -307,11 +307,11 @@ document.getElementById('upload-bom').onclick=async ()=>{
   if(!f) return;
   const pid=document.getElementById('project-select').value;
   if(!pid) return;
-  const asmRes=await authFetch(`/projects/${pid}/assemblies`);
+  const asmRes=await api(`/projects/${pid}/assemblies`);
   const aid=(await asmRes.json())[0]?.id;
   if(!aid){showToast('No assembly',false);return;}
   const fd=new FormData();fd.append('file',f);
-  const r=await authFetch(`/bom/import?assembly_id=${aid}`,{method:'POST',body:fd});
+  const r=await api(`/bom/import?assembly_id=${aid}`,{method:'POST',body:fd});
   if(r.ok){
     items=await r.json();
     page=0;
@@ -353,13 +353,13 @@ document.getElementById('save-bom').onclick=async ()=>{
       currency: sel?sel.value:DEFAULT_CURRENCY
     });
   });
-  const asmRes=await authFetch(`/projects/${project}/assemblies`);
+  const asmRes=await api(`/projects/${project}/assemblies`);
   if(!asmRes.ok){
     showToast("Assembly lookup failed",false);return;
   }
   const assemblyId=(await asmRes.json())[0]?.id;
   if(!assemblyId){showToast("No assembly",false);return;}
-  const resp=await authFetch('/ui/workflow/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assembly_id:parseInt(assemblyId),items:payload})});
+  const resp=await api('/ui/workflow/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assembly_id:parseInt(assemblyId),items:payload})});
   if(resp.ok){
     items=await resp.json();
     renderPage();
@@ -372,7 +372,7 @@ document.getElementById('cancel-bom').onclick=()=>{window.location='/ui/workflow
 document.getElementById('export-csv').onclick=async()=>{
   const pid=document.getElementById('project-select').value;
   if(!pid) return;
-  const r=await authFetch(`/projects/${pid}/export.csv`);
+  const r=await api(`/projects/${pid}/export.csv`);
   const blob=await r.blob();
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
@@ -386,7 +386,7 @@ if(document.getElementById('po-btn')){
 document.getElementById('po-btn').onclick=async()=>{
   const pid=document.getElementById('project-select').value;
   if(!pid) return;
-  const r=await authFetch(`/projects/${pid}/po.pdf`,{method:'POST'});
+  const r=await api(`/projects/${pid}/po.pdf`,{method:'POST'});
   if(r.ok){
     const blob=await r.blob();
     const url=URL.createObjectURL(blob);

@@ -6,29 +6,11 @@
     <script src="https://unpkg.com/htmx.org@1.9.2"></script>
     <script src="https://unpkg.com/@google/model-viewer"></script>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@3.3.2/dist/tailwind.min.css" rel="stylesheet">
-    <script>
-    function authFetch(url, opts={}){
-        opts.headers = opts.headers || {};
-        const t = sessionStorage.getItem('token');
-        if(t) opts.headers['Authorization'] = 'Bearer '+t;
-        return fetch(url, opts);
-    }
-    async function checkOperator(){
-        const t = sessionStorage.getItem('token');
-        if(!t) return;
-        const r = await authFetch('/auth/me');
-        if(r.ok){
-            const u = await r.json();
-            if(u.role === 'operator'){
-                document.querySelectorAll('input').forEach(el=>el.disabled=true);
-                document.querySelectorAll('#save-bom,.del-btn,#upload-bom,#import-btn,.upload-btn,#po-btn').forEach(el=>el && el.classList.add('hidden'));
-            }
-        }
-    }
-    window.addEventListener('load', checkOperator);
-    </script>
+    <!-- auth endpoint /auth/me used in checkOperator -->
+    <script type="module" src="/static/js/app.js"></script>
 </head>
 <body class="p-4">
+    {% if not login %}
     <nav class="mb-4">
         <a href="/ui/" class="mr-2">Dashboard</a>
         <a href="/ui/bom/" class="mr-2">BOM</a>
@@ -42,6 +24,7 @@
         <a href="/ui/users/" class="mr-2">Users</a>
         <a href="/ui/settings/" class="mr-2">Settings</a>
     </nav>
+    {% endif %}
     {% block content %}{% endblock %}
 </body>
 </html>

@@ -19,7 +19,7 @@ def client_fixture():
 
 @pytest.fixture
 def auth_header(client):
-    token = client.post("/auth/token", data={"username": "admin", "password": "change_me"}).json()["access_token"]
+    token = client.post("/auth/token", data={"username": "admin", "password": "123456789"}).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -30,8 +30,8 @@ def test_complex_py_tables(client, auth_header):
     # upload dummy files
     client.post(f"/complexes/{cplx['id']}/upload_eda", files={"file": ("b.zip", b"ZIP", "application/zip")}, headers=auth_header)
     client.post(f"/pythontests/{pyt['id']}/upload_file", files={"file": ("t.py", b"print()", "text/x-python")}, headers=auth_header)
-    r = client.get("/ui/testassets/table?kind=complex")
+    r = client.get("/ui/testassets/table?kind=complex", headers=auth_header)
     assert r.status_code == 200
     assert "<a" in r.text and "Board" in r.text
-    r2 = client.get(f"/ui/testassets/detail/py/{pyt['id']}")
+    r2 = client.get(f"/ui/testassets/detail/py/{pyt['id']}", headers=auth_header)
     assert "<pre><code" in r2.text

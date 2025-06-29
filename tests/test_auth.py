@@ -22,7 +22,7 @@ def client_fixture():
         yield c
 
 
-def get_token(client, username="admin", password="change_me"):
+def get_token(client, username="admin", password="123456789"):
     resp = client.post("/auth/token", data={"username": username, "password": password})
     return resp
 
@@ -47,7 +47,7 @@ def test_protected_requires_auth(client):
 def test_admin_can_create_user(client):
     token = get_token(client).json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
-    new_user = {"username": "bob", "password": "secret", "role": "user"}
+    new_user = {"username": "bob", "password": "secret", "role": "viewer"}
     create = client.post("/auth/register", json=new_user, headers=headers)
     assert create.status_code == 201
 

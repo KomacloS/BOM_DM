@@ -29,7 +29,7 @@ def client_fixture():
 @pytest.fixture
 def admin_header(client):
     token = client.post(
-        "/auth/token", data={"username": "admin", "password": "change_me"}
+        "/auth/token", data={"username": "admin", "password": "123456789"}
     ).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
@@ -38,7 +38,7 @@ def admin_header(client):
 def user_header(client, admin_header):
     client.post(
         "/auth/register",
-        json={"username": "u1", "password": "pw", "role": "user"},
+        json={"username": "u1", "password": "pw", "role": "viewer"},
         headers=admin_header,
     )
     token = client.post(

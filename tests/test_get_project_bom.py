@@ -21,14 +21,14 @@ def client_fixture():
 def auth_header(client):
     token = client.post(
         "/auth/token",
-        data={"username": "admin", "password": "change_me"},
+        data={"username": "admin", "password": "123456789"},
     ).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 def test_get_project_bom(client, auth_header):
     cust = client.post("/customers", json={"name": "C"}).json()
-    proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}).json()
-    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}, headers=auth_header).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies", headers=auth_header).json()[0]['id']
     item1 = client.post(
         "/bom/items",
         json={"part_number": "P1", "description": "D1", "quantity": 1, "assembly_id": aid},

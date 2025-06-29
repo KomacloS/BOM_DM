@@ -27,7 +27,7 @@ def client_fixture():
 def auth_header(client):
     resp = client.post(
         "/auth/token",
-        data={"username": "admin", "password": "change_me"},
+        data={"username": "admin", "password": "123456789"},
     )
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -35,8 +35,8 @@ def auth_header(client):
 
 def test_create_test_result(client, auth_header):
     cust = client.post('/customers', json={'name':'C'}).json()
-    proj = client.post('/projects', json={'customer_id':cust['id'], 'name':'P'}).json()
-    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    proj = client.post('/projects', json={'customer_id':cust['id'], 'name':'P'}, headers=auth_header).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies", headers=auth_header).json()[0]['id']
     payload = {"serial_number": "SN1", "result": True, "assembly_id": aid}
     resp = client.post("/testresults", json=payload, headers=auth_header)
     assert resp.status_code == 201
@@ -50,8 +50,8 @@ def test_create_test_result(client, auth_header):
 
 def test_list_and_get_results(client, auth_header):
     cust = client.post('/customers', json={'name':'C'}).json()
-    proj = client.post('/projects', json={'customer_id':cust['id'], 'name':'P'}).json()
-    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    proj = client.post('/projects', json={'customer_id':cust['id'], 'name':'P'}, headers=auth_header).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies", headers=auth_header).json()[0]['id']
     r1 = client.post("/testresults", json={"serial_number": "SN2", "result": True, "assembly_id": aid}, headers=auth_header)
     r2 = client.post(
         "/testresults",
@@ -61,14 +61,14 @@ def test_list_and_get_results(client, auth_header):
     assert r1.status_code == 201
     assert r2.status_code == 201
 
-    list_resp = client.get("/testresults")
+    list_resp = client.get("/testresults", headers=auth_header)
     assert list_resp.status_code == 200
     data = list_resp.json()
     assert len(data) == 2
 
-    single = client.get("/testresults/1")
+    single = client.get("/testresults/1", headers=auth_header)
     assert single.status_code == 200
     assert single.json()["serial_number"] == "SN2"
 
-    missing = client.get("/testresults/999")
+    missing = client.get("/testresults/999", headers=auth_header)
     assert missing.status_code == 404

@@ -18,7 +18,8 @@ def setup_client():
 
 def test_bom_template_download():
     with setup_client() as client:
-        r = client.get('/bom/template')
+        token = client.post('/auth/token', data={'username':'admin','password':'123456789'}).json()['access_token']
+        r = client.get('/bom/template', headers={'Authorization': f'Bearer {token}'})
         assert r.status_code == 200
         header = r.text.splitlines()[0]
         assert header == 'part_number,description,quantity,reference,manufacturer,mpn,footprint,unit_cost,currency,dnp'

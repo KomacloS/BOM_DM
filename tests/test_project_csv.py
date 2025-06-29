@@ -19,20 +19,20 @@ def client_fixture():
 
 @pytest.fixture
 def auth_header(client):
-    token = client.post("/auth/token", data={"username": "admin", "password": "change_me"}).json()["access_token"]
+    token = client.post("/auth/token", data={"username": "admin", "password": "123456789"}).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 def test_project_csv(client, auth_header):
     cust = client.post("/customers", json={"name": "C"}).json()
-    proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}).json()
-    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}, headers=auth_header).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies", headers=auth_header).json()[0]['id']
     for pn in ("P1", "P2"):
         client.post(
             "/bom/items",
             json={"part_number": pn, "description": "d", "quantity": 1, "assembly_id": aid},
             headers=auth_header,
         )
-    r = client.get(f"/projects/{proj['id']}/export.csv")
+    r = client.get(f"/projects/{proj['id']}/export.csv", headers=auth_header)
     assert r.status_code == 200
     lines = r.text.splitlines()
     assert "part_number" in lines[0]

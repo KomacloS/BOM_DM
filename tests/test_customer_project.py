@@ -26,7 +26,7 @@ def client_fixture():
 def auth_header(client):
     token = client.post(
         "/auth/token",
-        data={"username": "admin", "password": "change_me"},
+        data={"username": "admin", "password": "123456789"},
     ).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
@@ -36,13 +36,14 @@ def test_link_items_to_project(client, auth_header):
     proj = client.post(
         "/projects",
         json={"customer_id": cust["id"], "name": "Widget"},
+        headers=auth_header,
     ).json()
     import fitz
     doc = fitz.open()
     page = doc.new_page()
     page.insert_text((72, 72), "PNX    Part    1    R1")
     pdf_bytes = doc.tobytes()
-    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    aid = client.get(f"/projects/{proj['id']}/assemblies", headers=auth_header).json()[0]['id']
     resp = client.post(
         f"/bom/import?assembly_id={aid}",
         files={"file": ("sample.pdf", pdf_bytes, "application/pdf")},
