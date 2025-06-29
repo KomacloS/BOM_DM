@@ -2109,6 +2109,14 @@ def get_test_result(test_id: int) -> TestResultRead:
         return result
 
 
+@app.get("/bom/template")
+def bom_template() -> StreamingResponse:
+    """Download a CSV template for BOM imports."""
+    path = Path(__file__).resolve().parent.parent / "bom_template.csv"
+    headers = {"Content-Disposition": "attachment; filename=bom_template.csv"}
+    return StreamingResponse(path.open("rb"), media_type="text/csv", headers=headers)
+
+
 @app.get("/export/bom.csv", dependencies=[Depends(admin_required)])
 def export_bom_csv():
     items = get_all_bom()
