@@ -120,8 +120,8 @@ curl http://localhost:8000/inventory
 ```
 Inline edits are available under `/ui/inventory`.
 
-Each Part can have one-or-more "Test Macros" attached (fixtures, Python tests, 3-D models, etc.).
-Use `/parts/{id}/testmacros` to manage these links.
+Each Part can have one-or-more Test Assets attached (macros, complexes or Python tests).
+Use `/parts/{id}/testmacros`, `/parts/{id}/complexes` and `/parts/{id}/pythontests` to manage these links.
 
 ### Test results
 
@@ -257,6 +257,21 @@ EDA Bundle   POST /complexes/{id}/upload_eda     .zip ≤ 20 MB
 Python Test  POST /pythontests/{id}/upload_file  .py ≤ 1 MB
 
 Download files via `/assets/{sha}/{name}`.
+
+Link Parts to a complex or Python test:
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"complex_id":1}' /parts/5/complexes
+curl -X DELETE /parts/5/pythontests/2
+```
+
+List linked parts:
+
+```bash
+curl /complexes/1/parts
+curl /pythontests/2/parts
+```
 
 
 Example:

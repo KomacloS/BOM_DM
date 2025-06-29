@@ -21,13 +21,19 @@
       <input type="file" name="file" accept=".py" hx-post="/pythontests/{{ obj.id }}/upload_file" hx-include="closest form" hx-target="#drawer" hx-swap="outerHTML" class="upload-btn" />
     {% endif %}
   </form>
-  {% if kind == 'macro' %}
+  {% if kind in ['macro','complex','py'] %}
   <h3 class="font-bold mt-4">Linked Parts</h3>
   <ul>
   {% for p in parts %}
     <li class="flex items-center justify-between">
       <span>{{ p.id }} - {{ p.number }}</span>
+      {% if kind == 'macro' %}
       <button class="del-btn text-red-600" hx-delete="/parts/{{ p.id }}/testmacros/{{ obj.id }}" hx-target="#drawer" hx-swap="outerHTML">✖</button>
+      {% elif kind == 'complex' %}
+      <button class="del-btn text-red-600" hx-delete="/parts/{{ p.id }}/complexes/{{ obj.id }}" hx-target="#drawer" hx-swap="outerHTML">✖</button>
+      {% elif kind == 'py' %}
+      <button class="del-btn text-red-600" hx-delete="/parts/{{ p.id }}/pythontests/{{ obj.id }}" hx-target="#drawer" hx-swap="outerHTML">✖</button>
+      {% endif %}
     </li>
   {% endfor %}
   </ul>
