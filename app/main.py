@@ -1589,6 +1589,23 @@ def project_bom(
         return items
 
 
+@app.get("/projects/{project_id}/bom-items", response_model=list[BOMItemRead])
+def list_project_bom_items(project_id: int) -> list[BOMItemRead]:
+    """Return BOM items for all assemblies of a project."""
+
+    with Session(engine) as session:
+        stmt = select(BOMItem).join(Assembly).where(Assembly.project_id == project_id)
+        return session.exec(stmt).all()
+
+
+@app.get("/assemblies/{assembly_id}/bom-items", response_model=list[BOMItemRead])
+def list_assembly_bom_items(assembly_id: int) -> list[BOMItemRead]:
+    """Return BOM items for a specific assembly."""
+
+    with Session(engine) as session:
+        return session.exec(select(BOMItem).where(BOMItem.assembly_id == assembly_id)).all()
+
+
 @app.get("/projects/{project_id}/export.csv")
 def project_export_csv(project_id: int, comma: bool = True):
     """Export a project's BOM as CSV."""
@@ -1943,8 +1960,8 @@ def fetch_price(
 
 @app.post("/bom/import", response_model=list[BOMItemRead])
 async def import_bom(
+    assembly_id: int,
     file: UploadFile = File(...),
-    assembly_id: int | None = None,
     current_user: User = Depends(edit_allowed),
 ) -> list[BOMItemRead]:
     """Import BOM items from an uploaded PDF or Excel file."""
@@ -2023,28 +2040,27 @@ async def import_bom(
 
     inserted: list[BOMItem] = []
     with Session(engine) as session:
-        asm = None
-        if assembly_id is not None:
-            asm = session.get(Assembly, assembly_id)
+        asm = session.get(Assembly, assembly_id)
+        if asm is None:
+            raise HTTPException(status_code=404, detail="Assembly not found")
         for rec in records:
             if not rec.get("part_number") or not rec.get("description"):
                 continue
-            item = BOMItem(**rec)
-            if asm:
-                item.assembly_id = asm.id
+            item = BOMItem(**rec, assembly_id=asm.id)
             part = get_or_create_part(item.part_number, item.description, session)
             item.part_id = part.id
             session.add(item)
-            try:
-                session.commit()
-            except IntegrityError:
-                session.rollback()
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Item with this part_number and reference already exists",
-                )
-            session.refresh(item)
             inserted.append(item)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Item with this part_number and reference already exists",
+            )
+        for item in inserted:
+            session.refresh(item)
     return inserted
 
 
