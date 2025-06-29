@@ -345,7 +345,13 @@ document.getElementById('save-bom').onclick=async ()=>{
       currency: sel?sel.value:DEFAULT_CURRENCY
     });
   });
-  const resp=await authFetch('/ui/workflow/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({project_id:parseInt(project),items:payload})});
+  const asmRes=await authFetch(`/projects/${project}/assemblies`);
+  if(!asmRes.ok){
+    showToast("Assembly lookup failed",false);return;
+  }
+  const assemblyId=(await asmRes.json())[0]?.id;
+  if(!assemblyId){showToast("No assembly",false);return;}
+  const resp=await authFetch('/ui/workflow/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({assembly_id:parseInt(assemblyId),items:payload})});
   if(resp.ok){
     items=await resp.json();
     renderPage();
