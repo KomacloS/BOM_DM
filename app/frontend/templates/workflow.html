@@ -107,7 +107,7 @@ document.getElementById("project-select").onchange=async()=>{
   const pid=document.getElementById("project-select").value;
   if(!pid) return;
   document.getElementById("step-3").classList.remove("hidden");
-  const r=await authFetch(`/projects/${pid}/bom?limit=1000`);
+  const r=await authFetch(`/projects/${pid}/bom-items?limit=1000`);
   const data=await r.json();
   updateCost();
   if(data.length && confirm("Edit existing BOM?")){
@@ -150,7 +150,7 @@ function autocomplete(field,q){
   const pid=document.getElementById('project-select').value;
   if(!pid||!q){return;}
   acTimer=setTimeout(async()=>{
-    const r=await authFetch(`/projects/${pid}/bom?search=${encodeURIComponent(q)}`);
+    const r=await authFetch(`/projects/${pid}/bom-items?search=${encodeURIComponent(q)}`);
     if(r.ok){
       const data=await r.json();
       const opts=[...new Set(data.map(it=>it[field]).filter(Boolean))].slice(0,5);
@@ -305,13 +305,21 @@ function renderPage(){
 document.getElementById('upload-bom').onclick=async ()=>{
   const f=document.getElementById('bom-file').files[0];
   if(!f) return;
+  const pid=document.getElementById('project-select').value;
+  if(!pid) return;
+  const asmRes=await authFetch(`/projects/${pid}/assemblies`);
+  const aid=(await asmRes.json())[0]?.id;
+  if(!aid){showToast('No assembly',false);return;}
   const fd=new FormData();fd.append('file',f);
-  const r=await authFetch('/ui/workflow/upload',{method:'POST',body:fd});
-  const data=await r.json();
-  items=data;
-  page=0;
-  renderPage();
-  document.getElementById('step-4').classList.remove('hidden');
+  const r=await authFetch(`/bom/import?assembly_id=${aid}`,{method:'POST',body:fd});
+  if(r.ok){
+    items=await r.json();
+    page=0;
+    renderPage();
+    document.getElementById('step-4').classList.remove('hidden');
+  }else{
+    showToast('Upload failed',false);
+  }
 };
 
 document.getElementById('prev-page').onclick=()=>{if(page>0){page--;renderPage();}};
