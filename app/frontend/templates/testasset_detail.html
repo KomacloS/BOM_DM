@@ -1,20 +1,36 @@
 <div id="drawer" class="p-4 border">
-  <h2 class="text-xl mb-2">{{ macro.name }}</h2>
-  <p>ID: {{ macro.id }}</p>
-  {% if macro.glb_path %}
-  <model-viewer src="/{{ macro.glb_path }}" alt="{{ macro.name }}" camera-controls ar style="width:100%;height:300px"></model-viewer>
+  <h2 class="text-xl mb-2">{{ obj.name }}</h2>
+  <p>ID: {{ obj.id }}</p>
+  {% if kind == 'macro' and obj.glb_path %}
+    <model-viewer src="/{{ obj.glb_path }}" alt="{{ obj.name }}" camera-controls ar style="width:100%;height:300px"></model-viewer>
+  {% elif kind == 'complex' and obj.eda_path %}
+    <a href="/{{ obj.eda_path }}" class="text-blue-600">Download ZIP</a>
+  {% elif kind == 'py' and obj.file_path %}
+    <pre><code id="code-block"></code></pre>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.7.0/highlight.min.js"></script>
+    <script>
+      fetch('/{{ obj.file_path }}').then(r=>r.text()).then(t=>{document.getElementById('code-block').textContent=t;hljs.highlightAll&&hljs.highlightAll();});
+    </script>
   {% endif %}
   <form class="mt-2">
-    <input type="file" name="file" accept=".glb" hx-post="/testmacros/{{ macro.id }}/upload_glb" hx-include="closest form" hx-target="#drawer" hx-swap="outerHTML" class="upload-btn" />
+    {% if kind == 'macro' %}
+      <input type="file" name="file" accept=".glb" hx-post="/testmacros/{{ obj.id }}/upload_glb" hx-include="closest form" hx-target="#drawer" hx-swap="outerHTML" class="upload-btn" />
+    {% elif kind == 'complex' %}
+      <input type="file" name="file" accept=".zip" hx-post="/complexes/{{ obj.id }}/upload_eda" hx-include="closest form" hx-target="#drawer" hx-swap="outerHTML" class="upload-btn" />
+    {% elif kind == 'py' %}
+      <input type="file" name="file" accept=".py" hx-post="/pythontests/{{ obj.id }}/upload_file" hx-include="closest form" hx-target="#drawer" hx-swap="outerHTML" class="upload-btn" />
+    {% endif %}
   </form>
+  {% if kind == 'macro' %}
   <h3 class="font-bold mt-4">Linked Parts</h3>
   <ul>
   {% for p in parts %}
     <li class="flex items-center justify-between">
       <span>{{ p.id }} - {{ p.number }}</span>
-      <button class="del-btn text-red-600" hx-delete="/parts/{{ p.id }}/testmacros/{{ macro.id }}" hx-target="#drawer" hx-swap="outerHTML">✖</button>
+      <button class="del-btn text-red-600" hx-delete="/parts/{{ p.id }}/testmacros/{{ obj.id }}" hx-target="#drawer" hx-swap="outerHTML">✖</button>
     </li>
   {% endfor %}
   </ul>
+  {% endif %}
   <script>checkOperator();</script>
 </div>

@@ -1144,6 +1144,42 @@ def macro_parts(macro_id: int, current_user: User = Depends(get_current_user)) -
         return result
 
 
+@app.get("/complexes/{cid}/parts", response_model=list[PartRead])
+def complex_parts(cid: int, current_user: User = Depends(get_current_user)) -> list[PartRead]:
+    stmt = (
+        select(Part)
+        .join(PartTestMap, Part.id == PartTestMap.part_id)
+        .where(PartTestMap.test_macro_id == cid)
+    )
+    with Session(engine) as session:
+        parts = session.exec(stmt).all()
+        result: list[PartRead] = []
+        for p in parts:
+            count = session.exec(
+                select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+            ).one()
+            result.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=count))
+        return result
+
+
+@app.get("/pythontests/{pid}/parts", response_model=list[PartRead])
+def pythontest_parts(pid: int, current_user: User = Depends(get_current_user)) -> list[PartRead]:
+    stmt = (
+        select(Part)
+        .join(PartTestMap, Part.id == PartTestMap.part_id)
+        .where(PartTestMap.test_macro_id == pid)
+    )
+    with Session(engine) as session:
+        parts = session.exec(stmt).all()
+        result: list[PartRead] = []
+        for p in parts:
+            count = session.exec(
+                select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+            ).one()
+            result.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=count))
+        return result
+
+
 @app.get("/complexes", response_model=list[ComplexRead])
 def list_complexes(skip: int = 0, limit: int = 50, current_user: User = Depends(get_current_user)) -> list[ComplexRead]:
     if limit > 200:
@@ -2062,18 +2098,32 @@ def ui_testassets(request: Request):
 
 
 @ui_router.get("/testassets/table", response_class=HTMLResponse)
-def ui_testassets_table(request: Request):
+def ui_testassets_table(request: Request, kind: str = "macro", q: str | None = None):
     with Session(engine) as session:
-        macros = session.exec(select(TestMacro)).all()
-        rows: list[TestMacroRead] = []
-        for m in macros:
-            count = session.exec(
-                select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == m.id)
-            ).one()
-            rows.append(
-                TestMacroRead(id=m.id, name=m.name, glb_path=m.glb_path, notes=m.notes, usage_count=count)
-            )
-    return templates.TemplateResponse("testassets_table.html", {"request": request, "macros": rows})
+        if kind == "complex":
+            stmt = select(Complex)
+            if q:
+                stmt = stmt.where(Complex.name.ilike(f"%{q}%"))
+            rows = [ComplexRead(id=c.id, name=c.name, eda_path=c.eda_path, notes=c.notes) for c in session.exec(stmt).all()]
+        elif kind == "py":
+            stmt = select(PythonTest)
+            if q:
+                stmt = stmt.where(PythonTest.name.ilike(f"%{q}%"))
+            rows = [PythonTestRead(id=p.id, name=p.name, file_path=p.file_path, notes=p.notes) for p in session.exec(stmt).all()]
+        else:
+            stmt = select(TestMacro)
+            if q:
+                stmt = stmt.where(TestMacro.name.ilike(f"%{q}%"))
+            macros = session.exec(stmt).all()
+            rows: list[TestMacroRead] = []
+            for m in macros:
+                count = session.exec(
+                    select(sqlalchemy.func.count()).select_from(PartTestMap).where(PartTestMap.test_macro_id == m.id)
+                ).one()
+                rows.append(
+                    TestMacroRead(id=m.id, name=m.name, glb_path=m.glb_path, notes=m.notes, usage_count=count)
+                )
+    return templates.TemplateResponse("testassets_table.html", {"request": request, "assets": rows, "kind": kind})
 
 
 @ui_router.get("/testassets/detail/{macro_id}", response_class=HTMLResponse)
@@ -2105,7 +2155,33 @@ def ui_testassets_detail(macro_id: int, request: Request):
             parts.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=pc))
     return templates.TemplateResponse(
         "testasset_detail.html",
-        {"request": request, "macro": macro_read, "parts": parts},
+        {"request": request, "obj": macro_read, "parts": parts, "kind": "macro"},
+    )
+
+
+@ui_router.get("/testassets/detail/complex/{cid}", response_class=HTMLResponse)
+def ui_complex_detail(cid: int, request: Request):
+    with Session(engine) as session:
+        cplx = session.get(Complex, cid)
+        if not cplx:
+            raise HTTPException(status_code=404, detail="Complex not found")
+        obj = ComplexRead(id=cplx.id, name=cplx.name, eda_path=cplx.eda_path, notes=cplx.notes)
+    return templates.TemplateResponse(
+        "testasset_detail.html",
+        {"request": request, "obj": obj, "parts": [], "kind": "complex"},
+    )
+
+
+@ui_router.get("/testassets/detail/py/{pid}", response_class=HTMLResponse)
+def ui_py_detail(pid: int, request: Request):
+    with Session(engine) as session:
+        pt = session.get(PythonTest, pid)
+        if not pt:
+            raise HTTPException(status_code=404, detail="PythonTest not found")
+        obj = PythonTestRead(id=pt.id, name=pt.name, file_path=pt.file_path, notes=pt.notes)
+    return templates.TemplateResponse(
+        "testasset_detail.html",
+        {"request": request, "obj": obj, "parts": [], "kind": "py"},
     )
 
 
