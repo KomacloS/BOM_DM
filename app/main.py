@@ -298,6 +298,7 @@ class ComplexCreate(SQLModel):
 
 class ComplexRead(ComplexCreate):
     id: int
+    usage_count: int | None = None
 
 
 class ComplexUpdate(SQLModel):
@@ -314,6 +315,7 @@ class PythonTestCreate(SQLModel):
 
 class PythonTestRead(PythonTestCreate):
     id: int
+    usage_count: int | None = None
 
 
 class PythonTestUpdate(SQLModel):
@@ -326,9 +328,27 @@ class MacroLink(SQLModel):
     test_macro_id: int
 
 
+class ComplexLink(SQLModel):
+    complex_id: int
+
+
+class PyTestLink(SQLModel):
+    pythontest_id: int
+
+
 class PartTestMap(SQLModel, table=True):
     part_id: int = Field(foreign_key="part.id", primary_key=True)
     test_macro_id: int = Field(foreign_key="testmacro.id", primary_key=True)
+
+
+class ComplexPartMap(SQLModel, table=True):
+    part_id: int = Field(sa_column=Column(Integer, ForeignKey("part.id", ondelete="CASCADE"), primary_key=True))
+    complex_id: int = Field(sa_column=Column(Integer, ForeignKey("complex.id", ondelete="CASCADE"), primary_key=True))
+
+
+class PyTestPartMap(SQLModel, table=True):
+    part_id: int = Field(sa_column=Column(Integer, ForeignKey("part.id", ondelete="CASCADE"), primary_key=True))
+    pythontest_id: int = Field(sa_column=Column(Integer, ForeignKey("pythontest.id", ondelete="CASCADE"), primary_key=True))
 
 
 class Blob(SQLModel, table=True):
@@ -1148,8 +1168,8 @@ def macro_parts(macro_id: int, current_user: User = Depends(get_current_user)) -
 def complex_parts(cid: int, current_user: User = Depends(get_current_user)) -> list[PartRead]:
     stmt = (
         select(Part)
-        .join(PartTestMap, Part.id == PartTestMap.part_id)
-        .where(PartTestMap.test_macro_id == cid)
+        .join(ComplexPartMap, Part.id == ComplexPartMap.part_id)
+        .where(ComplexPartMap.complex_id == cid)
     )
     with Session(engine) as session:
         parts = session.exec(stmt).all()
@@ -1166,8 +1186,8 @@ def complex_parts(cid: int, current_user: User = Depends(get_current_user)) -> l
 def pythontest_parts(pid: int, current_user: User = Depends(get_current_user)) -> list[PartRead]:
     stmt = (
         select(Part)
-        .join(PartTestMap, Part.id == PartTestMap.part_id)
-        .where(PartTestMap.test_macro_id == pid)
+        .join(PyTestPartMap, Part.id == PyTestPartMap.part_id)
+        .where(PyTestPartMap.pythontest_id == pid)
     )
     with Session(engine) as session:
         parts = session.exec(stmt).all()
@@ -1180,13 +1200,155 @@ def pythontest_parts(pid: int, current_user: User = Depends(get_current_user)) -
         return result
 
 
+@app.post("/parts/{part_id}/complexes", response_model=ComplexRead, status_code=status.HTTP_201_CREATED)
+def add_part_complex(part_id: int, link: ComplexLink, request: Request, current_user: User = Depends(edit_allowed)):
+    with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part:
+            raise HTTPException(status_code=404, detail="Part not found")
+        cplx = session.get(Complex, link.complex_id)
+        if not cplx:
+            raise HTTPException(status_code=404, detail="Complex not found")
+        mapping = ComplexPartMap(part_id=part_id, complex_id=cplx.id)
+        session.add(mapping)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(ComplexPartMap).where(ComplexPartMap.complex_id == cplx.id)
+        ).one()
+        obj = ComplexRead(id=cplx.id, name=cplx.name, eda_path=cplx.eda_path, notes=cplx.notes, usage_count=count)
+        if request.headers.get("hx-request"):
+            parts = []
+            stmt = (
+                select(Part)
+                .join(ComplexPartMap, Part.id == ComplexPartMap.part_id)
+                .where(ComplexPartMap.complex_id == cplx.id)
+            )
+            for p in session.exec(stmt).all():
+                pc = session.exec(
+                    select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+                ).one()
+                parts.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=pc))
+            return templates.TemplateResponse(
+                "testasset_detail.html",
+                {"request": request, "obj": obj, "parts": parts, "kind": "complex"},
+            )
+        return obj
+
+
+@app.delete("/parts/{part_id}/complexes/{cid}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def remove_part_complex(part_id: int, cid: int, request: Request, current_user: User = Depends(edit_allowed)):
+    with Session(engine) as session:
+        mapping = session.get(ComplexPartMap, {"part_id": part_id, "complex_id": cid})
+        if mapping:
+            session.delete(mapping)
+            session.commit()
+        if request.headers.get("hx-request"):
+            cplx = session.get(Complex, cid)
+            if not cplx:
+                raise HTTPException(status_code=404, detail="Complex not found")
+            obj = ComplexRead(id=cplx.id, name=cplx.name, eda_path=cplx.eda_path, notes=cplx.notes)
+            parts = []
+            stmt = (
+                select(Part)
+                .join(ComplexPartMap, Part.id == ComplexPartMap.part_id)
+                .where(ComplexPartMap.complex_id == cid)
+            )
+            for p in session.exec(stmt).all():
+                pc = session.exec(
+                    select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+                ).one()
+                parts.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=pc))
+            return templates.TemplateResponse(
+                "testasset_detail.html",
+                {"request": request, "obj": obj, "parts": parts, "kind": "complex"},
+            )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/parts/{part_id}/pythontests", response_model=PythonTestRead, status_code=status.HTTP_201_CREATED)
+def add_part_pythontest(part_id: int, link: PyTestLink, request: Request, current_user: User = Depends(edit_allowed)):
+    with Session(engine) as session:
+        part = session.get(Part, part_id)
+        if not part:
+            raise HTTPException(status_code=404, detail="Part not found")
+        pt = session.get(PythonTest, link.pythontest_id)
+        if not pt:
+            raise HTTPException(status_code=404, detail="PythonTest not found")
+        mapping = PyTestPartMap(part_id=part_id, pythontest_id=pt.id)
+        session.add(mapping)
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(PyTestPartMap).where(PyTestPartMap.pythontest_id == pt.id)
+        ).one()
+        obj = PythonTestRead(id=pt.id, name=pt.name, file_path=pt.file_path, notes=pt.notes, usage_count=count)
+        if request.headers.get("hx-request"):
+            parts = []
+            stmt = (
+                select(Part)
+                .join(PyTestPartMap, Part.id == PyTestPartMap.part_id)
+                .where(PyTestPartMap.pythontest_id == pt.id)
+            )
+            for p in session.exec(stmt).all():
+                pc = session.exec(
+                    select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+                ).one()
+                parts.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=pc))
+            return templates.TemplateResponse(
+                "testasset_detail.html",
+                {"request": request, "obj": obj, "parts": parts, "kind": "py"},
+            )
+        return obj
+
+
+@app.delete("/parts/{part_id}/pythontests/{pid}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def remove_part_pythontest(part_id: int, pid: int, request: Request, current_user: User = Depends(edit_allowed)):
+    with Session(engine) as session:
+        mapping = session.get(PyTestPartMap, {"part_id": part_id, "pythontest_id": pid})
+        if mapping:
+            session.delete(mapping)
+            session.commit()
+        if request.headers.get("hx-request"):
+            pt = session.get(PythonTest, pid)
+            if not pt:
+                raise HTTPException(status_code=404, detail="PythonTest not found")
+            obj = PythonTestRead(id=pt.id, name=pt.name, file_path=pt.file_path, notes=pt.notes)
+            parts = []
+            stmt = (
+                select(Part)
+                .join(PyTestPartMap, Part.id == PyTestPartMap.part_id)
+                .where(PyTestPartMap.pythontest_id == pid)
+            )
+            for p in session.exec(stmt).all():
+                pc = session.exec(
+                    select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+                ).one()
+                parts.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=pc))
+            return templates.TemplateResponse(
+                "testasset_detail.html",
+                {"request": request, "obj": obj, "parts": parts, "kind": "py"},
+            )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.get("/complexes", response_model=list[ComplexRead])
 def list_complexes(skip: int = 0, limit: int = 50, current_user: User = Depends(get_current_user)) -> list[ComplexRead]:
     if limit > 200:
         limit = 200
     with Session(engine) as session:
         stmt = select(Complex).offset(skip).limit(limit)
-        return session.exec(stmt).all()
+        rows = []
+        for c in session.exec(stmt).all():
+            count = session.exec(
+                select(sqlalchemy.func.count()).select_from(ComplexPartMap).where(ComplexPartMap.complex_id == c.id)
+            ).one()
+            rows.append(ComplexRead(id=c.id, name=c.name, eda_path=c.eda_path, notes=c.notes, usage_count=count))
+        return rows
 
 
 @app.post("/complexes", response_model=ComplexRead, status_code=status.HTTP_201_CREATED)
@@ -1196,7 +1358,7 @@ def create_complex(obj: ComplexCreate, current_user: User = Depends(edit_allowed
         session.add(db)
         session.commit()
         session.refresh(db)
-        return db
+        return ComplexRead(id=db.id, name=db.name, eda_path=db.eda_path, notes=db.notes, usage_count=0)
 
 
 @app.patch("/complexes/{cid}", response_model=ComplexRead)
@@ -1210,7 +1372,10 @@ def update_complex(cid: int, obj: ComplexUpdate, current_user: User = Depends(ed
         session.add(db)
         session.commit()
         session.refresh(db)
-        return db
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(ComplexPartMap).where(ComplexPartMap.complex_id == db.id)
+        ).one()
+        return ComplexRead(id=db.id, name=db.name, eda_path=db.eda_path, notes=db.notes, usage_count=count)
 
 
 @app.post("/complexes/{cid}/upload_eda", response_model=ComplexRead)
@@ -1233,7 +1398,10 @@ async def upload_eda(
         session.add(db)
         session.commit()
         session.refresh(db)
-        return db
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(ComplexPartMap).where(ComplexPartMap.complex_id == db.id)
+        ).one()
+        return ComplexRead(id=db.id, name=db.name, eda_path=db.eda_path, notes=db.notes, usage_count=count)
 
 
 @app.delete("/complexes/{cid}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -1255,7 +1423,13 @@ def list_pythontests(skip: int = 0, limit: int = 50, current_user: User = Depend
         limit = 200
     with Session(engine) as session:
         stmt = select(PythonTest).offset(skip).limit(limit)
-        return session.exec(stmt).all()
+        rows = []
+        for p in session.exec(stmt).all():
+            count = session.exec(
+                select(sqlalchemy.func.count()).select_from(PyTestPartMap).where(PyTestPartMap.pythontest_id == p.id)
+            ).one()
+            rows.append(PythonTestRead(id=p.id, name=p.name, file_path=p.file_path, notes=p.notes, usage_count=count))
+        return rows
 
 
 @app.post("/pythontests", response_model=PythonTestRead, status_code=status.HTTP_201_CREATED)
@@ -1265,7 +1439,7 @@ def create_pythontest(obj: PythonTestCreate, current_user: User = Depends(edit_a
         session.add(db)
         session.commit()
         session.refresh(db)
-        return db
+        return PythonTestRead(id=db.id, name=db.name, file_path=db.file_path, notes=db.notes, usage_count=0)
 
 
 @app.patch("/pythontests/{pid}", response_model=PythonTestRead)
@@ -1279,7 +1453,10 @@ def update_pythontest(pid: int, obj: PythonTestUpdate, current_user: User = Depe
         session.add(db)
         session.commit()
         session.refresh(db)
-        return db
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(PyTestPartMap).where(PyTestPartMap.pythontest_id == db.id)
+        ).one()
+        return PythonTestRead(id=db.id, name=db.name, file_path=db.file_path, notes=db.notes, usage_count=count)
 
 
 @app.post("/pythontests/{pid}/upload_file", response_model=PythonTestRead)
@@ -1302,7 +1479,10 @@ async def upload_pythontest_file(
         session.add(db)
         session.commit()
         session.refresh(db)
-        return db
+        count = session.exec(
+            select(sqlalchemy.func.count()).select_from(PyTestPartMap).where(PyTestPartMap.pythontest_id == db.id)
+        ).one()
+        return PythonTestRead(id=db.id, name=db.name, file_path=db.file_path, notes=db.notes, usage_count=count)
 
 
 @app.delete("/pythontests/{pid}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -2104,12 +2284,22 @@ def ui_testassets_table(request: Request, kind: str = "macro", q: str | None = N
             stmt = select(Complex)
             if q:
                 stmt = stmt.where(Complex.name.ilike(f"%{q}%"))
-            rows = [ComplexRead(id=c.id, name=c.name, eda_path=c.eda_path, notes=c.notes) for c in session.exec(stmt).all()]
+            rows = []
+            for c in session.exec(stmt).all():
+                count = session.exec(
+                    select(sqlalchemy.func.count()).select_from(ComplexPartMap).where(ComplexPartMap.complex_id == c.id)
+                ).one()
+                rows.append(ComplexRead(id=c.id, name=c.name, eda_path=c.eda_path, notes=c.notes, usage_count=count))
         elif kind == "py":
             stmt = select(PythonTest)
             if q:
                 stmt = stmt.where(PythonTest.name.ilike(f"%{q}%"))
-            rows = [PythonTestRead(id=p.id, name=p.name, file_path=p.file_path, notes=p.notes) for p in session.exec(stmt).all()]
+            rows = []
+            for p in session.exec(stmt).all():
+                count = session.exec(
+                    select(sqlalchemy.func.count()).select_from(PyTestPartMap).where(PyTestPartMap.pythontest_id == p.id)
+                ).one()
+                rows.append(PythonTestRead(id=p.id, name=p.name, file_path=p.file_path, notes=p.notes, usage_count=count))
         else:
             stmt = select(TestMacro)
             if q:
@@ -2166,9 +2356,20 @@ def ui_complex_detail(cid: int, request: Request):
         if not cplx:
             raise HTTPException(status_code=404, detail="Complex not found")
         obj = ComplexRead(id=cplx.id, name=cplx.name, eda_path=cplx.eda_path, notes=cplx.notes)
+        parts = []
+        stmt = (
+            select(Part)
+            .join(ComplexPartMap, Part.id == ComplexPartMap.part_id)
+            .where(ComplexPartMap.complex_id == cid)
+        )
+        for p in session.exec(stmt).all():
+            pc = session.exec(
+                select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+            ).one()
+            parts.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=pc))
     return templates.TemplateResponse(
         "testasset_detail.html",
-        {"request": request, "obj": obj, "parts": [], "kind": "complex"},
+        {"request": request, "obj": obj, "parts": parts, "kind": "complex"},
     )
 
 
@@ -2179,9 +2380,20 @@ def ui_py_detail(pid: int, request: Request):
         if not pt:
             raise HTTPException(status_code=404, detail="PythonTest not found")
         obj = PythonTestRead(id=pt.id, name=pt.name, file_path=pt.file_path, notes=pt.notes)
+        parts = []
+        stmt = (
+            select(Part)
+            .join(PyTestPartMap, Part.id == PyTestPartMap.part_id)
+            .where(PyTestPartMap.pythontest_id == pid)
+        )
+        for p in session.exec(stmt).all():
+            pc = session.exec(
+                select(sqlalchemy.func.count()).select_from(BOMItem).where(BOMItem.part_id == p.id)
+            ).one()
+            parts.append(PartRead(id=p.id, number=p.number, description=p.description, usage_count=pc))
     return templates.TemplateResponse(
         "testasset_detail.html",
-        {"request": request, "obj": obj, "parts": [], "kind": "py"},
+        {"request": request, "obj": obj, "parts": parts, "kind": "py"},
     )
 
 
