@@ -29,7 +29,7 @@ def client_fixture():
 def auth_header(client):
     resp = client.post(
         "/auth/token",
-        data={"username": "admin", "password": "change_me"},
+        data={"username": "admin", "password": "123456789"},
     )
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -52,8 +52,8 @@ def test_import_endpoint(client, auth_header):
 
     files = {"file": ("sample.pdf", pdf_bytes, "application/pdf")}
     cust = client.post("/customers", json={"name": "C"}).json()
-    proj = client.post("/projects", json={"customer_id": cust['id'], "name": "P"}).json()
-    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    proj = client.post("/projects", json={"customer_id": cust['id'], "name": "P"}, headers=auth_header).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies", headers=auth_header).json()[0]['id']
 
     response = client.post(f"/bom/import?assembly_id={aid}", files=files, headers=auth_header)
     assert response.status_code == 200

@@ -19,14 +19,14 @@ def client_fixture():
 
 @pytest.fixture
 def auth_header(client):
-    token = client.post("/auth/token", data={"username": "admin", "password": "change_me"}).json()["access_token"]
+    token = client.post("/auth/token", data={"username": "admin", "password": "123456789"}).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
 def test_bom_upload_and_list(client, auth_header):
     cust = client.post("/customers", json={"name": "AC"}).json()
-    proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}).json()
-    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    proj = client.post("/projects", json={"customer_id": cust["id"], "name": "P"}, headers=auth_header).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies", headers=auth_header).json()[0]['id']
 
     csv_data = "part_number,description,quantity\nP1,Res,1\nP2,Cap,2\n"
     files = {"file": ("bom.csv", csv_data, "text/csv")}
@@ -36,6 +36,6 @@ def test_bom_upload_and_list(client, auth_header):
     assert len(data) == 2
     assert all(item["assembly_id"] == aid for item in data)
 
-    r = client.get(f"/assemblies/{aid}/bom-items")
+    r = client.get(f"/assemblies/{aid}/bom-items", headers=auth_header)
     assert r.status_code == 200
     assert len(r.json()) == 2

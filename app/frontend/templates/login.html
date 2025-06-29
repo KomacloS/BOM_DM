@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% set login = True %}
+{% block content %}
+<div class="max-w-sm mx-auto mt-10">
+  <h1 class="text-xl font-bold mb-2">Login</h1>
+  <form id="login-form" class="flex flex-col space-y-2">
+    <input id="username" name="username" class="border p-1" placeholder="Username" required>
+    <input id="password" name="password" type="password" class="border p-1" placeholder="Password" required>
+    <button class="bg-blue-500 text-white px-2 py-1">Login</button>
+  </form>
+  <div id="login-error" class="text-red-600 hidden mt-2">Invalid login</div>
+</div>
+<script type="module">
+document.getElementById('login-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const r = await api('/auth/token', { method: 'POST', body: new URLSearchParams(fd) });
+  if(r.ok){
+    const tok = (await r.json()).access_token;
+    localStorage.setItem('bomdb_token', tok);
+    window.location.href = '/ui/';
+  } else {
+    document.getElementById('login-error').classList.remove('hidden');
+  }
+};
+</script>
+{% endblock %}

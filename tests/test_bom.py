@@ -27,7 +27,7 @@ def client_fixture():
 def auth_header(client):
     resp = client.post(
         "/auth/token",
-        data={"username": "admin", "password": "change_me"},
+        data={"username": "admin", "password": "123456789"},
     )
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}

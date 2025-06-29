@@ -28,7 +28,7 @@ def client_fixture():
 def auth_header(client):
     resp = client.post(
         "/auth/token",
-        data={"username": "admin", "password": "change_me"},
+        data={"username": "admin", "password": "123456789"},
     )
     token = resp.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
@@ -58,7 +58,7 @@ def test_quote_endpoint(client, auth_header):
         json={"part_number": "P2", "description": "B", "quantity": 3, "unit_cost": 1.0},
         headers=auth_header,
     )
-    resp = client.get("/bom/quote")
+    resp = client.get("/bom/quote", headers=auth_header)
     assert resp.status_code == 200
     data = resp.json()
     assert set(data.keys()) == {
@@ -87,7 +87,7 @@ def test_quote_excludes_dnp(client, auth_header):
         json={"part_number": "P2", "description": "B", "quantity": 3, "unit_cost": 1.0, "dnp": True},
         headers=auth_header,
     )
-    resp = client.get("/bom/quote")
+    resp = client.get("/bom/quote", headers=auth_header)
     assert resp.status_code == 200
     data = resp.json()
     assert data["total_components"] == 2

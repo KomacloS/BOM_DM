@@ -19,7 +19,7 @@ def client_fixture():
 
 @pytest.fixture
 def auth_header(client):
-    token = client.post("/auth/token", data={"username": "admin", "password": "change_me"}).json()["access_token"]
+    token = client.post("/auth/token", data={"username": "admin", "password": "123456789"}).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -30,7 +30,7 @@ def test_table_and_detail(client, auth_header):
     client.post(f"/parts/{p1['id']}/testmacros", json={"test_macro_id": macro['id']}, headers=auth_header)
     client.post(f"/parts/{p2['id']}/testmacros", json={"test_macro_id": macro['id']}, headers=auth_header)
 
-    r = client.get("/ui/testassets/table")
+    r = client.get("/ui/testassets/table", headers=auth_header)
     assert r.status_code == 200
     assert "<tbody" in r.text
     assert "M" in r.text
@@ -44,6 +44,6 @@ def test_table_and_detail(client, auth_header):
     )
     assert up.status_code == 200
 
-    detail = client.get(f"/ui/testassets/detail/{macro['id']}")
+    detail = client.get(f"/ui/testassets/detail/{macro['id']}", headers=auth_header)
     assert detail.status_code == 200
     assert "<model-viewer" in detail.text

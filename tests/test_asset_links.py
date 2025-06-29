@@ -21,7 +21,7 @@ def client_fixture():
 
 @pytest.fixture
 def auth_header(client):
-    token = client.post("/auth/token", data={"username": "admin", "password": "change_me"}).json()["access_token"]
+    token = client.post("/auth/token", data={"username": "admin", "password": "123456789"}).json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -36,9 +36,9 @@ def test_asset_links(client, auth_header):
     assert client.get(f"/complexes/{cplx['id']}/parts", headers=auth_header).json()[0]['id'] == part['id']
     assert client.get(f"/pythontests/{pyt['id']}/parts", headers=auth_header).json()[0]['id'] == part['id']
 
-    d1 = client.get(f"/ui/testassets/detail/complex/{cplx['id']}")
+    d1 = client.get(f"/ui/testassets/detail/complex/{cplx['id']}", headers=auth_header)
     assert "P1" in d1.text
-    d2 = client.get(f"/ui/testassets/detail/py/{pyt['id']}")
+    d2 = client.get(f"/ui/testassets/detail/py/{pyt['id']}", headers=auth_header)
     assert "P1" in d2.text
 
     client.delete(f"/parts/{part['id']}/complexes/{cplx['id']}", headers=auth_header)

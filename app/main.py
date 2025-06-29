@@ -12,10 +12,12 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, Response
+from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, Response, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from typing import Optional
+import enum
 import jwt
 from sqlmodel import SQLModel, Field, Session, select
 from sqlalchemy import (
@@ -370,11 +372,17 @@ class AuditEvent(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class Role(str, enum.Enum):
+    admin = "admin"
+    editor = "editor"
+    viewer = "viewer"
+
+
 class User(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     username: str = Field(sa_column_kwargs={"unique": True})
     hashed_pw: str
-    role: str
+    role: Role
 
 
 class UserCreate(SQLModel):
@@ -676,21 +684,14 @@ def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     migrate_db()
     with Session(engine) as session:
-        user_exists = session.exec(select(User)).first()
-        if not user_exists:
-            admin = User(
-                username="admin",
-                hashed_pw=get_password_hash("change_me"),
-                role="admin",
-            )
-            session.add(admin)
-            session.commit()
+        pass
 
 os.makedirs("datasheets", exist_ok=True)
 os.makedirs("assets", exist_ok=True)
 
 app = FastAPI()
 app.mount("/datasheets", StaticFiles(directory="datasheets"), name="datasheets")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 ui_router = APIRouter(prefix="/ui")
 workflow_router = APIRouter(prefix="/ui/workflow")
 
@@ -723,9 +724,15 @@ def admin_required(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
+def admin_only(user: User = Depends(get_current_user)) -> User:
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin required")
+    return user
+
+
 def edit_allowed(current_user: User = Depends(get_current_user)) -> User:
-    """Deny write operations for operator role."""
-    if current_user.role == "operator":
+    """Deny write operations for viewer role."""
+    if current_user.role == Role.viewer:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Read only")
     return current_user
 
@@ -741,6 +748,24 @@ def optional_user(token: str | None = Depends(oauth2_scheme)) -> User | None:
     with Session(engine) as session:
         return session.exec(select(User).where(User.username == username)).first()
 
+
+def create_default_users() -> None:
+    users = [
+        ("admin", "123456789", Role.admin),
+        ("ed", "123456789", Role.editor),
+        ("view", "123456789", Role.viewer),
+    ]
+    with Session(engine) as session:
+        for name, pw, role in users:
+            existing = session.exec(select(User).where(User.username == name)).first()
+            if not existing:
+                session.add(User(username=name, hashed_pw=get_password_hash(pw), role=role))
+            else:
+                if not verify_password(pw, existing.hashed_pw):
+                    existing.hashed_pw = get_password_hash(pw)
+                existing.role = role
+        session.commit()
+
 origins = ["http://localhost:3000"]
 
 app.add_middleware(
@@ -752,11 +777,33 @@ app.add_middleware(
 )
 
 
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        protected = (
+            "/bom",
+            "/projects",
+            "/assemblies",
+            "/parts",
+            "/inventory",
+            "/test",
+            "/export",
+            "/traceability",
+            "/auth/me",
+        )
+        path = request.url.path
+        if path.startswith(protected) and "Authorization" not in request.headers:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+app.add_middleware(AuthMiddleware)
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     """Initialise the database on application start."""
 
     init_db()
+    create_default_users()
     if not scheduler.get_jobs():
         scheduler.add_job(nightly_backup, "cron", hour=2, minute=0)
     if not scheduler.running:
@@ -781,6 +828,11 @@ def health() -> dict[str, str]:
         db_status = "error"
 
     return {"api": "ok", "db": db_status}
+
+
+@app.get("/", response_class=HTMLResponse)
+def login_page(request: Request) -> Response:
+    return templates.TemplateResponse("login.html", {"request": request, "login": True})
 
 
 @app.post("/auth/token")
@@ -1958,11 +2010,10 @@ def fetch_price(
         return item
 
 
-@app.post("/bom/import", response_model=list[BOMItemRead])
+@app.post("/bom/import", response_model=list[BOMItemRead], dependencies=[Depends(admin_only)])
 async def import_bom(
     assembly_id: int,
     file: UploadFile = File(...),
-    current_user: User = Depends(edit_allowed),
 ) -> list[BOMItemRead]:
     """Import BOM items from an uploaded PDF or Excel file."""
 
@@ -2466,7 +2517,7 @@ def ui_workflow(request: Request, user: User | None = Depends(optional_user)):
             "max_ds_mb": MAX_DATASHEET_MB,
             "hourly": BOM_HOURLY_USD,
             "default_currency": BOM_DEFAULT_CURRENCY,
-            "hide_po": user.role == "operator" if user else False,
+            "hide_po": user.role == Role.viewer if user else False,
         },
     )
 

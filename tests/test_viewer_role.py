@@ -14,11 +14,11 @@ def client_fixture():
 
 @pytest.fixture
 def admin_header(client):
-    token = client.post('/auth/token', data={'username':'admin','password':'change_me'}).json()['access_token']
+    token = client.post('/auth/token', data={'username':'admin','password':'123456789'}).json()['access_token']
     return {'Authorization': f'Bearer {token}'}
 
-def test_operator_cannot_patch(client, admin_header):
-    client.post('/auth/register', json={'username':'op','password':'pw','role':'operator'}, headers=admin_header)
+def test_viewer_cannot_patch(client, admin_header):
+    client.post('/auth/register', json={'username':'op','password':'pw','role':'viewer'}, headers=admin_header)
     op_token = client.post('/auth/token', data={'username':'op','password':'pw'}).json()['access_token']
     op_header = {'Authorization': f'Bearer {op_token}'}
     item = client.post('/bom/items', json={'part_number':'P1','description':'d','quantity':1}, headers=admin_header).json()
@@ -26,8 +26,8 @@ def test_operator_cannot_patch(client, admin_header):
     assert r.status_code == 403
 
 
-def test_operator_can_fetch_price(client, admin_header):
-    client.post('/auth/register', json={'username':'op','password':'pw','role':'operator'}, headers=admin_header)
+def test_viewer_can_fetch_price(client, admin_header):
+    client.post('/auth/register', json={'username':'op','password':'pw','role':'viewer'}, headers=admin_header)
     op_token = client.post('/auth/token', data={'username':'op','password':'pw'}).json()['access_token']
     op_header = {'Authorization': f'Bearer {op_token}'}
     item = client.post('/bom/items', json={'part_number':'P1','description':'d','quantity':1,'mpn':'KNOWN'}, headers=admin_header).json()
