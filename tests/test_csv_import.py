@@ -20,7 +20,10 @@ def auth_header(client):
 def test_semicolon_csv_import(client, auth_header):
     data = 'part_number;description;quantity;unit_cost\nP1;Res;2;1.5\n'
     files = {'file': ('bom.csv', data, 'text/csv')}
-    r = client.post('/bom/import', files=files, headers=auth_header)
+    cust = client.post('/customers', json={'name': 'C'}).json()
+    proj = client.post('/projects', json={'customer_id': cust['id'], 'name': 'P'}).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+    r = client.post(f'/bom/import?assembly_id={aid}', files=files, headers=auth_header)
     assert r.status_code == 200
     item = r.json()[0]
     assert item['unit_cost'] == 1.5

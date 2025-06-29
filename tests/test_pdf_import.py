@@ -51,7 +51,11 @@ def test_import_endpoint(client, auth_header):
     pdf_bytes = doc.tobytes()
 
     files = {"file": ("sample.pdf", pdf_bytes, "application/pdf")}
-    response = client.post("/bom/import", files=files, headers=auth_header)
+    cust = client.post("/customers", json={"name": "C"}).json()
+    proj = client.post("/projects", json={"customer_id": cust['id'], "name": "P"}).json()
+    aid = client.get(f"/projects/{proj['id']}/assemblies").json()[0]['id']
+
+    response = client.post(f"/bom/import?assembly_id={aid}", files=files, headers=auth_header)
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 1
