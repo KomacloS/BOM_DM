@@ -65,6 +65,7 @@ Import a BOM file:
 curl -F file=@sample.pdf http://localhost:8000/bom/import
 curl -F file=@bom.csv http://localhost:8000/bom/import
 ```
+Download a starter template with `curl -O http://localhost:8000/bom/template`.
 CSV columns may include `manufacturer`, `mpn`, `footprint` and `unit_cost`.
 
 ### Customers & Projects
@@ -122,6 +123,7 @@ Inline edits are available under `/ui/inventory`.
 
 Each Part can have one-or-more Test Assets attached (macros, complexes or Python tests).
 Use `/parts/{id}/testmacros`, `/parts/{id}/complexes` and `/parts/{id}/pythontests` to manage these links.
+List macros linked to a part via `GET /parts/{id}/testmacros`.
 
 ### Test results
 
@@ -258,11 +260,16 @@ Python Test  POST /pythontests/{id}/upload_file  .py ≤ 1 MB
 
 Download files via `/assets/{sha}/{name}`.
 
-Link Parts to a complex or Python test:
-
+Link or unlink Parts and Test Assets:
 ```bash
 curl -X POST -H "Content-Type: application/json" \
+     -d '{"test_macro_id":1}' /parts/5/testmacros
+curl -X DELETE /parts/5/testmacros/1
+curl -X POST -H "Content-Type: application/json" \
      -d '{"complex_id":1}' /parts/5/complexes
+curl -X DELETE /parts/5/complexes/1
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"pythontest_id":2}' /parts/5/pythontests
 curl -X DELETE /parts/5/pythontests/2
 ```
 
