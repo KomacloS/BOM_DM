@@ -1,17 +1,23 @@
 <tbody>
-{% for m in macros %}
+{% for a in assets %}
 <tr>
-  <td class="px-2">{{ m.id }}</td>
-  <td class="px-2">{{ m.name }}</td>
-  <td class="px-2"><span class="bg-sky-600 text-white text-xs px-1 rounded">{{ m.usage_count }}</span></td>
+  <td class="px-2">{{ a.id }}</td>
+  <td class="px-2">{{ a.name }}</td>
+  <td class="px-2"><span class="bg-sky-600 text-white text-xs px-1 rounded">{{ a.usage_count or 0 }}</span></td>
   <td class="px-2">
-  {% if m.glb_path %}
-    <model-viewer src="/{{ m.glb_path }}" camera-controls style="width:80px;height:80px"></model-viewer>
-  {% else %}-{% endif %}
+  {% if kind == 'macro' %}
+    {% if a.glb_path %}
+      <model-viewer src="/{{ a.glb_path }}" camera-controls style="width:80px;height:80px"></model-viewer>
+    {% else %}-{% endif %}
+  {% elif kind == 'complex' %}
+    {% if a.eda_path %}<a href="/{{ a.eda_path }}">ZIP</a>{% else %}-{% endif %}
+  {% elif kind == 'py' %}
+    {% if a.file_path %}<a href="/{{ a.file_path }}">Download</a>{% else %}-{% endif %}
+  {% endif %}
   </td>
   <td class="px-2">
-    <button hx-get="/ui/testassets/detail/{{ m.id }}" hx-target="#drawer" class="upload-btn bg-blue-500 text-white px-1 mr-1">Upload</button>
-    <button hx-get="/ui/testassets/detail/{{ m.id }}" hx-target="#drawer" class="bg-gray-500 text-white px-1">Preview</button>
+    <button hx-get="/ui/testassets/detail{% if kind != 'macro' %}/{{ kind }}{% endif %}/{{ a.id }}" hx-target="#drawer" class="upload-btn bg-blue-500 text-white px-1 mr-1">Upload</button>
+    <button hx-get="/ui/testassets/detail{% if kind != 'macro' %}/{{ kind }}{% endif %}/{{ a.id }}" hx-target="#drawer" class="bg-gray-500 text-white px-1">Preview</button>
   </td>
 </tr>
 {% endfor %}

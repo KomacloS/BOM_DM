@@ -261,8 +261,12 @@ Download files via `/assets/{sha}/{name}`.
 
 Example:
 ```bash
-curl http://localhost:8000/ui/testassets/table
+curl http://localhost:8000/ui/testassets/table?kind=complex
+curl http://localhost:8000/ui/testassets/table?kind=py
 ```
+
+Use the search box to filter assets by name.
+
 
 Workflow inline editing with the clip icon is shown in the documentation.
 
