@@ -1,5 +1,59 @@
 {% extends 'base.html' %}
 {% block content %}
 <h1 class="text-2xl mb-4">User Admin</h1>
-<p>Coming soon.</p>
+
+<table id="users-table" class="table-auto border mb-4">
+  <thead>
+    <tr><th class="px-2">Username</th><th class="px-2">Role</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<form id="add-user-form" class="flex flex-col space-y-2 max-w-sm">
+  <input name="username" class="border p-1" placeholder="Username" required>
+  <input name="password" type="password" class="border p-1" placeholder="Password" required>
+  <select name="role" class="border p-1">
+    <option value="admin">admin</option>
+    <option value="editor">editor</option>
+    <option value="viewer">viewer</option>
+  </select>
+  <button class="bg-blue-500 text-white px-2 py-1">Add User</button>
+</form>
+<div id="user-error" class="text-red-600 hidden mt-2"></div>
+
+<script type="module">
+async function loadUsers(){
+  const r = await api('/users');
+  if(r.ok){
+    const users = await r.json();
+    const tbody = document.querySelector('#users-table tbody');
+    tbody.innerHTML = '';
+    users.forEach(u=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="border px-2">${u.username}</td><td class="border px-2">${u.role}</td>`;
+      tbody.appendChild(tr);
+    });
+  }
+}
+
+document.getElementById('add-user-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  const r = await api('/auth/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  if(r.ok){
+    e.target.reset();
+    document.getElementById('user-error').classList.add('hidden');
+    loadUsers();
+  } else {
+    document.getElementById('user-error').textContent = await r.text();
+    document.getElementById('user-error').classList.remove('hidden');
+  }
+};
+
+loadUsers();
+</script>
 {% endblock %}

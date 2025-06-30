@@ -391,6 +391,12 @@ class UserCreate(SQLModel):
     role: str = "user"
 
 
+class UserRead(SQLModel):
+    id: int
+    username: str
+    role: Role
+
+
 class QuoteResponse(SQLModel):
     """Schema returned from the quote endpoint."""
 
@@ -864,6 +870,13 @@ def register_user(user_in: UserCreate) -> dict:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
         session.refresh(user)
     return {"id": user.id, "username": user.username, "role": user.role}
+
+
+@app.get("/users", response_model=list[UserRead], dependencies=[Depends(admin_required)])
+def list_users() -> list[UserRead]:
+    """Return all registered users."""
+    with Session(engine) as session:
+        return session.exec(select(User)).all()
 
 
 @app.get("/customers", response_model=list[CustomerRead])
