@@ -303,29 +303,15 @@ Workflow inline editing with the clip icon is shown in the documentation.
 
 ### 📋 Server Control Center GUI
 
-Launch the graphical control center from a virtual environment on a session that can open windows (RDP or local login):
+Install the optional GUI dependencies and launch:
 
 ```bash
-bom-gui               # or:  python -m gui.control_center
+python -m pip install -e .[full]
+bom-gui
 ```
 
-This window lets you start and stop the API server, run tests, trigger backups and download exports without using the terminal.
+Use **Backend = Local** for an in-memory API or switch to **HTTP** to talk to a running server.
+Tabs include Quick Actions (import/seed/export helpers), Auth, DB settings, an HTTP playground and an optional Server controller.
+The toolbar’s “Download BOM template” button fetches the same CSV exposed at [`GET /bom/template`](./app/main.py).
 
 ![GUI screenshot](docs/gui_screenshot.png)
-
-### One-click install
-
-Windows:
-```bat
-scripts\setup.bat
-```
-
-Linux/macOS:
-```bash
-chmod +x scripts/setup.sh
-./scripts/setup.sh
-```
-
-The script creates a virtual environment, installs all optional dependencies and launches the Control Center.
-It now detects the project root and directly invokes the Python inside `.venv`,
-so it works even if `python` isn't on your PATH.

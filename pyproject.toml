@@ -24,6 +24,8 @@ full = [
     "xlrd",
     "apscheduler",
     "requests",
+    "httpx",
+    "PySide6",
 ]
 
 [tool.setuptools]
