@@ -1,19 +1,44 @@
-# root: gui/control_center.py
+"""Main window for the debug GUI.
+
+The implementation is intentionally lightweight; it wires together a header
+with backend selection and a few debugging panels.  The design is modular so
+additional widgets can be added without touching the core window.
+"""
+
+from __future__ import annotations
+
 import os
 import sys
-import subprocess
-import threading
-from datetime import datetime
 from pathlib import Path
-import tkinter as tk
-from tkinter import messagebox, filedialog, ttk
-from tkinter.scrolledtext import ScrolledText
 
-import requests
-from app import config
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-def _reexec_into_venv() -> None:
-    """Relaunch with the venv's python if available."""
+from .api_client import HTTPClient, LocalClient, BaseClient
+from .widgets.auth_panel import AuthPanel
+from .widgets.db_panel import DBPanel
+from .widgets.api_playground import APIPlayground
+from .widgets.quick_actions import QuickActions
+from .widgets.server_panel import ServerPanel
+from .util import qt
+
+
+# ---------------------------------------------------------------------------
+# Optional helper to re-exec into the project's virtual environment similar to
+# the previous Tk implementation.  This keeps the console entry point working
+# when executed from the repository root.
+
+def _reexec_into_venv() -> None:  # pragma: no cover - environment helper
     if os.environ.get("BOM_NO_REEXEC"):
         return
     if sys.prefix == sys.base_prefix:
@@ -25,577 +50,113 @@ def _reexec_into_venv() -> None:
             os.environ["BOM_NO_REEXEC"] = "1"
             os.execv(str(exe), [str(exe)] + sys.argv)
 
-_reexec_into_venv()
 
-BASE_URL = "http://localhost:8000"
-LOG_DIR = Path("logs")
-LOG_UPDATE_MS = 1000
+# ---------------------------------------------------------------------------
+class ControlCenter(QMainWindow):
+    """Main application window."""
 
-PROC: subprocess.Popen | None = None
-TOKEN: str | None = None
-ROOT: tk.Tk | None = None
-STATUS_VAR: tk.StringVar | None = None
-LOG_WIDGET: ScrolledText | None = None
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("BOM Debug GUI")
 
+        self.client: BaseClient = LocalClient()
 
-class ServerTab(tk.Frame):
-    def __init__(self, master: tk.Misc):
-        super().__init__(master)
-        btn_frame = tk.Frame(self)
-        btn_frame.pack(fill="x")
-        tk.Button(btn_frame, text="▶ Start", command=start_server).pack(side="left")
-        tk.Button(btn_frame, text="✖ Stop", command=stop_server).pack(side="left")
-        tk.Button(btn_frame, text="↻ Restart", command=restart_server).pack(side="left")
-        global STATUS_VAR, LOG_WIDGET
-        STATUS_VAR = tk.StringVar(value="RUNNING" if detect_server() else "STOPPED")
-        tk.Label(btn_frame, textvariable=STATUS_VAR).pack(side="left", padx=10)
+        # ------------------------------------------------------------------
+        # Header bar with backend selector and token preview
+        header = QWidget()
+        hb = QHBoxLayout(header)
+        hb.addWidget(QLabel("Backend:"))
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["Local", "HTTP"])
+        self.backend_combo.currentTextChanged.connect(self.switch_backend)
+        hb.addWidget(self.backend_combo)
+        self.base_url_edit = QLineEdit("http://localhost:8000")
+        hb.addWidget(self.base_url_edit)
+        hb.addStretch(1)
+        hb.addWidget(QLabel("Token:"))
+        self.token_label = QLabel("<none>")
+        hb.addWidget(self.token_label)
+        dl_btn = QPushButton("Download BOM template")
+        dl_btn.clicked.connect(self.download_template)
+        hb.addWidget(dl_btn)
 
-        log_frame = tk.LabelFrame(self, text="Live log tail (last 200 lines)")
-        log_frame.pack(fill="both", expand=True, pady=5)
-        LOG_WIDGET = ScrolledText(log_frame, state="disabled", height=20)
-        LOG_WIDGET.pack(fill="both", expand=True)
+        # ------------------------------------------------------------------
+        self.tabs = QTabWidget()
+        self.auth_panel = AuthPanel(self.client, self._token_changed)
+        self.db_panel = DBPanel(self.client)
+        self.playground_panel = APIPlayground(self.client)
+        self.quick_panel = QuickActions(self.client)
+        self.server_panel = ServerPanel()
+        self.tabs.addTab(self.auth_panel, "Auth")
+        self.tabs.addTab(self.db_panel, "DB")
+        self.tabs.addTab(self.quick_panel, "Quick")
+        self.tabs.addTab(self.playground_panel, "API")
+        self.tabs.addTab(self.server_panel, "Server")
+        self.server_panel.base_url_changed.connect(self.base_url_edit.setText)
+        self.server_panel.set_enabled(False)
 
+        central = QWidget()
+        v = QVBoxLayout(central)
+        v.addWidget(header)
+        v.addWidget(self.tabs)
+        self.setCentralWidget(central)
 
-class BOMItemsTab(tk.Frame):
-    def __init__(self, master: tk.Misc):
-        super().__init__(master)
-        self.tree = ttk.Treeview(self, columns=("id", "pn", "desc", "qty", "ref"), show="headings")
-        for c in self.tree["columns"]:
-            self.tree.heading(c, text=c)
-        self.tree.pack(fill="both", expand=True)
-        btns = tk.Frame(self)
-        btns.pack(fill="x")
-        tk.Button(btns, text="Refresh", command=self.refresh).pack(side="left")
-        tk.Button(btns, text="Add", command=self.add_item).pack(side="left")
-        tk.Button(btns, text="Edit", command=self.edit_item).pack(side="left")
-        tk.Button(btns, text="Delete", command=self.delete_item).pack(side="left")
-        self.refresh()
-
-    def api_headers(self) -> dict[str, str]:
-        token = ensure_token()
-        return {"Authorization": f"Bearer {token}"} if token else {}
-
-    def refresh(self) -> None:
-        resp = requests.get(f"{BASE_URL}/bom/items", headers=self.api_headers())
-        if resp.status_code == 200:
-            for i in self.tree.get_children():
-                self.tree.delete(i)
-            for item in resp.json():
-                self.tree.insert("", "end", values=(item["id"], item["part_number"], item["description"], item["quantity"], item.get("reference") or ""))
-
-    def add_item(self) -> None:
-        self._item_dialog()
-
-    def edit_item(self) -> None:
-        sel = self.tree.selection()
-        if not sel:
-            return
-        item = self.tree.item(sel[0], "values")
-        self._item_dialog(item)
-
-    def delete_item(self) -> None:
-        sel = self.tree.selection()
-        if not sel:
-            return
-        iid = self.tree.item(sel[0], "values")[0]
-        headers = self.api_headers()
-        if not headers:
-            return
-        resp = requests.delete(f"{BASE_URL}/bom/items/{iid}", headers=headers)
-        if resp.status_code == 204:
-            self.refresh()
+    # ------------------------------------------------------------------
+    def switch_backend(self, text: str) -> None:
+        token = self.client._token
+        if text == "Local":
+            self.client = LocalClient()
         else:
-            messagebox.showerror("Error", resp.text)
+            self.client = HTTPClient(self.base_url_edit.text() or "http://localhost:8000")
+        if token:
+            self.client.set_token(token)
+        # propagate new client to panels
+        self.auth_panel.set_client(self.client)
+        self.db_panel.set_client(self.client)
+        self.quick_panel.set_client(self.client)
+        self.playground_panel.set_client(self.client)
+        self.server_panel.set_enabled(text == "HTTP")
 
-    def _item_dialog(self, values: tuple | None = None) -> None:
-        dlg = tk.Toplevel(self)
-        dlg.title("Item" if values is None else "Edit Item")
-        tk.Label(dlg, text="Part number").grid(row=0, column=0)
-        pn = tk.Entry(dlg)
-        pn.grid(row=0, column=1)
-        tk.Label(dlg, text="Description").grid(row=1, column=0)
-        desc = tk.Entry(dlg)
-        desc.grid(row=1, column=1)
-        tk.Label(dlg, text="Quantity").grid(row=2, column=0)
-        qty = tk.Entry(dlg)
-        qty.grid(row=2, column=1)
-        tk.Label(dlg, text="Reference").grid(row=3, column=0)
-        ref = tk.Entry(dlg)
-        ref.grid(row=3, column=1)
+    # ------------------------------------------------------------------
+    def _token_changed(self, token: str) -> None:
+        self.token_label.setText(token[:16] + "…" if token else "<none>")
 
-        if values:
-            pn.insert(0, values[1])
-            desc.insert(0, values[2])
-            qty.insert(0, values[3])
-            ref.insert(0, values[4])
-
-        def submit() -> None:
-            data = {
-                "part_number": pn.get(),
-                "description": desc.get(),
-                "quantity": int(qty.get() or 1),
-                "reference": ref.get() or None,
-            }
-            headers = self.api_headers()
-            if not headers:
-                return
-            if values:
-                iid = values[0]
-                resp = requests.put(f"{BASE_URL}/bom/items/{iid}", json=data, headers=headers)
-            else:
-                resp = requests.post(f"{BASE_URL}/bom/items", json=data, headers=headers)
-            if resp.status_code in (200, 201):
-                dlg.destroy()
-                self.refresh()
-            else:
-                messagebox.showerror("Error", resp.text)
-
-        tk.Button(dlg, text="Save", command=submit).grid(row=4, column=0, columnspan=2)
-        dlg.grab_set()
-        dlg.wait_window()
-
-
-class ImportPDFTab(tk.Frame):
-    def __init__(self, master: tk.Misc):
-        super().__init__(master)
-        tk.Button(self, text="Select PDF", command=self.select_file).pack(pady=10)
-
-    def select_file(self) -> None:
-        token = ensure_token()
-        if not token:
-            return
-        path = filedialog.askopenfilename(filetypes=[("PDF", "*.pdf")])
+    # ------------------------------------------------------------------
+    def download_template(self) -> None:
+        path = qt.save_file(self, "Save BOM template", "CSV Files (*.csv)")
         if not path:
             return
-        with open(path, "rb") as f:
-            files = {"file": (os.path.basename(path), f, "application/pdf")}
-            resp = requests.post(
-                f"{BASE_URL}/bom/import", files=files, headers={"Authorization": f"Bearer {token}"}
-            )
+        resp = self.client.get("/bom/template")
         if resp.status_code == 200:
-            messagebox.showinfo("Import", "Import complete")
+            with open(path, "wb") as f:
+                f.write(resp.content)
+            qt.alert(self, "Template", "Saved")
         else:
-            messagebox.showerror("Import failed", resp.text)
+            qt.error(self, "Error", resp.text)
 
-
-class QuoteTab(tk.Frame):
-    def __init__(self, master: tk.Misc):
-        super().__init__(master)
-        self.text = tk.Text(self, height=10, width=40)
-        self.text.pack(fill="both", expand=True)
-        tk.Button(self, text="Refresh", command=self.refresh).pack(pady=5)
-        self.refresh()
-
-    def refresh(self) -> None:
-        resp = requests.get(f"{BASE_URL}/bom/quote")
-        if resp.status_code == 200:
-            self.text.delete("1.0", tk.END)
-            self.text.insert(tk.END, resp.text)
-        else:
-            messagebox.showerror("Error", resp.text)
-
-
-class TestResultsTab(tk.Frame):
-    def __init__(self, master: tk.Misc):
-        super().__init__(master)
-        self.tree = ttk.Treeview(
-            self,
-            columns=("id", "sn", "date", "result", "details"),
-            show="headings",
-        )
-        for c in self.tree["columns"]:
-            self.tree.heading(c, text=c)
-        self.tree.pack(fill="both", expand=True)
-
-        btns = tk.Frame(self)
-        btns.pack(fill="x")
-        tk.Button(btns, text="Refresh", command=self.refresh).pack(side="left")
-        tk.Button(btns, text="Add", command=self.add_result).pack(side="left")
-        self.refresh()
-
-    def api_headers(self) -> dict[str, str]:
-        token = ensure_token()
-        return {"Authorization": f"Bearer {token}"} if token else {}
-
-    def refresh(self) -> None:
-        resp = requests.get(f"{BASE_URL}/testresults", headers=self.api_headers())
-        if resp.status_code == 200:
-            for i in self.tree.get_children():
-                self.tree.delete(i)
-            for r in resp.json():
-                self.tree.insert(
-                    "",
-                    "end",
-                    values=(r["test_id"], r.get("serial_number"), r["date_tested"], r["result"], r.get("failure_details")),
-                )
-
-    def add_result(self) -> None:
-        dlg = tk.Toplevel(self)
-        dlg.title("Add Result")
-        tk.Label(dlg, text="Serial number").grid(row=0, column=0)
-        sn = tk.Entry(dlg)
-        sn.grid(row=0, column=1)
-        tk.Label(dlg, text="Pass (true/false)").grid(row=1, column=0)
-        res = tk.Entry(dlg)
-        res.grid(row=1, column=1)
-        tk.Label(dlg, text="Details").grid(row=2, column=0)
-        det = tk.Entry(dlg)
-        det.grid(row=2, column=1)
-
-        def submit() -> None:
-            data = {
-                "serial_number": sn.get() or None,
-                "result": res.get().lower() in {"1", "true", "yes"},
-                "failure_details": det.get() or None,
-            }
-            headers = self.api_headers()
-            if not headers:
-                return
-            resp = requests.post(f"{BASE_URL}/testresults", json=data, headers=headers)
-            if resp.status_code == 201:
-                dlg.destroy()
-                self.refresh()
-            else:
-                messagebox.showerror("Error", resp.text)
-
-        tk.Button(dlg, text="Save", command=submit).grid(row=3, column=0, columnspan=2)
-        dlg.grab_set()
-        dlg.wait_window()
-
-
-class TraceabilityTab(tk.Frame):
-    def __init__(self, master: tk.Misc):
-        super().__init__(master)
-        comp_f = tk.LabelFrame(self, text="Component")
-        comp_f.pack(fill="x")
-        tk.Label(comp_f, text="Part number").grid(row=0, column=0)
-        self.comp_e = tk.Entry(comp_f)
-        self.comp_e.grid(row=0, column=1)
-        tk.Button(comp_f, text="Query", command=self.query_component).grid(row=0, column=2)
-
-        board_f = tk.LabelFrame(self, text="Board")
-        board_f.pack(fill="x")
-        tk.Label(board_f, text="Serial number").grid(row=0, column=0)
-        self.board_e = tk.Entry(board_f)
-        self.board_e.grid(row=0, column=1)
-        tk.Button(board_f, text="Query", command=self.query_board).grid(row=0, column=2)
-
-        self.text = tk.Text(self, height=10)
-        self.text.pack(fill="both", expand=True)
-
-    def query_component(self) -> None:
-        pn = self.comp_e.get()
-        self.text.delete("1.0", tk.END)
-        if not pn:
-            return
-        resp = requests.get(f"{BASE_URL}/traceability/component/{pn}")
-        if resp.status_code == 200:
-            self.text.insert(tk.END, resp.text)
-        else:
-            messagebox.showerror("Error", resp.text)
-
-
-class ExportTab(tk.Frame):
-    def __init__(self, master: tk.Misc):
-        super().__init__(master)
-        tk.Button(self, text="Download BOM CSV", command=lambda: download_export("/export/bom.csv", "bom.csv")).pack(pady=5)
-        tk.Button(self, text="Download TestResults XLSX", command=lambda: download_export("/export/testresults.xlsx", "testresults.xlsx")).pack(pady=5)
-        tk.Button(self, text="Trigger Backup", command=trigger_backup).pack(pady=5)
-
-
-class UsersTab(tk.Frame):
-    def __init__(self, master: tk.Misc):
-        super().__init__(master)
-        self.tree = ttk.Treeview(self, columns=("username", "role"), show="headings")
-        for c in self.tree["columns"]:
-            self.tree.heading(c, text=c)
-        self.tree.pack(fill="both", expand=True)
-        btns = tk.Frame(self)
-        btns.pack(fill="x")
-        tk.Button(btns, text="Refresh", command=self.refresh).pack(side="left")
-        tk.Button(btns, text="Add", command=self.add_user).pack(side="left")
-        self.refresh()
-
-    def api_headers(self) -> dict[str, str]:
-        token = ensure_token()
-        return {"Authorization": f"Bearer {token}"} if token else {}
-
-    def refresh(self) -> None:
-        # No endpoint for listing users; show admin only
-        for i in self.tree.get_children():
-            self.tree.delete(i)
-        self.tree.insert("", "end", values=("admin", "admin"))
-
-    def add_user(self) -> None:
-        dlg = tk.Toplevel(self)
-        dlg.title("Add User")
-        tk.Label(dlg, text="Username").grid(row=0, column=0)
-        user_e = tk.Entry(dlg)
-        user_e.grid(row=0, column=1)
-        tk.Label(dlg, text="Password").grid(row=1, column=0)
-        pw_e = tk.Entry(dlg, show="*")
-        pw_e.grid(row=1, column=1)
-
-        def submit() -> None:
-            headers = self.api_headers()
-            if not headers:
-                return
-            data = {"username": user_e.get(), "password": pw_e.get(), "role": "user"}
-            resp = requests.post(f"{BASE_URL}/auth/register", json=data, headers=headers)
-            if resp.status_code == 201:
-                dlg.destroy()
-                self.refresh()
-            else:
-                messagebox.showerror("Error", resp.text)
-
-        tk.Button(dlg, text="Save", command=submit).grid(row=2, column=0, columnspan=2)
-        dlg.grab_set()
-        dlg.wait_window()
-
-
-class SettingsTab(tk.Frame):
-    def __init__(self, master: tk.Misc):
-        super().__init__(master)
-        self.mode = tk.StringVar(value="sqlite" if "sqlite" in config.DATABASE_URL else "postgres")
-        tk.Radiobutton(self, text="Embedded SQLite", variable=self.mode, value="sqlite").pack(anchor="w")
-        tk.Radiobutton(self, text="External Postgres", variable=self.mode, value="postgres").pack(anchor="w")
-        tk.Button(self, text="Apply", command=self.apply).pack(pady=5)
-
-    def apply(self) -> None:
-        new_url = (
-            f"sqlite:///./app.db" if self.mode.get() == "sqlite" else "postgresql://user:pass@localhost/bom"
-        )
-        if new_url != config.DATABASE_URL:
-            config.save_database_url(new_url)
-            config.reload_settings()
-            messagebox.showinfo("Settings", "DB reloaded")
-
-
-def update_status() -> None:
-    if STATUS_VAR is None:
-        return
-    running = PROC is not None and PROC.poll() is None
-    STATUS_VAR.set("RUNNING" if running else "STOPPED")
-
-
-def start_server() -> None:
-    global PROC
-    if PROC and PROC.poll() is None:
-        messagebox.showinfo("Server", "Server already running")
-        return
-    LOG_DIR.mkdir(exist_ok=True)
-    log_file = LOG_DIR / f"server_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log"
-    f = open(log_file, "a")
-    PROC = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "app.main:app"],
-        stdout=f,
-        stderr=subprocess.STDOUT,
-    )
-    update_status()
-
-
-def stop_server() -> None:
-    global PROC
-    if PROC and PROC.poll() is None:
-        PROC.terminate()
+    # ------------------------------------------------------------------
+    def closeEvent(self, event):  # pragma: no cover - Qt hook
+        if isinstance(self.client, HTTPClient):
+            try:
+                self.client.close()
+            except Exception:
+                pass
         try:
-            PROC.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            PROC.kill()
-    PROC = None
-    update_status()
+            self.server_panel.stop_server()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
 
-def restart_server() -> None:
-    stop_server()
-    start_server()
+# ---------------------------------------------------------------------------
+def main() -> None:  # pragma: no cover - manual entry point
+    _reexec_into_venv()
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen" if not os.environ.get("DISPLAY") else "")
+    app = QApplication(sys.argv)
+    win = ControlCenter()
+    win.show()
+    sys.exit(app.exec())
 
 
-def run_tests() -> None:
-    def worker() -> None:
-        result = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q"], capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            messagebox.showinfo("Tests", result.stdout.strip())
-        else:
-            messagebox.showerror("Tests failed", result.stdout + "\n" + result.stderr)
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
-def trigger_backup() -> None:
-    from app.main import nightly_backup
-
-    def worker() -> None:
-        try:
-            nightly_backup()
-            messagebox.showinfo("Backup", "Backup complete")
-        except Exception as exc:  # pragma: no cover - backup errors
-            messagebox.showerror("Backup failed", str(exc))
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
-def login_dialog() -> str | None:
-    assert ROOT is not None
-    dlg = tk.Toplevel(ROOT)
-    dlg.title("Login")
-    tk.Label(dlg, text="Username").grid(row=0, column=0, sticky="e")
-    user_e = tk.Entry(dlg)
-    user_e.grid(row=0, column=1)
-    tk.Label(dlg, text="Password").grid(row=1, column=0, sticky="e")
-    pass_e = tk.Entry(dlg, show="*")
-    pass_e.grid(row=1, column=1)
-    token_box: dict[str, str] = {}
-
-    def submit() -> None:
-        resp = requests.post(
-            f"{BASE_URL}/auth/token",
-            data={"username": user_e.get(), "password": pass_e.get()},
-        )
-        if resp.status_code == 200:
-            token_box["token"] = resp.json()["access_token"]
-            dlg.destroy()
-        else:
-            messagebox.showerror("Login failed", resp.text)
-
-    tk.Button(dlg, text="Login", command=submit).grid(row=2, column=0, columnspan=2)
-    dlg.grab_set()
-    ROOT.wait_window(dlg)
-    return token_box.get("token")
-
-
-def ensure_token() -> str | None:
-    global TOKEN
-    if TOKEN:
-        return TOKEN
-    TOKEN = login_dialog()
-    return TOKEN
-
-
-def download_export(endpoint: str, default: str) -> None:
-    token = ensure_token()
-    if not token:
-        return
-    path = filedialog.asksaveasfilename(defaultextension=default, initialfile=default)
-    if not path:
-        return
-    resp = requests.get(
-        f"{BASE_URL}{endpoint}", headers={"Authorization": f"Bearer {token}"}
-    )
-    if resp.status_code == 200:
-        with open(path, "wb") as f:
-            f.write(resp.content)
-        messagebox.showinfo("Saved", f"File saved to {path}")
-    else:
-        messagebox.showerror("Error", f"{resp.status_code}: {resp.text}")
-
-
-def open_settings_dialog() -> None:
-    assert ROOT is not None
-    dlg = tk.Toplevel(ROOT)
-    dlg.title("Database Settings")
-    mode = tk.StringVar(value="sqlite" if "sqlite" in config.DATABASE_URL else "postgres")
-    tk.Radiobutton(dlg, text="SQLite", variable=mode, value="sqlite").grid(row=0, column=0, sticky="w")
-    path_var = tk.StringVar(value=config.DATABASE_URL.removeprefix("sqlite:///") if "sqlite" in config.DATABASE_URL else "")
-    tk.Entry(dlg, textvariable=path_var).grid(row=1, column=0)
-    tk.Button(dlg, text="Browse", command=lambda: path_var.set(filedialog.askopenfilename())).grid(row=1, column=1)
-    url_var = tk.StringVar(value=config.DATABASE_URL if "postgres" in config.DATABASE_URL else "")
-    tk.Entry(dlg, textvariable=url_var).grid(row=2, column=0, columnspan=2, sticky="we")
-
-    def save() -> None:
-        url = f"sqlite:///{path_var.get()}" if mode.get() == "sqlite" else url_var.get()
-        config.save_database_url(url)
-        config.reload_settings()
-        messagebox.showinfo("Settings", "DB reloaded")
-        dlg.destroy()
-
-    tk.Button(dlg, text="Save", command=save).grid(row=3, column=0, columnspan=2)
-    dlg.grab_set()
-    dlg.wait_window()
-
-
-def update_log() -> None:
-    if LOG_WIDGET is None:
-        return
-    latest = None
-    if LOG_DIR.exists():
-        logs = list(LOG_DIR.glob("*.log"))
-        if logs:
-            latest = max(logs, key=lambda p: p.stat().st_mtime)
-    if latest and latest.exists():
-        with latest.open() as f:
-            lines = f.readlines()[-200:]
-        LOG_WIDGET.configure(state="normal")
-        LOG_WIDGET.delete("1.0", tk.END)
-        LOG_WIDGET.insert(tk.END, "".join(lines))
-        LOG_WIDGET.configure(state="disabled")
-    if ROOT is not None:
-        ROOT.after(LOG_UPDATE_MS, update_log)
-
-
-def on_close() -> None:
-    if PROC and PROC.poll() is None:
-        if not messagebox.askyesno("Quit", "Server is running. Stop and exit?"):
-            return
-        stop_server()
-    assert ROOT is not None
-    ROOT.destroy()
-
-
-def build_ui(root: tk.Tk | None = None) -> tk.Tk:
-    global ROOT
-    ROOT = root or tk.Tk()
-    ROOT.title("BOM Platform – Control Center")
-    ROOT.protocol("WM_DELETE_WINDOW", on_close)
-
-    menubar = tk.Menu(ROOT)
-    app_menu = tk.Menu(menubar, tearoff=0)
-    app_menu.add_command(label="Settings...", command=open_settings_dialog)
-    menubar.add_cascade(label="App", menu=app_menu)
-    ROOT.config(menu=menubar)
-
-    notebook = ttk.Notebook(ROOT)
-    notebook.pack(fill="both", expand=True)
-
-    server = ServerTab(notebook)
-    bom = BOMItemsTab(notebook)
-    pdf = ImportPDFTab(notebook)
-    quote = QuoteTab(notebook)
-    results = TestResultsTab(notebook)
-    trace = TraceabilityTab(notebook)
-    export = ExportTab(notebook)
-    users = UsersTab(notebook)
-    settings = SettingsTab(notebook)
-
-    notebook.add(server, text="Server")
-    notebook.add(bom, text="BOM Items")
-    notebook.add(pdf, text="Import PDF")
-    notebook.add(quote, text="Quote")
-    notebook.add(results, text="Test Results")
-    notebook.add(trace, text="Traceability")
-    notebook.add(export, text="Exports & Backups")
-    notebook.add(users, text="Users")
-    notebook.add(settings, text="Settings")
-
-    ROOT.after(LOG_UPDATE_MS, update_log)
-    return ROOT
-
-
-def detect_server() -> bool:
-    try:
-        requests.get(f"{BASE_URL}/health", timeout=1)
-        return True
-    except Exception:
-        return False
-
-
-def main() -> None:
-    root = build_ui()
-    update_status()
-    root.mainloop()
-
-
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

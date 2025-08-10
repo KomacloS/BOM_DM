@@ -1,21 +1,17 @@
-# root: tests/test_gui.py
 import os
-import tkinter as tk
+
 import pytest
 
-pytest.importorskip('tkinter')
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-if not os.environ.get('DISPLAY'):
-    pytest.skip('GUI tests require a display', allow_module_level=True)
+from PySide6 import QtWidgets
 
 from gui import control_center
 
 
 def test_build_ui_widgets():
-    root = tk.Tk()
-    try:
-        ui = control_center.build_ui(root)
-        widgets = root.winfo_children()
-        assert widgets, 'no widgets created'
-    finally:
-        root.destroy()
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    ui = control_center.ControlCenter()
+    assert ui.tabs.count() >= 1
+    ui.close()
+    app.quit()
