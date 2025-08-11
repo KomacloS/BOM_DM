@@ -51,3 +51,26 @@ Download a CSV template:
 ```bash
 curl http://localhost:8000/bom/template
 ```
+
+## Debug GUI
+
+Launch the optional Qt-based debug GUI to explore the API locally. The
+repository provides a helper script that creates a virtual environment,
+installs dependencies, and starts the GUI:
+
+```bash
+./scripts/setup.sh
+```
+
+Run the script from the project root on a system with Python 3.10+ and Bash.
+If you prefer to perform the steps manually, use:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .[full]
+python -m gui.control_center
+```
+
+This opens a simple interface for authentication, importing BOMs, and other
+debug actions.
