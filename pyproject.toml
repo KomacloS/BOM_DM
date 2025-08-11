@@ -26,6 +26,7 @@ full = [
     "requests",
     "httpx",
     "PySide6",
+    "PyQt6",
 ]
 
 [tool.setuptools]

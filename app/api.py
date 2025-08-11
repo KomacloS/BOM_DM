@@ -8,7 +8,14 @@ import io
 
 from .database import engine, get_session
 from .models import Customer, Project, Assembly, Part, BOMItem, Task, TaskStatus, User
-from .services import import_bom, ImportReport
+from .services import (
+    import_bom,
+    ImportReport,
+    create_customer as svc_create_customer,
+    create_project as svc_create_project,
+    create_assembly as svc_create_assembly,
+    list_tasks as svc_list_tasks,
+)
 from .auth import (
     get_current_user,
     authenticate_user,
@@ -66,10 +73,7 @@ def create_customer(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    session.add(customer)
-    session.commit()
-    session.refresh(customer)
-    return customer
+    return svc_create_customer(customer.name, customer.contact_email, session)
 
 
 @app.post("/customers/{customer_id}/projects", response_model=Project)
@@ -79,11 +83,14 @@ def create_project(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    project.customer_id = customer_id
-    session.add(project)
-    session.commit()
-    session.refresh(project)
-    return project
+    return svc_create_project(
+        customer_id,
+        project.code,
+        project.title,
+        project.priority.value,
+        project.due_at,
+        session,
+    )
 
 
 @app.post("/projects/{project_id}/assemblies", response_model=Assembly)
@@ -93,11 +100,7 @@ def create_assembly(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    assembly.project_id = project_id
-    session.add(assembly)
-    session.commit()
-    session.refresh(assembly)
-    return assembly
+    return svc_create_assembly(project_id, assembly.rev, assembly.notes, session)
 
 
 @app.post("/parts", response_model=Part)
@@ -120,7 +123,7 @@ def import_bom_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     data = file.file.read()
-    report = import_bom(session, assembly_id, data)
+    report = import_bom(assembly_id, data, session)
     if report.errors:
         raise HTTPException(status_code=422, detail=report.errors)
     return report
@@ -142,7 +145,5 @@ def list_tasks(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    query = select(Task).where(Task.project_id == project_id)
-    if status:
-        query = query.where(Task.status == status)
-    return session.exec(query).all()
+    status_val = status.value if status else None
+    return svc_list_tasks(project_id, status_val, session)
