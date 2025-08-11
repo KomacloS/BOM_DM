@@ -310,6 +310,9 @@ python -m pip install -e .[full]
 python -m gui.control_center
 ```
 
+If Python reports `ModuleNotFoundError: No module named 'PySide6'`,
+rerun the installation step to pull in the GUI dependencies.
+
 Use **Backend = Local** for an in-memory API or switch to **HTTP** to talk to a running server.
 Tabs include Quick Actions (import/seed/export helpers), Auth, DB settings, an HTTP playground and an optional Server controller.
 The toolbar’s “Download BOM template” button fetches the same CSV exposed at [`GET /bom/template`](./app/main.py).
