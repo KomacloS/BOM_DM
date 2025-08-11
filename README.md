@@ -52,6 +52,22 @@ Download a CSV template:
 curl http://localhost:8000/bom/template
 ```
 
+## GUI-first Projects Terminal
+
+A lightweight desktop application written with **PyQt6** allows working with
+customers, projects and assemblies without the HTTP API.  It talks to the same
+database and reuses the service layer directly.
+
+```bash
+make gui
+```
+
+Steps:
+
+1. Create a customer, project and assembly using the forms on the left.
+2. Select an assembly and upload a BOM CSV.
+3. Review the import report, BOM items and any tasks created for unknown parts.
+
 ## Debug GUI
 
 Launch the optional Qt-based debug GUI to explore the API locally. The

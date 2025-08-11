@@ -1,14 +1,23 @@
 from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
+from importlib import reload
+
 from sqlmodel import SQLModel, create_engine, Session, select
 
 from app.api import app, get_session
 from app.auth import create_default_users
-from app.models import User
+import app.models as models
 
 
 def setup_db():
-    engine = create_engine("sqlite://", echo=False, connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine = create_engine(
+        "sqlite://",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.clear()
+    reload(models)
     SQLModel.metadata.create_all(engine)
     with Session(engine) as session:
         create_default_users(session)
@@ -28,7 +37,7 @@ def test_admin_seed_and_auth():
 
     # ensure admin exists
     with Session(engine) as session:
-        user = session.exec(select(User).where(User.username == "admin")).first()
+        user = session.exec(select(models.User).where(models.User.username == "admin")).first()
         assert user is not None
 
     resp = client.post("/auth/token", data={"username": "admin", "password": "admin"})

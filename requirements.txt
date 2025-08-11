@@ -19,3 +19,4 @@ pillow
 toml
 reportlab
 PySide6
+PyQt6

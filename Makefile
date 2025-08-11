@@ -1,4 +1,4 @@
-.PHONY: install dev test
+.PHONY: install dev test gui
 
 install:
 	pip install -e .[full]
@@ -8,3 +8,6 @@ dev:
 
 test:
 	pytest
+
+gui:
+	python -m app.gui

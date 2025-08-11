@@ -677,6 +677,18 @@ def migrate_db() -> None:
         with engine.begin() as conn:
             pass
 
+    if "customer" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("customer")}
+        if "contact_email" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE customer ADD COLUMN contact_email VARCHAR"))
+
+    if "user" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("user")}
+        if "hashed_password" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE user ADD COLUMN hashed_password VARCHAR"))
+
 
 def init_db() -> None:
     """Create database tables if they do not exist."""

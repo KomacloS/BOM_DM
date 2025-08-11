@@ -1,15 +1,25 @@
 from sqlalchemy.pool import StaticPool
 from pathlib import Path
+from importlib import reload
+
 from fastapi.testclient import TestClient
 from sqlmodel import SQLModel, create_engine, Session
 
 from app.api import app, get_session
-from app.models import Customer, Project, Assembly, Part, User, UserRole
+import app.models as models
+from app.models import User, UserRole
 from app import auth
 
 
 def setup_test_db():
-    engine = create_engine("sqlite://", echo=False, connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    engine = create_engine(
+        "sqlite://",
+        echo=False,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.clear()
+    reload(models)
     SQLModel.metadata.create_all(engine)
     return engine
 
