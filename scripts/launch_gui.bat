@@ -1,3 +1,3 @@
 @echo off
 python -m pip install -e .[full]
-bom-gui
+python -m gui.control_center
