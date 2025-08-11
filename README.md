@@ -307,7 +307,7 @@ Install the optional GUI dependencies and launch:
 
 ```bash
 python -m pip install -e .[full]
-bom-gui
+python -m gui.control_center
 ```
 
 Use **Backend = Local** for an in-memory API or switch to **HTTP** to talk to a running server.
