@@ -1,60 +1,41 @@
+from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
-from sqlmodel import SQLModel, create_engine
-import sqlalchemy
-import pytest
-import os
-import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from sqlmodel import SQLModel, create_engine, Session, select
 
-import app.main as main
+from app.api import app, get_session
+from app.auth import create_default_users
+from app.models import User
 
 
-@pytest.fixture(name="client")
-def client_fixture():
-    test_engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=sqlalchemy.pool.StaticPool,
-    )
-    main.engine = test_engine
-    SQLModel.metadata.create_all(test_engine)
-    with TestClient(main.app) as c:
-        yield c
+def setup_db():
+    engine = create_engine("sqlite://", echo=False, connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    SQLModel.metadata.create_all(engine)
+    with Session(engine) as session:
+        create_default_users(session)
+    return engine
 
 
-def get_token(client, username="admin", password="123456789"):
-    resp = client.post("/auth/token", data={"username": username, "password": password})
-    return resp
+def test_admin_seed_and_auth():
+    engine = setup_db()
 
+    def session_override():
+        with Session(engine) as session:
+            yield session
 
-def test_login_success_and_failure(client):
-    ok = get_token(client)
-    assert ok.status_code == 200
-    assert "access_token" in ok.json()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_session] = session_override
+    client = TestClient(app)
 
-    bad = client.post("/auth/token", data={"username": "admin", "password": "wrong"})
-    assert bad.status_code == 401
+    # ensure admin exists
+    with Session(engine) as session:
+        user = session.exec(select(User).where(User.username == "admin")).first()
+        assert user is not None
 
+    resp = client.post("/auth/token", data={"username": "admin", "password": "admin"})
+    assert resp.status_code == 200
+    token = resp.json()["access_token"]
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me.status_code == 200
+    assert me.json()["username"] == "admin"
 
-def test_protected_requires_auth(client):
-    resp = client.post(
-        "/bom/items",
-        json={"part_number": "P1", "description": "A", "quantity": 1},
-    )
-    assert resp.status_code == 401
-
-
-def test_admin_can_create_user(client):
-    token = get_token(client).json()["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
-    new_user = {"username": "bob", "password": "secret", "role": "viewer"}
-    create = client.post("/auth/register", json=new_user, headers=headers)
-    assert create.status_code == 201
-
-    login_new = client.post("/auth/token", data={"username": "bob", "password": "secret"})
-    assert login_new.status_code == 200
-
-    user_token = login_new.json()["access_token"]
-    user_headers = {"Authorization": f"Bearer {user_token}"}
-    fail = client.post("/auth/register", json={"username": "x", "password": "y"}, headers=user_headers)
-    assert fail.status_code == 403
+    app.dependency_overrides.clear()

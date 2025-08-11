@@ -1,0 +1,4 @@
+part_number,description,qty,reference
+P1,Known part 1,2,R1
+P2,Known part 2,1,"R2,R3"
+P3,Unknown part,4,R4
