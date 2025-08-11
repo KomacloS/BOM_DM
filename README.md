@@ -307,8 +307,11 @@ Install the optional GUI dependencies and launch:
 
 ```bash
 python -m pip install -e .[full]
-bom-gui
+python -m gui.control_center
 ```
+
+If Python reports `ModuleNotFoundError: No module named 'PySide6'`,
+rerun the installation step to pull in the GUI dependencies.
 
 Use **Backend = Local** for an in-memory API or switch to **HTTP** to talk to a running server.
 Tabs include Quick Actions (import/seed/export helpers), Auth, DB settings, an HTTP playground and an optional Server controller.

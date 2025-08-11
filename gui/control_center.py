@@ -11,18 +11,24 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import (
-    QApplication,
-    QComboBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMainWindow,
-    QPushButton,
-    QTabWidget,
-    QVBoxLayout,
-    QWidget,
-)
+try:  # Provide a helpful error if PySide6 is missing
+    from PySide6.QtWidgets import (
+        QApplication,
+        QComboBox,
+        QHBoxLayout,
+        QLabel,
+        QLineEdit,
+        QMainWindow,
+        QPushButton,
+        QTabWidget,
+        QVBoxLayout,
+        QWidget,
+    )
+except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+    raise ModuleNotFoundError(
+        "PySide6 is required to run the GUI. Install it with"
+        " `python -m pip install -e .[full]`."
+    ) from exc
 
 from .api_client import HTTPClient, LocalClient, BaseClient
 from .widgets.auth_panel import AuthPanel
