@@ -48,12 +48,40 @@ def upgrade() -> None:
             cols = {c["name"] for c in insp.get_columns("customer")}
             if "notes" not in cols:
                 conn.execute(text("ALTER TABLE customer ADD COLUMN notes TEXT"))
+            if "created_at" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE customer ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
         if "project" in insp.get_table_names():
             cols = {c["name"] for c in insp.get_columns("project")}
             if "code" not in cols:
                 conn.execute(text("ALTER TABLE project ADD COLUMN code VARCHAR"))
             if "notes" not in cols:
                 conn.execute(text("ALTER TABLE project ADD COLUMN notes TEXT"))
+            if "created_at" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE project ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
+        if "part" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("part")}
+            if "created_at" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE part ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
+        if "task" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("task")}
+            if "created_at" not in cols:
+                conn.execute(
+                    text(
+                        "ALTER TABLE task ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
         if engine.dialect.name == "sqlite":
             conn.execute(text("PRAGMA foreign_keys=ON"))
 

@@ -162,25 +162,30 @@ class Customer(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(sa_column_kwargs={"unique": True})
     contact: str | None = None
+    contact_email: str | None = None
     notes: str | None = None
     active: bool = True
+    created_at: datetime | None = Field(default_factory=datetime.utcnow)
 
 
 
 class CustomerCreate(SQLModel):
     name: str
     contact: str | None = None
+    contact_email: str | None = None
     notes: str | None = None
     active: bool = True
 
 
 class CustomerRead(CustomerCreate):
     id: int
+    created_at: datetime | None = None
 
 
 class CustomerUpdate(SQLModel):
     name: str | None = None
     contact: str | None = None
+    contact_email: str | None = None
     notes: str | None = None
     active: bool | None = None
 
@@ -682,6 +687,49 @@ def migrate_db() -> None:
         if "contact_email" not in columns:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE customer ADD COLUMN contact_email VARCHAR"))
+        if "created_at" not in columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE customer ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
+
+    if "project" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("project")}
+        if "code" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE project ADD COLUMN code VARCHAR"))
+        if "notes" not in columns:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE project ADD COLUMN notes TEXT"))
+        if "created_at" not in columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE project ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
+
+    if "part" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("part")}
+        if "created_at" not in columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE part ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
+
+    if "task" in inspector.get_table_names():
+        columns = {c["name"] for c in inspector.get_columns("task")}
+        if "created_at" not in columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE task ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+                    )
+                )
 
     if "user" in inspector.get_table_names():
         columns = {c["name"] for c in inspector.get_columns("user")}
