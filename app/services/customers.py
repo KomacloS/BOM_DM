@@ -8,11 +8,16 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
-from ..models import Customer
+from ..models import Customer, Project, Assembly, BOMItem, Task
 
 
 class CustomerExistsError(ValueError):
     """Raised when attempting to create a duplicate customer."""
+    pass
+
+
+class DeleteBlockedError(ValueError):
+    """Raised when attempting to delete an entity with dependants."""
     pass
 
 
@@ -78,4 +83,27 @@ def create_customer(name: str, email: Optional[str], session: Session) -> Custom
         raise
     session.refresh(cust)
     return cust
+
+
+def delete_customer(customer_id: int, session: Session, *, cascade: bool = False) -> None:
+    """Delete a customer safely, optionally cascading to child objects."""
+
+    cust = session.get(Customer, customer_id)
+    if not cust:
+        return
+
+    proj_ids = session.exec(
+        select(Project.id).where(Project.customer_id == customer_id)
+    ).all()
+    if proj_ids and not cascade:
+        raise DeleteBlockedError(f"Customer has {len(proj_ids)} projects")
+
+    if cascade:
+        from .projects import delete_project
+
+        for pid in proj_ids:
+            delete_project(pid, session, cascade=True)
+
+    session.delete(cust)
+    session.commit()
 

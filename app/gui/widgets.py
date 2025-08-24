@@ -25,11 +25,13 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from sqlmodel import select
 
 from . import state as app_state
 from .. import services
-from ..models import ProjectPriority, TaskStatus
+from ..models import ProjectPriority, TaskStatus, Project, Assembly
 from ..services.customers import CustomerExistsError
 from .workflow import NewProjectWizard
 from ..bom_schema import ALLOWED_HEADERS
@@ -48,6 +50,14 @@ class CustomersPane(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search…")
         layout.addWidget(self.search)
+
+        hdr = QHBoxLayout()
+        self.delete_btn = QPushButton("Delete Customer…")
+        self.delete_btn.setEnabled(False)
+        self.delete_btn.clicked.connect(self._on_delete_customer)
+        hdr.addWidget(self.delete_btn)
+        hdr.addStretch()
+        layout.addLayout(hdr)
 
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["ID", "Name"])
@@ -86,8 +96,17 @@ class CustomersPane(QWidget):
         self.select_id(cid)
         self._state.refresh_customers(self.search.text())
 
+    def refresh_customers_and_clear_selection(self) -> None:
+        self.table.clearSelection()
+        self.delete_btn.setEnabled(False)
+        self.customerSelected.emit(0)
+        self._state.refresh_customers(self.search.text())
+
     def select_id(self, cid: int) -> None:
         self._pending_id = cid
+
+    def _table_id_at(self, row: int) -> int:
+        return int(self.table.item(row, 0).text())
 
     # --------------------------------------------------------------
     def _populate(self, customers):  # pragma: no cover - UI glue
@@ -105,7 +124,8 @@ class CustomersPane(QWidget):
             self._pending_id = None
 
     def _on_select(self, row: int, _col: int) -> None:  # pragma: no cover - UI glue
-        cid = int(self.table.item(row, 0).text())
+        cid = self._table_id_at(row)
+        self.delete_btn.setEnabled(True)
         self.customerSelected.emit(cid)
 
     # --------------------------------------------------------------
@@ -129,6 +149,34 @@ class CustomersPane(QWidget):
         self.email_edit.clear()
         self.refresh_customers_and_select(result_or_exc.id)
 
+    def _on_delete_customer(self) -> None:  # pragma: no cover - UI glue
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        cid = self._table_id_at(row)
+        with app_state.get_session() as s:
+            n_projects = s.exec(
+                select(func.count()).select_from(Project).where(Project.customer_id == cid)
+            ).one()
+        cascade = False
+        if n_projects:
+            resp = QMessageBox.question(
+                self,
+                "Delete Customer",
+                f"This customer has {n_projects} projects.\nDelete EVERYTHING (cascade)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+            cascade = True
+        try:
+            with app_state.get_session() as s:
+                services.delete_customer(cid, s, cascade=cascade)
+        except services.DeleteBlockedError as e:
+            QMessageBox.warning(self, "Cannot delete", str(e))
+            return
+        self.refresh_customers_and_clear_selection()
+
 
 class ProjectsPane(QWidget):
     projectSelected = pyqtSignal(int)
@@ -143,6 +191,14 @@ class ProjectsPane(QWidget):
         self.workflow_btn = QPushButton("➕ New Project (Workflow)")
         self.workflow_btn.clicked.connect(self._open_new_project_workflow)
         layout.addWidget(self.workflow_btn)
+
+        hdr = QHBoxLayout()
+        self.delete_btn = QPushButton("Delete Project…")
+        self.delete_btn.setEnabled(False)
+        self.delete_btn.clicked.connect(self._on_delete_project)
+        hdr.addWidget(self.delete_btn)
+        hdr.addStretch()
+        layout.addLayout(hdr)
 
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["ID", "Code", "Title"])
@@ -178,6 +234,9 @@ class ProjectsPane(QWidget):
     def select_id(self, pid: int) -> None:
         self._pending_id = pid
 
+    def _table_id_at(self, row: int) -> int:
+        return int(self.table.item(row, 0).text())
+
     # --------------------------------------------------------------
     def set_customer(self, cid: int) -> None:  # pragma: no cover - UI glue
         self._customer_id = cid
@@ -199,7 +258,8 @@ class ProjectsPane(QWidget):
             self._pending_id = None
 
     def _on_select(self, row: int, _col: int) -> None:  # pragma: no cover
-        pid = int(self.table.item(row, 0).text())
+        pid = self._table_id_at(row)
+        self.delete_btn.setEnabled(True)
         self.projectSelected.emit(pid)
 
     def create_project(self) -> None:  # pragma: no cover - UI glue
@@ -239,6 +299,13 @@ class ProjectsPane(QWidget):
         self.select_id(pid)
         self._state.refresh_projects(cid)
 
+    def refresh_projects_and_clear_selection(self) -> None:
+        self.table.clearSelection()
+        self.delete_btn.setEnabled(False)
+        self.projectSelected.emit(0)
+        if self._customer_id is not None:
+            self._state.refresh_projects(self._customer_id)
+
     def refresh_assemblies_and_select(self, pid: int, aid: int) -> None:
         self.projectSelected.emit(pid)
         # AssembliesPane selection handled externally
@@ -252,6 +319,34 @@ class ProjectsPane(QWidget):
             if aid:
                 self.refresh_assemblies_and_select(pid, aid)
 
+    def _on_delete_project(self) -> None:  # pragma: no cover - UI glue
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        pid = self._table_id_at(row)
+        with app_state.get_session() as s:
+            n_assemblies = s.exec(
+                select(func.count()).select_from(Assembly).where(Assembly.project_id == pid)
+            ).one()
+        cascade = False
+        if n_assemblies:
+            resp = QMessageBox.question(
+                self,
+                "Delete Project",
+                f"This project has {n_assemblies} assemblies.\nDelete EVERYTHING (cascade)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+            cascade = True
+        try:
+            with app_state.get_session() as s:
+                services.delete_project(pid, s, cascade=cascade)
+        except services.DeleteBlockedError as e:
+            QMessageBox.warning(self, "Cannot delete", str(e))
+            return
+        self.refresh_projects_and_clear_selection()
+
 
 class AssembliesPane(QWidget):
     assemblySelected = pyqtSignal(int)
@@ -264,6 +359,14 @@ class AssembliesPane(QWidget):
         self._pending_id: Optional[int] = None
 
         layout = QVBoxLayout(self)
+        hdr = QHBoxLayout()
+        self.delete_btn = QPushButton("Delete Assembly…")
+        self.delete_btn.setEnabled(False)
+        self.delete_btn.clicked.connect(self._on_delete_assembly)
+        hdr.addWidget(self.delete_btn)
+        hdr.addStretch()
+        layout.addLayout(hdr)
+
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["ID", "Rev"])
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -285,7 +388,7 @@ class AssembliesPane(QWidget):
 
         btn_row = QHBoxLayout()
         self.import_btn = QPushButton("Import BOM…")
-        self.import_btn.clicked.connect(self.upload_bom)
+        self.import_btn.clicked.connect(self._on_import_bom)
         self.template_btn = QPushButton("Download CSV template")
         self.template_btn.clicked.connect(self.download_template)
         btn_row.addWidget(self.import_btn)
@@ -334,10 +437,12 @@ class AssembliesPane(QWidget):
         state.assembliesChanged.connect(self._populate)
         state.bomItemsChanged.connect(self._populate_items)
         state.tasksChanged.connect(self._populate_tasks)
-        state.bomImported.connect(self._import_finished)
 
     def select_id(self, aid: int) -> None:
         self._pending_id = aid
+
+    def _table_id_at(self, row: int) -> int:
+        return int(self.table.item(row, 0).text())
 
     # --------------------------------------------------------------
     def set_project(self, pid: int) -> None:  # pragma: no cover - UI glue
@@ -359,8 +464,9 @@ class AssembliesPane(QWidget):
             self._pending_id = None
 
     def _on_select(self, row: int, _col: int) -> None:  # pragma: no cover
-        aid = int(self.table.item(row, 0).text())
+        aid = self._table_id_at(row)
         self._assembly_id = aid
+        self.delete_btn.setEnabled(True)
         self.assemblySelected.emit(aid)
         if aid:
             self._state.refresh_bom_items(aid)
@@ -389,14 +495,24 @@ class AssembliesPane(QWidget):
         self._state.refresh_assemblies(self._project_id)
         self.create_btn.setEnabled(True)
 
-    def upload_bom(self) -> None:  # pragma: no cover - UI glue
+    def _on_import_bom(self) -> None:  # pragma: no cover - UI glue
         if self._assembly_id is None:
+            QMessageBox.information(self, "Import BOM", "Select an assembly first.")
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Import BOM", filter="CSV Files (*.csv)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select BOM CSV", "", "CSV Files (*.csv)"
+        )
         if not path:
             return
-        data = Path(path).read_bytes()
-        self._state.import_bom(self._assembly_id, data)
+        self.import_btn.setEnabled(False)
+
+        def work():
+            with open(path, "rb") as f:
+                data = f.read()
+            with app_state.get_session() as s:
+                return services.import_bom(self._assembly_id, data, s)
+
+        self._state._run(work, self._after_import_bom)
 
     def download_template(self) -> None:  # pragma: no cover - UI glue
         path, _ = QFileDialog.getSaveFileName(
@@ -405,6 +521,28 @@ class AssembliesPane(QWidget):
         if not path:
             return
         Path(path).write_text(",".join(ALLOWED_HEADERS) + "\n", encoding="utf-8")
+
+    def _after_import_bom(self, result):  # pragma: no cover - UI glue
+        self.import_btn.setEnabled(True)
+        if isinstance(result, Exception):
+            QMessageBox.warning(self, "Import BOM", str(result))
+            return
+        report = result
+        msg = (
+            f"Imported lines: {report.total}\n"
+            f"Matched: {report.matched}\n"
+            f"Unmatched: {report.unmatched}\n"
+            f"New tasks: {len(report.created_task_ids)}"
+        )
+        if report.errors:
+            msg += "\n\nErrors:\n- " + "\n- ".join(report.errors[:10])
+        QMessageBox.information(self, "Import complete", msg)
+        if self._assembly_id:
+            self._state.refresh_bom_items(self._assembly_id)
+        if self._project_id:
+            self._state.refresh_tasks(
+                self._project_id, self.status_filter.currentText()
+            )
 
     def _on_status_change(self) -> None:  # pragma: no cover - UI glue
         if self._project_id:
@@ -427,23 +565,28 @@ class AssembliesPane(QWidget):
             self.tasks_table.setItem(row, 1, QTableWidgetItem(t.title))
             self.tasks_table.setItem(row, 2, QTableWidgetItem(t.status.value))
         self.tasks_table.resizeColumnsToContents()
-
-    def _import_finished(self, report):  # pragma: no cover - UI glue
-        if self._assembly_id:
-            self._state.refresh_bom_items(self._assembly_id)
+        
+    def _on_delete_assembly(self) -> None:  # pragma: no cover - UI glue
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        aid = self._table_id_at(row)
+        resp = QMessageBox.question(
+            self,
+            "Delete Assembly",
+            "Delete this assembly?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+        with app_state.get_session() as s:
+            services.delete_assembly(aid, s)
+        self._assembly_id = None
+        self.delete_btn.setEnabled(False)
         if self._project_id:
+            self._state.refresh_assemblies(self._project_id)
             self._state.refresh_tasks(
                 self._project_id, self.status_filter.currentText()
             )
-        tasks = ", ".join(str(t) for t in report.created_task_ids) or "none"
-        QMessageBox.information(
-            self,
-            "Import",
-            f"Imported {report.total} rows\n"
-            f"Matched: {report.matched}\n"
-            f"Unmatched: {report.unmatched}\n"
-            f"Created task IDs: {tasks}",
-        )
-        if report.errors:
-            QMessageBox.warning(self, "Import errors", "\n".join(report.errors))
+        self._state.bomItemsChanged.emit([])
 

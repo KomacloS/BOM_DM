@@ -10,7 +10,8 @@ from sqlmodel import Session, select
 
 from sqlalchemy import func
 
-from ..models import Project, ProjectPriority
+from ..models import Project, ProjectPriority, Assembly, BOMItem, Task
+from .customers import DeleteBlockedError
 
 
 def list_projects(customer_id: int, session: Session) -> List[Project]:
@@ -65,4 +66,29 @@ def create_project(
 
 class ProjectCodeExistsError(ValueError):
     pass
+
+
+def delete_project(project_id: int, session: Session, *, cascade: bool = False) -> None:
+    """Delete a project and optionally cascade to assemblies and tasks."""
+
+    proj = session.get(Project, project_id)
+    if not proj:
+        return
+
+    asm_ids = session.exec(
+        select(Assembly.id).where(Assembly.project_id == project_id)
+    ).all()
+    if asm_ids and not cascade:
+        raise DeleteBlockedError(f"Project has {len(asm_ids)} assemblies")
+
+    if cascade:
+        for aid in asm_ids:
+            from .assemblies import delete_assembly
+
+            delete_assembly(aid, session)
+
+        session.exec(Task.__table__.delete().where(Task.project_id == project_id))
+
+    session.delete(proj)
+    session.commit()
 
