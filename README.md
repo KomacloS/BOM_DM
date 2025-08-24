@@ -82,6 +82,12 @@ Steps:
 3. Select an assembly and upload a BOM CSV.
 4. Review the import report, BOM items and any tasks created for unknown parts.
 
+Right-click or use the Delete buttons to remove Customers, Projects or Assemblies. If
+a Customer or Project has children, the GUI will prompt to cascade-delete.
+
+Use **Import BOM** on an Assembly to load a CSV with the strict header. The dialog
+reports matched/unmatched counts and any created task IDs.
+
 ## Debug GUI
 
 Launch the optional Qt-based debug GUI to explore the API locally. The

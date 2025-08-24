@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from sqlmodel import Session, select
 
-from ..models import Assembly
+from ..models import Assembly, BOMItem
 
 
 def list_assemblies(project_id: int, session: Session) -> List[Assembly]:
@@ -27,4 +27,16 @@ def create_assembly(
     session.commit()
     session.refresh(asm)
     return asm
+
+
+def delete_assembly(assembly_id: int, session: Session) -> None:
+    """Delete an assembly along with its BOM items."""
+
+    asm = session.get(Assembly, assembly_id)
+    if not asm:
+        return
+
+    session.exec(BOMItem.__table__.delete().where(BOMItem.assembly_id == assembly_id))
+    session.delete(asm)
+    session.commit()
 
