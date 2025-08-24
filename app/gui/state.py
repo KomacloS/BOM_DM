@@ -35,7 +35,10 @@ class _Worker(QThread):
         self._kwargs = kwargs
 
     def run(self) -> None:  # pragma: no cover - Qt thread
-        result = self._fn(*self._args, **self._kwargs)
+        try:
+            result = self._fn(*self._args, **self._kwargs)
+        except Exception as exc:  # pragma: no cover - propagate errors
+            result = exc
         self.finished.emit(result)
 
 
