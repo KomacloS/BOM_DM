@@ -101,3 +101,29 @@ def test_project_name_backfilled_even_if_exists():
     with engine.begin() as conn:
         name = conn.execute(text('SELECT "name" FROM "project"')).scalar()
         assert name == "Board A"
+
+
+def test_bomitem_qty_added_and_backfilled_from_quantity():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=sqlalchemy.pool.StaticPool,
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                'CREATE TABLE "bomitem" (id INTEGER PRIMARY KEY, assembly_id INTEGER, part_id INTEGER, quantity INTEGER, reference TEXT)'
+            )
+        )
+        conn.execute(
+            text(
+                'INSERT INTO "bomitem"(assembly_id, part_id, quantity, reference) VALUES (1, NULL, 3, "R1")'
+            )
+        )
+    run_sqlite_safe_migrations(engine)
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("bomitem")}
+    assert "qty" in cols and "reference" in cols
+    with engine.begin() as conn:
+        v = conn.execute(text('SELECT "qty" FROM "bomitem" WHERE id=1')).scalar()
+        assert v == 3

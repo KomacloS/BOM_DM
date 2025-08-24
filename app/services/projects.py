@@ -6,9 +6,9 @@ from datetime import datetime
 import re
 from typing import List, Optional
 
-from sqlmodel import Session, select
-
 from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
+from sqlmodel import Session, select
 
 from ..models import Project, ProjectPriority, Assembly, BOMItem, Task
 from .customers import DeleteBlockedError
@@ -19,7 +19,13 @@ def list_projects(customer_id: int, session: Session) -> List[Project]:
 
     stmt = select(Project).where(Project.customer_id == customer_id)
     stmt = stmt.order_by(Project.created_at)
-    return session.exec(stmt).all()
+    try:
+        return session.exec(stmt).all()
+    except OperationalError as e:  # pragma: no cover - depends on DB schema
+        raise RuntimeError(
+            "Projects query failed; run 'python -m app.tools.db migrate'. Details: "
+            f"{e}"
+        ) from e
 
 
 def create_project(
