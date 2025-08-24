@@ -63,7 +63,7 @@ def create_customer(name: str, email: Optional[str], session: Session) -> Custom
         raise CustomerExistsError(f'Customer "{name}" already exists')
 
     # 3) insert
-    cust = Customer(name=name, contact_email=email)
+    cust = Customer(name=name, contact_email=email, active=True)
     session.add(cust)
     try:
         session.commit()

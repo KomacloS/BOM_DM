@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -108,6 +109,11 @@ class _ProjectPage(QWizardPage):
 
         form = QFormLayout(self)
         self.code_edit = QLineEdit()
+        self.code_edit.setToolTip(
+            "Code: short identifier for the project (e.g., \"ACME-001\" or \"P-213\"). "
+            "Used in search, file naming, and URLs. Keep it short; letters, digits, "
+            "dashes/underscores are recommended. It should be unique within the customer."
+        )
         self.title_edit = QLineEdit()
         self.prio_combo = QComboBox()
         self.prio_combo.addItems([p.value for p in ProjectPriority])
@@ -126,6 +132,16 @@ class _ProjectPage(QWizardPage):
             return False
         code = self.code_edit.text().strip()
         title = self.title_edit.text().strip()
+        if not code or not title:
+            QMessageBox.warning(self, "Error", "Code and title are required")
+            return False
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", code):
+            QMessageBox.warning(
+                self,
+                "Error",
+                "Invalid code. Use letters, digits, dashes/underscores (max 32).",
+            )
+            return False
         prio = self.prio_combo.currentText()
         due_qdate = self.due_edit.date()
         due = datetime.combine(due_qdate.toPyDate(), datetime.min.time()) if due_qdate else None

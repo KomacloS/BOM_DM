@@ -1,5 +1,6 @@
 from importlib import reload
 
+from sqlalchemy import inspect
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine
 
@@ -41,4 +42,15 @@ def test_create_and_list_entities():
         asm = create_assembly(proj.id, "A", None, session)
         assemblies = list_assemblies(proj.id, session)
         assert assemblies and assemblies[0].id == asm.id
+
+
+def test_create_project_sets_legacy_name():
+    engine = setup_db()
+    with Session(engine) as session:
+        cust = create_customer("Acme", None, session)
+        p = create_project(cust.id, "P-001", "Board A", "med", None, session)
+        assert p.id
+        cols = {c["name"] for c in inspect(engine).get_columns("project")}
+        if "name" in cols:
+            assert p.name == "Board A"
 

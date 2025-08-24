@@ -14,10 +14,12 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
     "customer": {
         "contact_email": "TEXT DEFAULT ''",
         "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "active": "INTEGER DEFAULT 1",
     },
     "project": {
         "code": "TEXT DEFAULT ''",
         "title": "TEXT DEFAULT ''",
+        "name": "TEXT DEFAULT ''",
         "status": "TEXT DEFAULT 'draft'",
         "priority": "TEXT DEFAULT 'med'",
         "notes": "TEXT DEFAULT ''",
@@ -113,6 +115,12 @@ def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
     if engine.dialect.name != "sqlite":
         return []
     applied: List[Tuple[str, str]] = []
+
+    def _column_exists(conn, table: str, col: str) -> bool:
+        return any(
+            r[1] == col for r in conn.execute(text(f'PRAGMA table_info("{table}")'))
+        )
+
     with engine.begin() as conn:
         for table, cols in _MIGRATIONS.items():
             missing = _missing_columns(conn, table, cols)
@@ -120,4 +128,17 @@ def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
                 _add_column_sqlite(conn, _table, column, ddl)
                 applied.append((_table, column))
                 logger.info("Added column %s.%s", _table, column)
+
+        if _column_exists(conn, "customer", "active"):
+            conn.execute(
+                text('UPDATE "customer" SET "active" = 1 WHERE "active" IS NULL')
+            )
+        if _column_exists(conn, "project", "name"):
+            conn.execute(
+                text(
+                    'UPDATE "project" SET "name" = COALESCE("title", "code", \'\') '
+                    'WHERE "name" IS NULL'
+                )
+            )
+
     return applied

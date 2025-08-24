@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from typing import Optional
-from sqlalchemy import Column, JSON
+from sqlalchemy import Boolean, Column, JSON
 from sqlmodel import SQLModel, Field
 
 if SQLModel.metadata.tables:
@@ -25,6 +25,10 @@ class Customer(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     contact_email: Optional[str] = None
+    active: bool = Field(
+        default=True,
+        sa_column=Column(Boolean, nullable=False, server_default="1"),
+    )
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -47,6 +51,7 @@ class Project(SQLModel, table=True):
     customer_id: int = Field(foreign_key="customer.id")
     code: str
     title: str
+    name: Optional[str] = None  # legacy compatibility
     status: ProjectStatus = Field(default=ProjectStatus.draft)
     priority: ProjectPriority = Field(default=ProjectPriority.med)
     created_at: datetime = Field(default_factory=datetime.utcnow)
