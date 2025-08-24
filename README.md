@@ -52,6 +52,18 @@ Download a CSV template:
 curl http://localhost:8000/bom/template
 ```
 
+### Schema drift on SQLite (dev)
+
+During development the SQLite schema can drift. To inspect and apply safe
+migrations run:
+
+```bash
+python -m app.tools.db doctor
+python -m app.tools.db migrate
+```
+
+If you do not need existing data you can also delete the SQLite database file.
+
 ## GUI-first Projects Terminal
 
 A lightweight desktop application written with **PyQt6** allows working with

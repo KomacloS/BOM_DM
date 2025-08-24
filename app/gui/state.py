@@ -5,13 +5,16 @@ from __future__ import annotations
 from typing import Callable, Iterable, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
-from sqlmodel import Session
+from sqlmodel import Session, SQLModel
 
 from ..config import get_engine
+from ..db_safe_migrate import run_sqlite_safe_migrations
 from .. import services
 
 
 _ENGINE = get_engine()
+SQLModel.metadata.create_all(_ENGINE)
+run_sqlite_safe_migrations(_ENGINE)
 
 
 def get_session() -> Session:

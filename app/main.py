@@ -67,6 +67,7 @@ if SQLModel.metadata.tables:
 from .vendor import octopart, fixer
 from . import fx
 from .fx import FXRate
+from .db_safe_migrate import run_sqlite_safe_migrations
 
 engine = get_engine()
 if engine.dialect.name == "sqlite":
@@ -643,101 +644,6 @@ def cleanup_blob(path: str) -> None:
                 pass
 
 
-def migrate_db() -> None:
-    """Apply simple in-place migrations for older database schemas."""
-    SQLModel.metadata.create_all(engine)
-    inspector = sqlalchemy.inspect(engine)
-    if "bomitem" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("bomitem")}
-        if "assembly_id" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE bomitem ADD COLUMN assembly_id INTEGER"))
-        if "part_id" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE bomitem ADD COLUMN part_id INTEGER"))
-        if "datasheet_url" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE bomitem ADD COLUMN datasheet_url TEXT"))
-        if "manufacturer" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE bomitem ADD COLUMN manufacturer TEXT"))
-        if "mpn" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE bomitem ADD COLUMN mpn TEXT"))
-        if "footprint" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE bomitem ADD COLUMN footprint TEXT"))
-        if "unit_cost" not in columns:
-            with engine.begin() as conn:
-                if engine.dialect.name == "sqlite":
-                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN unit_cost NUMERIC DEFAULT 0"))
-                else:
-                    conn.execute(text("ALTER TABLE bomitem ADD COLUMN IF NOT EXISTS unit_cost NUMERIC(10,4) DEFAULT 0"))
-        if "dnp" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE bomitem ADD COLUMN dnp BOOLEAN DEFAULT 0"))
-        if "currency" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE bomitem ADD COLUMN currency VARCHAR(3) DEFAULT 'USD'"))
-        with engine.begin() as conn:
-            pass
-
-    if "customer" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("customer")}
-        if "contact_email" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE customer ADD COLUMN contact_email VARCHAR"))
-        if "created_at" not in columns:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "ALTER TABLE customer ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
-                    )
-                )
-
-    if "project" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("project")}
-        if "code" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE project ADD COLUMN code VARCHAR"))
-        if "notes" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE project ADD COLUMN notes TEXT"))
-        if "created_at" not in columns:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "ALTER TABLE project ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
-                    )
-                )
-
-    if "part" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("part")}
-        if "created_at" not in columns:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "ALTER TABLE part ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
-                    )
-                )
-
-    if "task" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("task")}
-        if "created_at" not in columns:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        "ALTER TABLE task ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
-                    )
-                )
-
-    if "user" in inspector.get_table_names():
-        columns = {c["name"] for c in inspector.get_columns("user")}
-        if "hashed_password" not in columns:
-            with engine.begin() as conn:
-                conn.execute(text("ALTER TABLE user ADD COLUMN hashed_password VARCHAR"))
-
-
 def init_db() -> None:
     """Create database tables if they do not exist."""
 
@@ -747,8 +653,13 @@ def init_db() -> None:
         )
         with engine.connect() as conn:
             conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+    if not SQLModel.metadata.tables:
+        for cls in SQLModel.__subclasses__():
+            table = getattr(cls, "__table__", None)
+            if table is not None:
+                table.tometadata(SQLModel.metadata)
     SQLModel.metadata.create_all(engine)
-    migrate_db()
+    run_sqlite_safe_migrations(engine)
     with Session(engine) as session:
         pass
 
@@ -824,11 +735,28 @@ def create_default_users() -> None:
     with Session(engine) as session:
         for name, pw, role in users:
             existing = session.exec(select(User).where(User.username == name)).first()
+            hashed = get_password_hash(pw)
             if not existing:
-                session.add(User(username=name, hashed_pw=get_password_hash(pw), role=role))
+                cols = {c["name"] for c in sqlalchemy.inspect(engine).get_columns("user")}
+                if "hashed_password" in cols and "hashed_pw" in cols:
+                    session.exec(
+                        text(
+                            "INSERT INTO user (username, hashed_pw, hashed_password, role) VALUES (:u, :hpw, :hpw, :r)"
+                        ),
+                        params={"u": name, "hpw": hashed, "r": role},
+                    )
+                elif "hashed_pw" in cols:
+                    session.add(User(username=name, hashed_pw=hashed, role=role))
+                else:
+                    session.exec(
+                        text(
+                            "INSERT INTO user (username, hashed_password, role) VALUES (:u, :hpw, :r)"
+                        ),
+                        params={"u": name, "hpw": hashed, "r": role},
+                    )
             else:
                 if not verify_password(pw, existing.hashed_pw):
-                    existing.hashed_pw = get_password_hash(pw)
+                    existing.hashed_pw = hashed
                 existing.role = role
         session.commit()
 
