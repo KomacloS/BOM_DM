@@ -6,15 +6,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QComboBox,
     QDateEdit,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
     QLineEdit,
+    QLabel,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -27,11 +29,14 @@ from sqlalchemy.exc import IntegrityError
 from . import state as app_state
 from .. import services
 from ..models import ProjectPriority, TaskStatus
+from ..services.customers import CustomerExistsError
+from .workflow import NewProjectWizard
 from ..bom_schema import ALLOWED_HEADERS
 
 
 class CustomersPane(QWidget):
     customerSelected = pyqtSignal(int)
+    customerCreated = pyqtSignal(object)
 
     def __init__(self, state: app_state.AppState) -> None:
         super().__init__()
@@ -55,17 +60,30 @@ class CustomersPane(QWidget):
         self.name_edit.setPlaceholderText("Name")
         self.email_edit = QLineEdit()
         self.email_edit.setPlaceholderText("Email")
-        btn = QPushButton("Create")
-        btn.clicked.connect(self.create_customer)
+        self.create_btn = QPushButton("Create")
+        self.create_btn.clicked.connect(self._on_create_customer)
         form.addWidget(self.name_edit)
         form.addWidget(self.email_edit)
-        form.addWidget(btn)
+        form.addWidget(self.create_btn)
         layout.addLayout(form)
 
         self.table.cellClicked.connect(self._on_select)
-        self.search.textChanged.connect(lambda: state.refresh_customers(self.search.text()))
+
+        # debounce search box
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(
+            lambda: state.refresh_customers(self.search.text())
+        )
+        self.search.textChanged.connect(lambda: self._search_timer.start(300))
+
         state.customersChanged.connect(self._populate)
+        self.customerCreated.connect(self._after_create_customer)
         state.refresh_customers()
+
+    def refresh_customers_and_select(self, cid: int) -> None:
+        self.select_id(cid)
+        self._state.refresh_customers(self.search.text())
 
     def select_id(self, cid: int) -> None:
         self._pending_id = cid
@@ -89,20 +107,26 @@ class CustomersPane(QWidget):
         cid = int(self.table.item(row, 0).text())
         self.customerSelected.emit(cid)
 
-    def create_customer(self) -> None:  # pragma: no cover - UI glue
-        name = self.name_edit.text().strip()
-        if not name:
+    # --------------------------------------------------------------
+    def _on_create_customer(self) -> None:  # pragma: no cover - UI glue
+        name = self.name_edit.text()
+        email = self.email_edit.text()
+        self.create_btn.setEnabled(False)
+
+        def work():
+            with app_state.get_session() as session:
+                return services.create_customer(name, email, session)
+
+        self._state._run(work, self.customerCreated)
+
+    def _after_create_customer(self, result_or_exc):  # pragma: no cover - UI glue
+        self.create_btn.setEnabled(True)
+        if isinstance(result_or_exc, Exception):
+            QMessageBox.warning(self, "Error", str(result_or_exc))
             return
-        email = self.email_edit.text().strip() or None
-        with app_state.get_session() as session:
-            try:
-                services.create_customer(name, email, session)
-            except IntegrityError:
-                QMessageBox.warning(self, "Error", "Customer already exists")
-                return
         self.name_edit.clear()
         self.email_edit.clear()
-        self._state.refresh_customers()
+        self.refresh_customers_and_select(result_or_exc.id)
 
 
 class ProjectsPane(QWidget):
@@ -115,6 +139,10 @@ class ProjectsPane(QWidget):
         self._pending_id: Optional[int] = None
 
         layout = QVBoxLayout(self)
+        self.workflow_btn = QPushButton("➕ New Project (Workflow)")
+        self.workflow_btn.clicked.connect(self._open_new_project_workflow)
+        layout.addWidget(self.workflow_btn)
+
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["ID", "Code", "Title"])
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -129,13 +157,13 @@ class ProjectsPane(QWidget):
         self.prio_combo.addItems([p.value for p in ProjectPriority])
         self.due_edit = QDateEdit()
         self.due_edit.setCalendarPopup(True)
-        btn = QPushButton("Create")
-        btn.clicked.connect(self.create_project)
+        self.create_btn = QPushButton("Create")
+        self.create_btn.clicked.connect(self.create_project)
         form.addRow("Code", self.code_edit)
         form.addRow("Title", self.title_edit)
         form.addRow("Priority", self.prio_combo)
         form.addRow("Due", self.due_edit)
-        form.addRow(btn)
+        form.addRow(self.create_btn)
         layout.addLayout(form)
 
         self.table.cellClicked.connect(self._on_select)
@@ -178,15 +206,37 @@ class ProjectsPane(QWidget):
         prio = self.prio_combo.currentText()
         due = self.due_edit.date().toPyDate()
         due_dt = datetime.combine(due, datetime.min.time()) if due else None
+        self.create_btn.setEnabled(False)
         with app_state.get_session() as session:
             try:
                 services.create_project(self._customer_id, code, title, prio, due_dt, session)
-            except IntegrityError:
-                QMessageBox.warning(self, "Error", "Project already exists")
+            except IntegrityError as exc:
+                QMessageBox.warning(self, "Error", str(exc))
+                self.create_btn.setEnabled(True)
                 return
         self.code_edit.clear()
         self.title_edit.clear()
         self._state.refresh_projects(self._customer_id)
+        self.create_btn.setEnabled(True)
+
+    # --------------------------------------------------------------
+    def refresh_projects_and_select(self, cid: int, pid: int) -> None:
+        self._customer_id = cid
+        self.select_id(pid)
+        self._state.refresh_projects(cid)
+
+    def refresh_assemblies_and_select(self, pid: int, aid: int) -> None:
+        self.projectSelected.emit(pid)
+        # AssembliesPane selection handled externally
+
+    def _open_new_project_workflow(self) -> None:  # pragma: no cover - UI glue
+        wiz = NewProjectWizard(self._state, parent=self)
+        if wiz.exec() == QDialog.DialogCode.Accepted:
+            cid, pid, aid = wiz.result_ids()
+            self.refresh_projects_and_select(cid, pid)
+            self.projectSelected.emit(pid)
+            if aid:
+                self.refresh_assemblies_and_select(pid, aid)
 
 
 class AssembliesPane(QWidget):
@@ -212,11 +262,11 @@ class AssembliesPane(QWidget):
         self.rev_edit.setPlaceholderText("Rev")
         self.notes_edit = QLineEdit()
         self.notes_edit.setPlaceholderText("Notes")
-        btn = QPushButton("Create")
-        btn.clicked.connect(self.create_assembly)
+        self.create_btn = QPushButton("Create")
+        self.create_btn.clicked.connect(self.create_assembly)
         form.addWidget(self.rev_edit)
         form.addWidget(self.notes_edit)
-        form.addWidget(btn)
+        form.addWidget(self.create_btn)
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
@@ -227,6 +277,12 @@ class AssembliesPane(QWidget):
         btn_row.addWidget(self.import_btn)
         btn_row.addWidget(self.template_btn)
         layout.addLayout(btn_row)
+        # Sub-headers
+        bom_lbl = QLabel("BOM Items")
+        f = bom_lbl.font()
+        f.setBold(True)
+        bom_lbl.setFont(f)
+        layout.addWidget(bom_lbl)
 
         self.items_table = QTableWidget(0, 4)
         self.items_table.setHorizontalHeaderLabels(
@@ -238,6 +294,12 @@ class AssembliesPane(QWidget):
         self.items_table.horizontalHeader().setStretchLastSection(True)
         self.items_table.setAlternatingRowColors(True)
         layout.addWidget(self.items_table)
+
+        tasks_lbl = QLabel("Tasks")
+        f2 = tasks_lbl.font()
+        f2.setBold(True)
+        tasks_lbl.setFont(f2)
+        layout.addWidget(tasks_lbl)
 
         self.status_filter = QComboBox()
         self.status_filter.addItems([s.value for s in TaskStatus])
@@ -300,15 +362,18 @@ class AssembliesPane(QWidget):
         if not rev:
             return
         notes = self.notes_edit.text().strip() or None
+        self.create_btn.setEnabled(False)
         with app_state.get_session() as session:
             try:
                 services.create_assembly(self._project_id, rev, notes, session)
-            except IntegrityError:
-                QMessageBox.warning(self, "Error", "Assembly already exists")
+            except IntegrityError as exc:
+                QMessageBox.warning(self, "Error", str(exc))
+                self.create_btn.setEnabled(True)
                 return
         self.rev_edit.clear()
         self.notes_edit.clear()
         self._state.refresh_assemblies(self._project_id)
+        self.create_btn.setEnabled(True)
 
     def upload_bom(self) -> None:  # pragma: no cover - UI glue
         if self._assembly_id is None:

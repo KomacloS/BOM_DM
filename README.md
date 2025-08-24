@@ -76,9 +76,11 @@ make gui
 
 Steps:
 
-1. Create a customer, project and assembly using the forms on the left.
-2. Select an assembly and upload a BOM CSV.
-3. Review the import report, BOM items and any tasks created for unknown parts.
+1. Each pane now shows a header so you always know where you are.
+2. Create a customer, project and assembly using the forms on the left or the
+   **New Project (Workflow)** button for a guided wizard.
+3. Select an assembly and upload a BOM CSV.
+4. Review the import report, BOM items and any tasks created for unknown parts.
 
 ## Debug GUI
 
