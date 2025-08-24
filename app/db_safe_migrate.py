@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import List, Tuple
 
 from sqlalchemy import text
@@ -64,6 +65,21 @@ def _missing_columns(conn, table: str, columns: dict[str, str]) -> List[Tuple[st
     return missing
 
 
+def _add_column_sqlite(conn, table: str, column: str, ddl: str) -> None:
+    """Add a column to a SQLite table, handling timestamp defaults."""
+    qtable = f'"{table}"'
+    qcol = f'"{column}"'
+    ddl_upper = ddl.upper()
+    if "DEFAULT CURRENT_TIMESTAMP" in ddl_upper:
+        base_type = re.split(r"\s+DEFAULT\s+", ddl, flags=re.IGNORECASE)[0].strip()
+        conn.execute(text(f"ALTER TABLE {qtable} ADD COLUMN {qcol} {base_type}"))
+        conn.execute(text(
+            f"UPDATE {qtable} SET {qcol} = CURRENT_TIMESTAMP WHERE {qcol} IS NULL"
+        ))
+    else:
+        conn.execute(text(f"ALTER TABLE {qtable} ADD COLUMN {qcol} {ddl}"))
+
+
 def pending_sqlite_migrations(engine: Engine) -> List[Tuple[str, str, str]]:
     """Return pending migrations without applying them."""
     if engine.dialect.name != "sqlite":
@@ -84,7 +100,7 @@ def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
         for table, cols in _MIGRATIONS.items():
             missing = _missing_columns(conn, table, cols)
             for _table, column, ddl in missing:
-                conn.execute(text(f"ALTER TABLE {_table} ADD COLUMN {column} {ddl}"))
+                _add_column_sqlite(conn, _table, column, ddl)
                 applied.append((_table, column))
                 logger.info("Added column %s.%s", _table, column)
     return applied
