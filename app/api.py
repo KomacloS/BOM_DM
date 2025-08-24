@@ -7,6 +7,7 @@ import csv
 import io
 
 from .database import engine, get_session
+from .db_safe_migrate import run_sqlite_safe_migrations
 from .models import Customer, Project, Assembly, Part, BOMItem, Task, TaskStatus, User
 from .services import (
     import_bom,
@@ -29,6 +30,7 @@ app = FastAPI()
 @app.on_event("startup")
 def on_startup():
     SQLModel.metadata.create_all(engine)
+    run_sqlite_safe_migrations(engine)
     with Session(engine) as session:
         create_default_users(session)
 
