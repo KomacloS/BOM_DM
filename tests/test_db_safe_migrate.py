@@ -127,3 +127,39 @@ def test_bomitem_qty_added_and_backfilled_from_quantity():
     with engine.begin() as conn:
         v = conn.execute(text('SELECT "qty" FROM "bomitem" WHERE id=1')).scalar()
         assert v == 3
+
+
+def test_bomitem_alt_isfitted_notes_added_and_isfitted_backfilled():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=sqlalchemy.pool.StaticPool,
+    )
+    with engine.begin() as conn:
+        conn.execute(text(
+            'CREATE TABLE "bomitem" ('
+            '  id INTEGER PRIMARY KEY,'
+            '  assembly_id INTEGER,'
+            '  part_id INTEGER,'
+            '  quantity INTEGER,'
+            '  reference TEXT,'
+            '  dnp INTEGER'
+            ')'
+        ))
+        # One fitted (dnp=0), one DNP (dnp=1)
+        conn.execute(text(
+            'INSERT INTO "bomitem"(assembly_id, part_id, quantity, reference, dnp) '
+            'VALUES (1, NULL, 2, "R1", 0), (1, NULL, 1, "R2", 1)'
+        ))
+    run_sqlite_safe_migrations(engine)
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("bomitem")}
+    assert {"qty", "reference", "alt_part_number", "is_fitted", "notes"}.issubset(cols)
+    with engine.begin() as conn:
+        rows = conn.execute(text(
+            'SELECT reference, qty, is_fitted, alt_part_number, notes FROM "bomitem" ORDER BY id'
+        )).fetchall()
+    # qty backfilled from quantity
+    assert rows[0][1] == 2 and rows[1][1] == 1
+    # is_fitted backfilled from dnp: R1 fitted (1), R2 not fitted (0)
+    assert rows[0][2] == 1 and rows[1][2] == 0
