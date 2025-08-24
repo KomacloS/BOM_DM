@@ -17,16 +17,33 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
     },
     "project": {
         "code": "TEXT DEFAULT ''",
+        "title": "TEXT DEFAULT ''",
+        "status": "TEXT DEFAULT 'draft'",
+        "priority": "TEXT DEFAULT 'med'",
+        "notes": "TEXT DEFAULT ''",
+        "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "due_at": "TIMESTAMP",
+    },
+    "assembly": {
+        "rev": "TEXT DEFAULT ''",
         "notes": "TEXT DEFAULT ''",
         "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     },
-    "assembly": {
-        "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-    },
     "part": {
+        "description": "TEXT DEFAULT ''",
+        "package": "TEXT DEFAULT ''",
+        "value": "TEXT DEFAULT ''",
+        "function": "TEXT DEFAULT ''",
+        "active_passive": "TEXT DEFAULT ''",
+        "power_required": "INTEGER DEFAULT 0",
+        "datasheet_url": "TEXT DEFAULT ''",
         "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     },
     "task": {
+        "title": "TEXT DEFAULT ''",
+        "description": "TEXT DEFAULT ''",
+        "status": "TEXT DEFAULT 'todo'",
+        "assigned_to": "TEXT",
         "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     },
     "bomitem": {
