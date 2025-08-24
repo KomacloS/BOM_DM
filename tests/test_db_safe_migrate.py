@@ -37,3 +37,28 @@ def test_reserved_name_user_table():
     insp = inspect(engine)
     cols = {c["name"] for c in insp.get_columns("user")}
     assert "hashed_pw" in cols
+
+
+def test_project_columns_added():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=sqlalchemy.pool.StaticPool,
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text('CREATE TABLE "project" (id INTEGER PRIMARY KEY, customer_id INTEGER, code TEXT)')
+        )
+        conn.execute(
+            text('INSERT INTO "project"(customer_id, code) VALUES (1, "P-001")')
+        )
+    run_sqlite_safe_migrations(engine)
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("project")}
+    for col in ("title", "status", "priority", "notes", "created_at", "due_at"):
+        assert col in cols
+    with engine.begin() as conn:
+        nulls = conn.execute(
+            text('SELECT COUNT(*) FROM "project" WHERE "created_at" IS NULL')
+        ).scalar()
+        assert nulls == 0
