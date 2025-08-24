@@ -60,6 +60,9 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "currency": "VARCHAR(3) DEFAULT 'USD'",
         "qty": "INTEGER DEFAULT 1",
         "reference": "TEXT DEFAULT ''",
+        "alt_part_number": "TEXT DEFAULT ''",
+        "is_fitted": "INTEGER DEFAULT 1",
+        "notes": "TEXT DEFAULT ''",
     },
     "user": {
         "hashed_pw": "VARCHAR DEFAULT ''",
@@ -130,6 +133,24 @@ def _backfill_bomitem_qty_from_quantity(conn) -> None:
         )
 
 
+def _backfill_bomitem_is_fitted_from_dnp(conn) -> None:
+    # If legacy 'dnp' exists and 'is_fitted' exists, derive:
+    # is_fitted = 0 when dnp is truthy, else 1.
+    if _column_exists(conn, "bomitem", "dnp") and _column_exists(
+        conn, "bomitem", "is_fitted"
+    ):
+        conn.execute(
+            text(
+                'UPDATE "bomitem" '
+                'SET "is_fitted" = CASE '
+                '  WHEN "dnp" IN (1, "1", "true", "TRUE") THEN 0 '
+                '  ELSE 1 '
+                'END '
+                'WHERE "is_fitted" IS NULL OR "is_fitted" = 1'
+            )
+        )
+
+
 def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
     """Add missing columns with defaults for SQLite development databases."""
     if engine.dialect.name != "sqlite":
@@ -156,5 +177,6 @@ def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
                 )
             )
         _backfill_bomitem_qty_from_quantity(conn)
+        _backfill_bomitem_is_fitted_from_dnp(conn)
 
     return applied
