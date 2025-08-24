@@ -58,6 +58,8 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "unit_cost": "NUMERIC DEFAULT 0",
         "dnp": "INTEGER DEFAULT 0",
         "currency": "VARCHAR(3) DEFAULT 'USD'",
+        "qty": "INTEGER DEFAULT 1",
+        "reference": "TEXT DEFAULT ''",
     },
     "user": {
         "hashed_pw": "VARCHAR DEFAULT ''",
@@ -110,16 +112,29 @@ def pending_sqlite_migrations(engine: Engine) -> List[Tuple[str, str, str]]:
         return pending
 
 
+def _column_exists(conn, table: str, col: str) -> bool:
+    return any(
+        r[1] == col for r in conn.execute(text(f'PRAGMA table_info("{table}")'))
+    )
+
+
+def _backfill_bomitem_qty_from_quantity(conn) -> None:
+    # if legacy 'quantity' exists and 'qty' exists, copy values where qty is NULL/0
+    if _column_exists(conn, "bomitem", "quantity") and _column_exists(
+        conn, "bomitem", "qty"
+    ):
+        conn.execute(
+            text(
+                'UPDATE "bomitem" SET "qty" = COALESCE(NULLIF("quantity", 0), "qty")'
+            )
+        )
+
+
 def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
     """Add missing columns with defaults for SQLite development databases."""
     if engine.dialect.name != "sqlite":
         return []
     applied: List[Tuple[str, str]] = []
-
-    def _column_exists(conn, table: str, col: str) -> bool:
-        return any(
-            r[1] == col for r in conn.execute(text(f'PRAGMA table_info("{table}")'))
-        )
 
     with engine.begin() as conn:
         for table, cols in _MIGRATIONS.items():
@@ -140,5 +155,6 @@ def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
                     'WHERE "name" IS NULL'
                 )
             )
+        _backfill_bomitem_qty_from_quantity(conn)
 
     return applied

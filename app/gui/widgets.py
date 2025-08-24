@@ -110,6 +110,10 @@ class CustomersPane(QWidget):
 
     # --------------------------------------------------------------
     def _populate(self, customers):  # pragma: no cover - UI glue
+        if isinstance(customers, Exception):
+            QMessageBox.warning(self, "Load failed", str(customers))
+            self.table.setRowCount(0)
+            return
         self.table.setRowCount(len(customers))
         for row, c in enumerate(customers):
             self.table.setItem(row, 0, QTableWidgetItem(str(c.id)))
@@ -243,6 +247,10 @@ class ProjectsPane(QWidget):
         self._state.refresh_projects(cid)
 
     def _populate(self, projects):  # pragma: no cover - UI glue
+        if isinstance(projects, Exception):
+            QMessageBox.warning(self, "Load failed", str(projects))
+            self.table.setRowCount(0)
+            return
         self.table.setRowCount(len(projects))
         for row, p in enumerate(projects):
             self.table.setItem(row, 0, QTableWidgetItem(str(p.id)))
@@ -411,6 +419,8 @@ class AssembliesPane(QWidget):
         self.items_table.horizontalHeader().setStretchLastSection(True)
         self.items_table.setAlternatingRowColors(True)
         layout.addWidget(self.items_table)
+        self.items_table.setEnabled(False)
+        self.import_btn.setEnabled(False)
 
         tasks_lbl = QLabel("Tasks")
         f2 = tasks_lbl.font()
@@ -447,9 +457,21 @@ class AssembliesPane(QWidget):
     # --------------------------------------------------------------
     def set_project(self, pid: int) -> None:  # pragma: no cover - UI glue
         self._project_id = pid
+        self._assembly_id = None
+        self.delete_btn.setEnabled(False)
+        self.items_table.setEnabled(False)
+        self.import_btn.setEnabled(False)
+        self.items_table.setRowCount(0)
         self._state.refresh_assemblies(pid)
 
     def _populate(self, assemblies):  # pragma: no cover - UI glue
+        if isinstance(assemblies, Exception):
+            QMessageBox.warning(self, "Load failed", str(assemblies))
+            self.table.setRowCount(0)
+            self.items_table.setEnabled(False)
+            self.import_btn.setEnabled(False)
+            self.items_table.setRowCount(0)
+            return
         self.table.setRowCount(len(assemblies))
         for row, a in enumerate(assemblies):
             self.table.setItem(row, 0, QTableWidgetItem(str(a.id)))
@@ -462,6 +484,10 @@ class AssembliesPane(QWidget):
                     self._on_select(row, 0)
                     break
             self._pending_id = None
+        if self._assembly_id is None:
+            self.items_table.setEnabled(False)
+            self.import_btn.setEnabled(False)
+            self.items_table.setRowCount(0)
 
     def _on_select(self, row: int, _col: int) -> None:  # pragma: no cover
         aid = self._table_id_at(row)
@@ -469,7 +495,13 @@ class AssembliesPane(QWidget):
         self.delete_btn.setEnabled(True)
         self.assemblySelected.emit(aid)
         if aid:
+            self.items_table.setEnabled(True)
+            self.import_btn.setEnabled(True)
             self._state.refresh_bom_items(aid)
+        else:
+            self.items_table.setEnabled(False)
+            self.import_btn.setEnabled(False)
+            self.items_table.setRowCount(0)
         if self._project_id:
             self._state.refresh_tasks(
                 self._project_id, self.status_filter.currentText()
@@ -549,6 +581,10 @@ class AssembliesPane(QWidget):
             self._state.refresh_tasks(self._project_id, self.status_filter.currentText())
 
     def _populate_items(self, items):  # pragma: no cover - UI glue
+        if isinstance(items, Exception):
+            QMessageBox.warning(self, "Load failed", str(items))
+            self.items_table.setRowCount(0)
+            return
         self.items_table.setRowCount(len(items))
         for row, i in enumerate(items):
             self.items_table.setItem(row, 0, QTableWidgetItem(i.reference))
@@ -559,6 +595,10 @@ class AssembliesPane(QWidget):
         self.items_table.resizeColumnsToContents()
 
     def _populate_tasks(self, tasks):  # pragma: no cover - UI glue
+        if isinstance(tasks, Exception):
+            QMessageBox.warning(self, "Load failed", str(tasks))
+            self.tasks_table.setRowCount(0)
+            return
         self.tasks_table.setRowCount(len(tasks))
         for row, t in enumerate(tasks):
             self.tasks_table.setItem(row, 0, QTableWidgetItem(str(t.id)))
@@ -583,6 +623,9 @@ class AssembliesPane(QWidget):
             services.delete_assembly(aid, s)
         self._assembly_id = None
         self.delete_btn.setEnabled(False)
+        self.items_table.setEnabled(False)
+        self.import_btn.setEnabled(False)
+        self.items_table.setRowCount(0)
         if self._project_id:
             self._state.refresh_assemblies(self._project_id)
             self._state.refresh_tasks(

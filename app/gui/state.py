@@ -78,22 +78,10 @@ class AppState(QObject):
         )
 
     def refresh_bom_items(self, assembly_id: int) -> None:
-        from sqlmodel import select
-        from ..models import BOMItem, Part
-
-        def _fetch():
-            with get_session() as s:
-                items = s.exec(select(BOMItem).where(BOMItem.assembly_id == assembly_id)).all()
-                for it in items:
-                    if it.part_id:
-                        part = s.get(Part, it.part_id)
-                        if part:
-                            setattr(it, "part_number", part.part_number)
-                    else:
-                        setattr(it, "part_number", None)
-                return items
-
-        self._run(_fetch, self.bomItemsChanged)
+        self._run(
+            lambda: services.list_bom_items(assembly_id, get_session()),
+            self.bomItemsChanged,
+        )
 
     def refresh_tasks(self, project_id: int, status: Optional[str] = None) -> None:
         self._run(

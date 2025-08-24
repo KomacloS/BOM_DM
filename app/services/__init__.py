@@ -15,7 +15,7 @@ from .customers import (
     DeleteBlockedError,
 )
 from .projects import list_projects, create_project, delete_project
-from .assemblies import list_assemblies, create_assembly, delete_assembly
+from .assemblies import list_assemblies, list_bom_items, create_assembly, delete_assembly
 from .tasks import list_tasks
 from .bom_import import ImportReport, validate_headers, import_bom
 
@@ -26,6 +26,7 @@ __all__ = [
     "create_project",
     "delete_project",
     "list_assemblies",
+    "list_bom_items",
     "create_assembly",
     "delete_assembly",
     "delete_customer",

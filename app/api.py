@@ -16,6 +16,7 @@ from .services import (
     create_project as svc_create_project,
     create_assembly as svc_create_assembly,
     list_tasks as svc_list_tasks,
+    list_bom_items as svc_list_bom_items,
 )
 from .auth import (
     get_current_user,
@@ -137,7 +138,7 @@ def list_bom_items(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    return session.exec(select(BOMItem).where(BOMItem.assembly_id == assembly_id)).all()
+    return svc_list_bom_items(assembly_id, session)
 
 
 @app.get("/projects/{project_id}/tasks", response_model=list[Task])
