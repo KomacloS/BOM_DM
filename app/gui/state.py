@@ -24,7 +24,8 @@ def get_session() -> Session:
 
 
 class _Worker(QThread):
-    """Simple thread worker executing ``fn`` and emitting ``finished``."""
+    """Simple thread worker executing ``fn`` and emitting ``finished``
+    with either the result or any raised exception."""
 
     finished = pyqtSignal(object)
 
@@ -37,8 +38,8 @@ class _Worker(QThread):
     def run(self) -> None:  # pragma: no cover - Qt thread
         try:
             result = self._fn(*self._args, **self._kwargs)
-        except Exception as exc:  # pragma: no cover - propagate errors
-            result = exc
+        except Exception as e:
+            result = e
         self.finished.emit(result)
 
 
