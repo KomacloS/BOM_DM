@@ -32,6 +32,7 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     },
     "part": {
+        "part_number": "TEXT",
         "description": "TEXT DEFAULT ''",
         "package": "TEXT DEFAULT ''",
         "value": "TEXT DEFAULT ''",
@@ -39,6 +40,8 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "active_passive": "TEXT DEFAULT ''",
         "power_required": "INTEGER DEFAULT 0",
         "datasheet_url": "TEXT DEFAULT ''",
+        "tol_p": "TEXT DEFAULT ''",
+        "tol_n": "TEXT DEFAULT ''",
         "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     },
     "task": {
@@ -178,5 +181,25 @@ def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
             )
         _backfill_bomitem_qty_from_quantity(conn)
         _backfill_bomitem_is_fitted_from_dnp(conn)
+        if _column_exists(conn, "part", "active_passive"):
+            conn.execute(
+                text(
+                    "UPDATE part SET active_passive = 'active' "
+                    "WHERE LOWER(TRIM(active_passive)) IN ('active','a')"
+                )
+            )
+            conn.execute(
+                text(
+                    "UPDATE part SET active_passive = 'passive' "
+                    "WHERE active_passive IS NULL OR TRIM(active_passive) = '' "
+                    "   OR LOWER(TRIM(active_passive)) IN ('passive','p')"
+                )
+            )
+        if _column_exists(conn, "part", "part_number"):
+            conn.execute(
+                text(
+                    'CREATE UNIQUE INDEX IF NOT EXISTS ix_part_part_number ON "part"(part_number)'
+                )
+            )
 
     return applied

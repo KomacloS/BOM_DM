@@ -163,3 +163,33 @@ def test_bomitem_alt_isfitted_notes_added_and_isfitted_backfilled():
     assert rows[0][1] == 2 and rows[1][1] == 1
     # is_fitted backfilled from dnp: R1 fitted (1), R2 not fitted (0)
     assert rows[0][2] == 1 and rows[1][2] == 0
+
+
+def test_part_tolerances_added():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=sqlalchemy.pool.StaticPool,
+    )
+    with engine.begin() as conn:
+        conn.execute(text('CREATE TABLE "part" (id INTEGER PRIMARY KEY, part_number TEXT)'))
+    run_sqlite_safe_migrations(engine)
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("part")}
+    assert "tol_p" in cols and "tol_n" in cols
+
+
+def test_part_number_column_and_index_added():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=sqlalchemy.pool.StaticPool,
+    )
+    with engine.begin() as conn:
+        conn.execute(text('CREATE TABLE "part" (id INTEGER PRIMARY KEY)'))
+    run_sqlite_safe_migrations(engine)
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("part")}
+    assert "part_number" in cols
+    idx = {i["name"] for i in insp.get_indexes("part")}
+    assert "ix_part_part_number" in idx

@@ -157,6 +157,12 @@ class ControlCenter(QMainWindow):
 # ---------------------------------------------------------------------------
 def main() -> None:  # pragma: no cover - manual entry point
     _reexec_into_venv()
+    from app.config import get_engine
+    from app.db_safe_migrate import run_sqlite_safe_migrations
+
+    engine = get_engine()
+    run_sqlite_safe_migrations(engine)
+
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen" if not os.environ.get("DISPLAY") else "")
     app = QApplication(sys.argv)
     win = ControlCenter()
