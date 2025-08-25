@@ -128,6 +128,8 @@ class CustomersPane(QWidget):
             self._pending_id = None
 
     def _on_select(self, row: int, _col: int) -> None:  # pragma: no cover - UI glue
+        if row < 0:
+            return
         cid = self._table_id_at(row)
         self.delete_btn.setEnabled(True)
         self.customerSelected.emit(cid)
@@ -266,6 +268,8 @@ class ProjectsPane(QWidget):
             self._pending_id = None
 
     def _on_select(self, row: int, _col: int) -> None:  # pragma: no cover
+        if row < 0:
+            return
         pid = self._table_id_at(row)
         self.delete_btn.setEnabled(True)
         self.projectSelected.emit(pid)
@@ -447,6 +451,7 @@ class AssembliesPane(QWidget):
         state.assembliesChanged.connect(self._populate)
         state.bomItemsChanged.connect(self._populate_items)
         state.tasksChanged.connect(self._populate_tasks)
+        state.bomImported.connect(self._after_import_bom)
 
     def select_id(self, aid: int) -> None:
         self._pending_id = aid
@@ -490,6 +495,8 @@ class AssembliesPane(QWidget):
             self.items_table.setRowCount(0)
 
     def _on_select(self, row: int, _col: int) -> None:  # pragma: no cover
+        if row < 0:
+            return
         aid = self._table_id_at(row)
         self._assembly_id = aid
         self.delete_btn.setEnabled(True)
@@ -528,7 +535,10 @@ class AssembliesPane(QWidget):
         self.create_btn.setEnabled(True)
 
     def _on_import_bom(self) -> None:  # pragma: no cover - UI glue
-        if self._assembly_id is None:
+        aid = (
+            self.current_assembly_id() if hasattr(self, "current_assembly_id") else getattr(self, "_assembly_id", None)
+        )
+        if not aid:
             QMessageBox.information(self, "Import BOM", "Select an assembly first.")
             return
         path, _ = QFileDialog.getOpenFileName(
@@ -537,14 +547,15 @@ class AssembliesPane(QWidget):
         if not path:
             return
         self.import_btn.setEnabled(False)
-
-        def work():
+        try:
             with open(path, "rb") as f:
                 data = f.read()
-            with app_state.get_session() as s:
-                return services.import_bom(self._assembly_id, data, s)
-
-        self._state._run(work, self._after_import_bom)
+        except Exception as e:
+            QMessageBox.warning(self, "Import BOM", f"Could not read file:\n{e}")
+            self.import_btn.setEnabled(True)
+            return
+        # Use AppState API which emits bomImported
+        self._state.import_bom(aid, data)
 
     def download_template(self) -> None:  # pragma: no cover - UI glue
         path, _ = QFileDialog.getSaveFileName(
