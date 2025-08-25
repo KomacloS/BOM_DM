@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Optional
 from sqlalchemy import Boolean, Column, JSON
@@ -19,6 +20,15 @@ class User(SQLModel, table=True):
     username: str = Field(index=True, unique=True)
     hashed_password: str
     role: UserRole = Field(default=UserRole.user)
+
+    # backward-compat alias
+    @property
+    def hashed_pw(self) -> str:  # pragma: no cover - simple alias
+        return self.hashed_password
+
+    @hashed_pw.setter
+    def hashed_pw(self, v: str) -> None:  # pragma: no cover - simple alias
+        self.hashed_password = v
 
 
 class Customer(SQLModel, table=True):
@@ -81,6 +91,8 @@ class Part(SQLModel, table=True):
     active_passive: PartType = Field(default=PartType.passive)
     power_required: bool = False
     datasheet_url: Optional[str] = None
+    tol_p: Optional[str] = None
+    tol_n: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -90,6 +102,10 @@ class BOMItem(SQLModel, table=True):
     part_id: Optional[int] = Field(default=None, foreign_key="part.id")
     reference: str = Field(max_length=64)
     qty: int
+    manufacturer: Optional[str] = None
+    unit_cost: Optional[Decimal] = None
+    currency: Optional[str] = None
+    datasheet_url: Optional[str] = None
     alt_part_number: Optional[str] = None
     is_fitted: bool = True
     notes: Optional[str] = None
