@@ -37,10 +37,7 @@ import os
 import re
 import hashlib
 from pathlib import Path
-
 from openpyxl import Workbook, load_workbook
-
-from .constants import BOM_TEMPLATE_HEADERS
 
 from .security import verify_password, get_password_hash, create_access_token
 from .config import (
@@ -788,11 +785,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             "/auth/me",
         )
         path = request.url.path
-        if (
-            path != "/bom/template"
-            and path.startswith(protected)
-            and "Authorization" not in request.headers
-        ):
+        if path.startswith(protected) and "Authorization" not in request.headers:
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
@@ -2187,15 +2180,9 @@ def get_test_result(test_id: int) -> TestResultRead:
 @app.get("/bom/template")
 def bom_template() -> StreamingResponse:
     """Download a CSV template for BOM imports."""
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(BOM_TEMPLATE_HEADERS)
-    output.seek(0)
-    return StreamingResponse(
-        output,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=bom_template.csv"},
-    )
+    path = Path(__file__).resolve().parent.parent / "bom_template.csv"
+    headers = {"Content-Disposition": "attachment; filename=bom_template.csv"}
+    return StreamingResponse(path.open("rb"), media_type="text/csv", headers=headers)
 
 
 @app.get("/export/bom.csv", dependencies=[Depends(admin_required)])

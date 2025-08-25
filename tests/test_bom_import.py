@@ -21,16 +21,21 @@ def setup_db():
     return engine
 
 
-def test_bom_import_creates_parts_and_items():
+def test_bom_import_creates_items_and_tasks():
     engine = setup_db()
     with Session(engine) as session:
         cust = models.Customer(name="Cust")
         session.add(cust)
-        session.commit(); session.refresh(cust)
+        session.commit()
+        session.refresh(cust)
         proj = models.Project(customer_id=cust.id, code="PRJ", title="Proj")
-        session.add(proj); session.commit(); session.refresh(proj)
+        session.add(proj)
+        session.commit()
+        session.refresh(proj)
         asm = models.Assembly(project_id=proj.id, rev="A")
-        session.add(asm); session.commit(); session.refresh(asm)
+        session.add(asm)
+        session.commit()
+        session.refresh(asm)
         session.add(models.Part(part_number="P1", description="Known part 1"))
         session.add(models.Part(part_number="P2", description="Known part 2"))
         session.commit()
@@ -39,8 +44,10 @@ def test_bom_import_creates_parts_and_items():
         assert report.total == 3
         assert report.matched == 2
         assert report.unmatched == 1
-        assert report.created_task_ids == []
+        assert len(report.created_task_ids) == 1
         items = session.exec(select(models.BOMItem)).all()
         assert len(items) == 3
-        parts = session.exec(select(models.Part)).all()
-        assert any(p.part_number == "P3" for p in parts)
+        task = session.exec(select(models.Task)).first()
+        assert task.title.startswith("Define part P3")
+        events = session.exec(select(models.AuditEvent)).all()
+        assert len(events) >= 4
