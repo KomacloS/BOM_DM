@@ -46,7 +46,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/assemblies/1/bom/it
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/projects/1/tasks
 ```
 
-Download a CSV template:
+Download a BOM template (CSV or XLSX accepted):
 
 ```bash
 curl http://localhost:8000/bom/template

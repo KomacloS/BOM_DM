@@ -34,7 +34,20 @@ from .. import services
 from ..models import ProjectPriority, TaskStatus, Project, Assembly
 from ..services.customers import CustomerExistsError
 from .workflow import NewProjectWizard
-from ..bom_schema import ALLOWED_HEADERS
+BOM_HEADERS = [
+    "PN",
+    "Reference",
+    "Qty",
+    "Manufacturer",
+    "Active/Passive",
+    "Function",
+    "Tolerance P",
+    "Tolerance N",
+    "Price",
+    "Currency",
+    "Datasheet",
+    "Notes",
+]
 
 
 class CustomersPane(QWidget):
@@ -542,7 +555,10 @@ class AssembliesPane(QWidget):
             QMessageBox.information(self, "Import BOM", "Select an assembly first.")
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select BOM CSV", "", "CSV Files (*.csv)"
+            self,
+            "Select BOM file",
+            "",
+            "BOM Files (*.csv *.xlsx);;CSV (*.csv);;Excel (*.xlsx)",
         )
         if not path:
             return
@@ -563,7 +579,7 @@ class AssembliesPane(QWidget):
         )
         if not path:
             return
-        Path(path).write_text(",".join(ALLOWED_HEADERS) + "\n", encoding="utf-8")
+        Path(path).write_text(",".join(BOM_HEADERS) + "\n", encoding="utf-8")
 
     def _after_import_bom(self, result):  # pragma: no cover - UI glue
         self.import_btn.setEnabled(True)

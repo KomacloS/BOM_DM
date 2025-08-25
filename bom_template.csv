@@ -1,3 +1,2 @@
-part_number,description,quantity,reference,manufacturer,mpn,footprint,unit_cost,currency,dnp
-ABC123,10 kΩ 0805 resistor,10,R1-R10,Yageo,RC0805FR-0710KL,0805,0.012,USD,
-LM358,Pwr op-amp SOIC-8,2,U1-U2,TI,LM358DR,SOIC-8,,USD,
+PN,Reference,Qty,Manufacturer,Active/Passive,Function,Tolerance P,Tolerance N,Price,Currency,Datasheet,Notes
+ABC123,R1,10,Yageo,Passive,Resistor,5%,,0.012,USD,,Example part
