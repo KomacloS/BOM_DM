@@ -6,8 +6,6 @@ from sqlmodel import SQLModel, Session, select
 import csv
 import io
 
-from .constants import BOM_TEMPLATE_HEADERS
-
 from .database import engine, get_session
 from .db_safe_migrate import run_sqlite_safe_migrations
 from .models import Customer, Project, Assembly, Part, BOMItem, Task, TaskStatus, User
@@ -62,14 +60,13 @@ def read_users_me(current_user: User = Depends(get_current_user)):
 
 @app.get("/bom/template")
 def bom_template():
+    from .bom_schema import ALLOWED_HEADERS
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(BOM_TEMPLATE_HEADERS)
+    writer.writerow(ALLOWED_HEADERS)
     output.seek(0)
     return StreamingResponse(
-        output,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=bom_template.csv"},
+        output, media_type="text/csv", headers={"Content-Disposition": "attachment; filename=bom_template.csv"}
     )
 
 

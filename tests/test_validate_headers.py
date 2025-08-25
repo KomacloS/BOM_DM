@@ -24,7 +24,7 @@ def test_validate_headers_errors():
     with pytest.raises(ValueError):
         validate_headers(["foo", "bar"])
     with pytest.raises(ValueError):
-        validate_headers(["part_number"])  # missing reference
+        validate_headers(["part_number", "description", "qty"])  # missing reference
 
 
 def test_import_bom_bad_headers():
