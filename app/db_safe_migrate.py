@@ -154,6 +154,54 @@ def _backfill_bomitem_is_fitted_from_dnp(conn) -> None:
         )
 
 
+def _rebuild_part_table_without_number(conn) -> None:
+    """If legacy part.number column exists, rebuild table without it."""
+    if not _column_exists(conn, "part", "number"):
+        return
+    # Ensure part_number values are populated from number when missing
+    if _column_exists(conn, "part", "part_number"):
+        conn.execute(
+            text(
+                'UPDATE "part" SET "part_number" = COALESCE("part_number", "number")'
+            )
+        )
+    # Rebuild table without legacy column
+    conn.execute(text('DROP TABLE IF EXISTS "part__new"'))
+    conn.execute(
+        text(
+            """
+CREATE TABLE "part__new" (
+    id INTEGER PRIMARY KEY,
+    part_number TEXT,
+    description TEXT DEFAULT '',
+    package TEXT DEFAULT '',
+    value TEXT DEFAULT '',
+    function TEXT DEFAULT '',
+    active_passive TEXT DEFAULT '',
+    power_required INTEGER DEFAULT 0,
+    datasheet_url TEXT DEFAULT '',
+    tol_p TEXT DEFAULT '',
+    tol_n TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)"""
+        )
+    )
+    conn.execute(
+        text(
+            """
+INSERT INTO "part__new"(
+    id, part_number, description, package, value, function,
+    active_passive, power_required, datasheet_url, tol_p, tol_n, created_at
+)
+SELECT id, part_number, description, package, value, function,
+       active_passive, power_required, datasheet_url, tol_p, tol_n, created_at
+FROM "part"
+"""
+        )
+    )
+    conn.execute(text('DROP TABLE "part"'))
+    conn.execute(text('ALTER TABLE "part__new" RENAME TO "part"'))
+
 def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
     """Add missing columns with defaults for SQLite development databases."""
     if engine.dialect.name != "sqlite":
@@ -195,6 +243,7 @@ def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
                     "   OR LOWER(TRIM(active_passive)) IN ('passive','p')"
                 )
             )
+        _rebuild_part_table_without_number(conn)
         if _column_exists(conn, "part", "part_number"):
             conn.execute(
                 text(
