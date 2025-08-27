@@ -193,3 +193,30 @@ def test_part_number_column_and_index_added():
     assert "part_number" in cols
     idx = {i["name"] for i in insp.get_indexes("part")}
     assert "ix_part_part_number" in idx
+
+
+def test_legacy_part_table_rebuilt_and_backfilled():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=sqlalchemy.pool.StaticPool,
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text('CREATE TABLE "part" (id INTEGER PRIMARY KEY, number TEXT NOT NULL)')
+        )
+        conn.execute(text('INSERT INTO "part"(number) VALUES ("ABC")'))
+    run_sqlite_safe_migrations(engine)
+    # Second run should be no-op
+    run_sqlite_safe_migrations(engine)
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("part")}
+    assert "number" not in cols and "part_number" in cols
+    idx = {i["name"] for i in insp.get_indexes("part")}
+    assert "ix_part_part_number" in idx
+    with engine.begin() as conn:
+        val = conn.execute(text('SELECT part_number FROM "part" WHERE id=1')).scalar()
+        assert val == "ABC"
+        conn.execute(text('INSERT INTO "part"(part_number) VALUES ("DEF")'))
+        rows = conn.execute(text('SELECT part_number FROM "part" ORDER BY id')).fetchall()
+        assert [r[0] for r in rows] == ["ABC", "DEF"]
