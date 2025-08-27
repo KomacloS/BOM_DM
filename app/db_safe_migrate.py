@@ -59,16 +59,12 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "mpn": "TEXT DEFAULT ''",
         "footprint": "TEXT DEFAULT ''",
         "unit_cost": "NUMERIC DEFAULT 0",
-        "dnp": "INTEGER DEFAULT 0",
         "currency": "VARCHAR(3) DEFAULT 'USD'",
         "qty": "INTEGER DEFAULT 1",
         "reference": "TEXT DEFAULT ''",
         "alt_part_number": "TEXT DEFAULT ''",
         "is_fitted": "INTEGER DEFAULT 1",
         "notes": "TEXT DEFAULT ''",
-    },
-    "user": {
-        "hashed_pw": "VARCHAR DEFAULT ''",
     },
 }
 
@@ -123,37 +119,6 @@ def _column_exists(conn, table: str, col: str) -> bool:
         r[1] == col for r in conn.execute(text(f'PRAGMA table_info("{table}")'))
     )
 
-
-def _backfill_bomitem_qty_from_quantity(conn) -> None:
-    # if legacy 'quantity' exists and 'qty' exists, copy values where qty is NULL/0
-    if _column_exists(conn, "bomitem", "quantity") and _column_exists(
-        conn, "bomitem", "qty"
-    ):
-        conn.execute(
-            text(
-                'UPDATE "bomitem" SET "qty" = COALESCE(NULLIF("quantity", 0), "qty")'
-            )
-        )
-
-
-def _backfill_bomitem_is_fitted_from_dnp(conn) -> None:
-    # If legacy 'dnp' exists and 'is_fitted' exists, derive:
-    # is_fitted = 0 when dnp is truthy, else 1.
-    if _column_exists(conn, "bomitem", "dnp") and _column_exists(
-        conn, "bomitem", "is_fitted"
-    ):
-        conn.execute(
-            text(
-                'UPDATE "bomitem" '
-                'SET "is_fitted" = CASE '
-                '  WHEN "dnp" IN (1, "1", "true", "TRUE") THEN 0 '
-                '  ELSE 1 '
-                'END '
-                'WHERE "is_fitted" IS NULL OR "is_fitted" = 1'
-            )
-        )
-
-
 def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
     """Add missing columns with defaults for SQLite development databases."""
     if engine.dialect.name != "sqlite":
@@ -168,33 +133,6 @@ def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
                 applied.append((_table, column))
                 logger.info("Added column %s.%s", _table, column)
 
-        if _column_exists(conn, "customer", "active"):
-            conn.execute(
-                text('UPDATE "customer" SET "active" = 1 WHERE "active" IS NULL')
-            )
-        if _column_exists(conn, "project", "name"):
-            conn.execute(
-                text(
-                    'UPDATE "project" SET "name" = COALESCE("title", "code", \'\') '
-                    'WHERE "name" IS NULL'
-                )
-            )
-        _backfill_bomitem_qty_from_quantity(conn)
-        _backfill_bomitem_is_fitted_from_dnp(conn)
-        if _column_exists(conn, "part", "active_passive"):
-            conn.execute(
-                text(
-                    "UPDATE part SET active_passive = 'active' "
-                    "WHERE LOWER(TRIM(active_passive)) IN ('active','a')"
-                )
-            )
-            conn.execute(
-                text(
-                    "UPDATE part SET active_passive = 'passive' "
-                    "WHERE active_passive IS NULL OR TRIM(active_passive) = '' "
-                    "   OR LOWER(TRIM(active_passive)) IN ('passive','p')"
-                )
-            )
         if _column_exists(conn, "part", "part_number"):
             conn.execute(
                 text(

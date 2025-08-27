@@ -1,19 +1,24 @@
 import os, sys, sqlalchemy
-from sqlmodel import SQLModel, create_engine
+from sqlmodel import SQLModel, create_engine, Session
 from fastapi.testclient import TestClient
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-import app.main as main
+from app.api import app, get_session
+from app import database
 
 
 def setup_client():
     engine = create_engine(
-        'sqlite:///:memory:',
-        connect_args={'check_same_thread': False},
-        poolclass=sqlalchemy.pool.StaticPool,
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=sqlalchemy.pool.StaticPool
     )
-    main.engine = engine
+    database.engine = engine
     SQLModel.metadata.create_all(engine)
-    return TestClient(main.app)
+
+    def session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = session_override
+    return TestClient(app)
 
 
 def test_bom_template_download():
