@@ -12,6 +12,7 @@ from typing import List
 
 from pydantic import BaseModel, Field, validator
 from sqlmodel import Session, select
+from sqlalchemy.exc import IntegrityError
 
 from ..models import Assembly, BOMItem, Part, PartType
 
@@ -208,7 +209,6 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
             unmatched += 1
             part = Part(part_number=pn)
 
-        # Fill part attributes
         if bom_row.active_passive:
             try:
                 ap = PartType(bom_row.active_passive.lower())
@@ -216,19 +216,26 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
                 ap = PartType.passive
             if is_new or not getattr(part, "active_passive", None):
                 part.active_passive = ap
-        if bom_row.function and not part.function:
+        if bom_row.function and (is_new or not part.function):
             part.function = bom_row.function
-        if bom_row.tol_p and not part.tol_p:
+        if bom_row.tol_p and (is_new or not part.tol_p):
             part.tol_p = bom_row.tol_p
-        if bom_row.tol_n and not part.tol_n:
+        if bom_row.tol_n and (is_new or not part.tol_n):
             part.tol_n = bom_row.tol_n
-        if bom_row.datasheet_url and not part.datasheet_url:
+        if bom_row.datasheet_url and (is_new or not part.datasheet_url):
             cached = _cache_datasheet_for_pn(pn, bom_row.datasheet_url)
             if cached:
                 part.datasheet_url = cached
 
         session.add(part)
-        session.commit()
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            part = session.exec(select(Part).where(Part.part_number == pn)).first()
+            if not part:
+                errors.append(f"Row {i}: duplicate part_number {pn}")
+                continue
         session.refresh(part)
 
         item = session.exec(

@@ -8,8 +8,7 @@ import io
 
 from .constants import BOM_TEMPLATE_HEADERS
 
-from .database import engine, get_session
-from .db_safe_migrate import run_sqlite_safe_migrations
+from .database import engine, get_session, ensure_schema
 from .models import Customer, Project, Assembly, Part, BOMItem, Task, TaskStatus, User
 from .services import (
     import_bom,
@@ -32,8 +31,7 @@ app = FastAPI()
 
 @app.on_event("startup")
 def on_startup():
-    SQLModel.metadata.create_all(engine)
-    run_sqlite_safe_migrations(engine)
+    ensure_schema()
     with Session(engine) as session:
         create_default_users(session)
 

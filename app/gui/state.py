@@ -5,22 +5,19 @@ from __future__ import annotations
 from typing import Callable, Iterable, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
-from sqlmodel import Session, SQLModel
+from sqlmodel import Session
 
-from ..config import get_engine
-from ..db_safe_migrate import run_sqlite_safe_migrations
+from ..database import new_session, ensure_schema
 from .. import services
 
 
-_ENGINE = get_engine()
-SQLModel.metadata.create_all(_ENGINE)
-run_sqlite_safe_migrations(_ENGINE)
+ensure_schema()
 
 
 def get_session() -> Session:
     """Return a new database session bound to the configured engine."""
 
-    return Session(_ENGINE)
+    return new_session()
 
 
 class _Worker(QThread):
