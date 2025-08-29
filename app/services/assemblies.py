@@ -8,6 +8,7 @@ from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
 from ..models import Assembly, BOMItem, Part
+from . import BOMItemRead
 
 
 def list_assemblies(project_id: int, session: Session) -> List[Assembly]:
@@ -24,22 +25,17 @@ def list_assemblies(project_id: int, session: Session) -> List[Assembly]:
         ) from e
 
 
-def list_bom_items(assembly_id: int, session: Session) -> List[BOMItem]:
-    """Return BOM items for an assembly, adding ``part_number`` when available."""
+def list_bom_items(assembly_id: int, session: Session) -> List[BOMItemRead]:
+    """Return BOM items for an assembly with the related ``part_number``."""
 
-    stmt = select(BOMItem).where(BOMItem.assembly_id == assembly_id)
+    stmt = (
+        select(BOMItem, Part.part_number)
+        .join(Part, Part.id == BOMItem.part_id, isouter=True)
+        .where(BOMItem.assembly_id == assembly_id)
+    )
     try:
-        items = session.exec(stmt).all()
-        for it in items:
-            if it.part_id:
-                part = session.get(Part, it.part_id)
-                if part:
-                    setattr(it, "part_number", part.part_number)
-                else:
-                    setattr(it, "part_number", None)
-            else:
-                setattr(it, "part_number", None)
-        return items
+        rows = session.exec(stmt).all()
+        return [BOMItemRead(part_number=pn, **item.model_dump()) for item, pn in rows]
     except OperationalError as e:  # pragma: no cover - depends on DB schema
         raise RuntimeError(
             "BOM items query failed; run 'python -m app.tools.db migrate'. Details: "

@@ -9,7 +9,7 @@ import io
 from .constants import BOM_TEMPLATE_HEADERS
 
 from .database import engine, get_session, ensure_schema
-from .models import Customer, Project, Assembly, Part, BOMItem, Task, TaskStatus, User
+from .models import Customer, Project, Assembly, Part, Task, TaskStatus, User
 from .services import (
     import_bom,
     ImportReport,
@@ -18,6 +18,7 @@ from .services import (
     create_assembly as svc_create_assembly,
     list_tasks as svc_list_tasks,
     list_bom_items as svc_list_bom_items,
+    BOMItemRead,
 )
 from .auth import (
     get_current_user,
@@ -133,7 +134,7 @@ def import_bom_endpoint(
     return report
 
 
-@app.get("/assemblies/{assembly_id}/bom/items", response_model=list[BOMItem])
+@app.get("/assemblies/{assembly_id}/bom/items", response_model=list[BOMItemRead])
 def list_bom_items(
     assembly_id: int,
     session: Session = Depends(get_session),
