@@ -8,6 +8,26 @@ The modules re-export the most commonly used functions so existing imports
 like ``from app.services import import_bom`` continue to work.
 """
 
+from decimal import Decimal
+
+from pydantic import BaseModel
+
+class BOMItemRead(BaseModel):
+    id: int
+    assembly_id: int
+    reference: str
+    qty: int
+    manufacturer: str | None = None
+    unit_cost: Decimal | None = None
+    currency: str | None = None
+    datasheet_url: str | None = None
+    alt_part_number: str | None = None
+    is_fitted: bool
+    notes: str | None = None
+    part_id: int | None = None
+    part_number: str | None = None
+
+
 from .customers import (
     list_customers,
     create_customer,
@@ -32,6 +52,7 @@ __all__ = [
     "delete_customer",
     "DeleteBlockedError",
     "list_tasks",
+    "BOMItemRead",
     "ImportReport",
     "validate_headers",
     "import_bom",

@@ -41,6 +41,6 @@ def test_bom_import_creates_parts_and_items():
         assert report.unmatched == 1
         assert report.created_task_ids == []
         items = session.exec(select(models.BOMItem)).all()
-        assert len(items) == 3
+        assert len(items) == 4
         parts = session.exec(select(models.Part)).all()
         assert any(p.part_number == "P3" for p in parts)

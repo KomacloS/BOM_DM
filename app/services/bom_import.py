@@ -106,6 +106,35 @@ class BOMRow(BaseModel):
         return (v or "").upper() or None
 
 
+_REF_TOKEN = re.compile(
+    r"^\s*([A-Za-z]+)\s*(\d+)\s*-\s*([A-Za-z]+)?\s*(\d+)\s*$"
+)
+
+
+def _expand_references(ref_str: str) -> list[str]:
+    # Split on commas first
+    tokens = [t.strip() for t in ref_str.split(",") if t.strip()]
+    out: list[str] = []
+    for tok in tokens:
+        m = _REF_TOKEN.match(tok)
+        if m:
+            p1, n1, p2, n2 = m.group(1), m.group(2), m.group(3), m.group(4)
+            # If second prefix omitted, assume same as first
+            if p2 and p2 != p1:
+                # different prefixes treated as literal token (fallback)
+                out.append(tok)
+                continue
+            start, end = int(n1), int(n2)
+            if start > end:
+                start, end = end, start
+            # preserve zero-padding width
+            width = max(len(n1), len(n2))
+            out.extend([f"{p1}{str(i).zfill(width)}" for i in range(start, end + 1)])
+        else:
+            out.append(tok)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # File parsing helpers
 
@@ -238,29 +267,55 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
                 continue
         session.refresh(part)
 
-        item = session.exec(
-            select(BOMItem).where(
-                BOMItem.assembly_id == assembly_id, BOMItem.reference == bom_row.reference
-            )
-        ).first()
-        if not item:
-            item = BOMItem(assembly_id=assembly_id, reference=bom_row.reference)
+        refs = _expand_references(bom_row.reference)
+        if len(refs) > 1:
+            for ref in refs:
+                item = session.exec(
+                    select(BOMItem).where(
+                        BOMItem.assembly_id == assembly_id, BOMItem.reference == ref
+                    )
+                ).first()
+                if not item:
+                    item = BOMItem(assembly_id=assembly_id, reference=ref)
+                item.part_id = part.id
+                item.qty = 1
+                if bom_row.manufacturer:
+                    item.manufacturer = bom_row.manufacturer
+                if bom_row.unit_cost is not None:
+                    item.unit_cost = bom_row.unit_cost
+                if bom_row.currency:
+                    item.currency = bom_row.currency
+                if bom_row.datasheet_url:
+                    item.datasheet_url = bom_row.datasheet_url
+                if bom_row.notes:
+                    item.notes = bom_row.notes
+                session.add(item)
+            session.commit()
+        else:
+            ref = refs[0] if refs else bom_row.reference
+            item = session.exec(
+                select(BOMItem).where(
+                    BOMItem.assembly_id == assembly_id, BOMItem.reference == ref
+                )
+            ).first()
+            if not item:
+                item = BOMItem(assembly_id=assembly_id, reference=ref)
 
-        item.part_id = part.id
-        item.qty = bom_row.qty
-        if bom_row.manufacturer:
-            item.manufacturer = bom_row.manufacturer
-        if bom_row.unit_cost is not None:
-            item.unit_cost = bom_row.unit_cost
-        if bom_row.currency:
-            item.currency = bom_row.currency
-        if bom_row.datasheet_url:
-            item.datasheet_url = bom_row.datasheet_url
-        if bom_row.notes:
-            item.notes = bom_row.notes
+            item.part_id = part.id
+            item.qty = bom_row.qty
+            if bom_row.manufacturer:
+                item.manufacturer = bom_row.manufacturer
+            if bom_row.unit_cost is not None:
+                item.unit_cost = bom_row.unit_cost
+            if bom_row.currency:
+                item.currency = bom_row.currency
+            if bom_row.datasheet_url:
+                item.datasheet_url = bom_row.datasheet_url
+            if bom_row.notes:
+                item.notes = bom_row.notes
 
-        session.add(item)
-        session.commit()
+            session.add(item)
+            session.commit()
 
     return ImportReport(total=total, matched=matched, unmatched=unmatched, errors=errors)
 
