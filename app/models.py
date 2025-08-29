@@ -83,7 +83,7 @@ class PartType(str, Enum):
 
 class Part(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    part_number: str = Field(index=True, unique=True)
+    part_number: str = Field(unique=True, nullable=False, index=True)
     description: Optional[str] = None
     package: Optional[str] = None
     value: Optional[str] = None
@@ -100,8 +100,8 @@ class BOMItem(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     assembly_id: int = Field(foreign_key="assembly.id")
     part_id: Optional[int] = Field(default=None, foreign_key="part.id")
-    reference: str = Field(max_length=64)
-    qty: int
+    reference: str = Field(max_length=64, nullable=False)
+    qty: int = Field(default=1, nullable=False)
     manufacturer: Optional[str] = None
     unit_cost: Optional[Decimal] = None
     currency: Optional[str] = None
