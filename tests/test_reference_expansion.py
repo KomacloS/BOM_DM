@@ -36,7 +36,8 @@ def test_reference_expansion():
             "P3,R9,10\n"
         ).encode()
         report = import_bom(asm.id, data, session)
-        assert report.total == 3 and not report.errors
+        assert report.total == 3
+        assert "qty=999 but 3 references expanded" in "\n".join(report.errors)
 
         parts = session.exec(select(models.Part)).all()
         assert {p.part_number for p in parts} == {"P1", "P2", "P3"}
