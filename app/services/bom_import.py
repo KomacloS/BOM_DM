@@ -105,10 +105,17 @@ class BOMRow(BaseModel):
     def _cur_up(cls, v):
         return (v or "").upper() or None
 
+    @validator("unit_cost", pre=True)
+    def _unit_cost_optional(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        if s == "":
+            return None
+        return Decimal(s)
 
-_REF_TOKEN = re.compile(
-    r"^\s*([A-Za-z]+)\s*(\d+)\s*-\s*([A-Za-z]+)?\s*(\d+)\s*$"
-)
+
+_RANGE = re.compile(r"^([A-Za-z]+)(\d+)\s*-\s*([A-Za-z]+)?(\d+)$")
 
 
 def _expand_references(ref_str: str) -> list[str]:
@@ -116,18 +123,15 @@ def _expand_references(ref_str: str) -> list[str]:
     tokens = [t.strip() for t in ref_str.split(",") if t.strip()]
     out: list[str] = []
     for tok in tokens:
-        m = _REF_TOKEN.match(tok)
+        m = _RANGE.match(tok)
         if m:
             p1, n1, p2, n2 = m.group(1), m.group(2), m.group(3), m.group(4)
-            # If second prefix omitted, assume same as first
             if p2 and p2 != p1:
-                # different prefixes treated as literal token (fallback)
                 out.append(tok)
                 continue
             start, end = int(n1), int(n2)
             if start > end:
                 start, end = end, start
-            # preserve zero-padding width
             width = max(len(n1), len(n2))
             out.extend([f"{p1}{str(i).zfill(width)}" for i in range(start, end + 1)])
         else:
@@ -219,6 +223,7 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
 
     for i, row in enumerate(raw_rows, start=2):
         data_map = {key: row[idx] if idx < len(row) else "" for key, idx in col_map.items()}
+        raw_qty = data_map.get("qty")
         if not data_map.get("part_number") or not data_map.get("reference"):
             errors.append(f"Row {i}: missing part_number or reference")
             continue
@@ -291,6 +296,10 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
                     item.notes = bom_row.notes
                 session.add(item)
             session.commit()
+            if raw_qty not in (None, "", " ") and bom_row.qty != len(refs):
+                errors.append(
+                    f"Row {i}: qty={bom_row.qty} but {len(refs)} references expanded"
+                )
         else:
             ref = refs[0] if refs else bom_row.reference
             item = session.exec(
