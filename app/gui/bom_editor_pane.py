@@ -4,22 +4,14 @@ from __future__ import annotations
 
 from typing import Dict
 
-from PyQt6.QtCore import Qt, QSortFilterProxyModel, QSettings, pyqtSignal
-from PyQt6.QtGui import QStandardItemModel, QStandardItem
+from PyQt6.QtGui import QAction, QStandardItemModel, QStandardItem, QIcon  # QAction/QStandardItem* are in QtGui
+from PyQt6.QtCore import Qt, QSortFilterProxyModel, QModelIndex, pyqtSignal
 from PyQt6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QToolBar,
-    QLineEdit,
-    QToolButton,
-    QMenu,
-    QAction,
-    QTableView,
-    QStyledItemDelegate,
-    QComboBox,
-    QMessageBox,
+    QWidget, QTableView, QVBoxLayout, QLineEdit, QPushButton, QToolBar, QMenu,
+    QStyledItemDelegate, QComboBox, QHeaderView, QAbstractItemView,
+    QLabel, QMessageBox
 )
-
+from PyQt6.QtGui import QKeySequence
 from .. import services
 from . import state as app_state
 

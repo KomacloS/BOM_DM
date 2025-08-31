@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: bom_platform
+Version: 0.1.0
+Provides-Extra: full
+Requires-Dist: fastapi; extra == "full"
+Requires-Dist: uvicorn[standard]; extra == "full"
+Requires-Dist: sqlmodel; extra == "full"
+Requires-Dist: psycopg2-binary; extra == "full"
+Requires-Dist: pymupdf; extra == "full"
+Requires-Dist: python-multipart; extra == "full"
+Requires-Dist: passlib[bcrypt]; extra == "full"
+Requires-Dist: PyJWT; extra == "full"
+Requires-Dist: openpyxl>=3.1; extra == "full"
+Requires-Dist: xlrd; extra == "full"
+Requires-Dist: apscheduler; extra == "full"
+Requires-Dist: requests>=2.31; extra == "full"
+Requires-Dist: httpx; extra == "full"
+Requires-Dist: PySide6; extra == "full"
+Requires-Dist: PyQt6; extra == "full"

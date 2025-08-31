@@ -1,0 +1,2 @@
+[console_scripts]
+bom-gui = gui.control_center:main
