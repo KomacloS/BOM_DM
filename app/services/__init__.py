@@ -38,6 +38,8 @@ from .projects import list_projects, create_project, delete_project
 from .assemblies import list_assemblies, list_bom_items, create_assembly, delete_assembly
 from .tasks import list_tasks
 from .bom_import import ImportReport, validate_headers, import_bom
+from .bom_read_models import JoinedBOMRow, get_joined_bom_for_assembly
+from .parts import update_part_active_passive
 
 __all__ = [
     "list_customers",
@@ -56,5 +58,8 @@ __all__ = [
     "ImportReport",
     "validate_headers",
     "import_bom",
+    "JoinedBOMRow",
+    "get_joined_bom_for_assembly",
+    "update_part_active_passive",
 ]
 

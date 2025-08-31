@@ -5,10 +5,19 @@ from __future__ import annotations
 import sys
 
 from PyQt6.QtCore import Qt, QSettings
-from PyQt6.QtWidgets import QApplication, QGroupBox, QMainWindow, QSplitter, QVBoxLayout
+from PyQt6.QtWidgets import (
+    QApplication,
+    QGroupBox,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSplitter,
+    QVBoxLayout,
+)
 
 from .state import AppState
 from .widgets import AssembliesPane, CustomersPane, ProjectsPane
+from .bom_editor_pane import BOMEditorPane
 
 
 class MainWindow(QMainWindow):
@@ -46,6 +55,9 @@ class MainWindow(QMainWindow):
         self.assemblies_group = QGroupBox("Assemblies — None")
         ag_layout = QVBoxLayout()
         ag_layout.addWidget(self.asm)
+        self.bom_editor_btn = QPushButton("BOM Editor…")
+        self.bom_editor_btn.clicked.connect(self._open_bom_editor)
+        ag_layout.addWidget(self.bom_editor_btn)
         self.assemblies_group.setLayout(ag_layout)
 
         splitter.addWidget(self.customers_group)
@@ -68,6 +80,8 @@ class MainWindow(QMainWindow):
         if last_a is not None:
             self.asm.select_id(last_a)
 
+        self._editors: list[BOMEditorPane] = []
+
     def closeEvent(self, event) -> None:  # pragma: no cover - UI glue
         self._settings.setValue("geometry", self.saveGeometry())
         super().closeEvent(event)
@@ -86,6 +100,17 @@ class MainWindow(QMainWindow):
         title = title_item.text() if title_item else "None"
         self.assemblies_group.setTitle(f"Assemblies — {title}")
         self.asm.set_project(pid)
+
+    def _open_bom_editor(self) -> None:  # pragma: no cover - UI glue
+        aid = self.asm.current_assembly_id() if hasattr(self.asm, "current_assembly_id") else None
+        if not aid:
+            QMessageBox.information(self, "BOM Editor", "Select an assembly first.")
+            return
+        editor = BOMEditorPane(aid)
+        editor.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        editor.show()
+        self._editors.append(editor)
+        editor.destroyed.connect(lambda _obj, e=editor: self._editors.remove(e))
 
 
 def main() -> None:  # pragma: no cover - thin wrapper

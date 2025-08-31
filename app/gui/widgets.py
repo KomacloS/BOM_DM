@@ -514,6 +514,10 @@ class AssembliesPane(QWidget):
                 self._project_id, self.status_filter.currentText()
             )
 
+    def current_assembly_id(self) -> int | None:
+        """Return the currently selected assembly id."""
+        return self._assembly_id
+
     def create_assembly(self) -> None:  # pragma: no cover - UI glue
         if self._project_id is None:
             return
