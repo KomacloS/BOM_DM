@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget, QTableView, QVBoxLayout, QLineEdit, QPushButton, QToolBar, QMenu,
     QToolButton, QStyle, QApplication,
     QStyledItemDelegate, QHeaderView, QAbstractItemView, QStyleOptionViewItem,
-    QLabel, QMessageBox
+    QLabel, QMessageBox, QSpinBox
 )
 from PyQt6.QtGui import QKeySequence, QPainter, QBrush, QColor, QDesktopServices, QGuiApplication, QTextDocument, QTextOption
 from .. import services
@@ -195,6 +195,14 @@ class BOMEditorPane(QWidget):
         self.columns_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.toolbar.addWidget(self.columns_btn)
 
+        # Visible lines control
+        self.lines_label = QLabel("Lines:")
+        self.toolbar.addWidget(self.lines_label)
+        self.lines_spin = QSpinBox()
+        self.lines_spin.setRange(1, 10)
+        self.lines_spin.setValue(self._settings.value("lines", 1, type=int))
+        self.toolbar.addWidget(self.lines_spin)
+
         # Apply immediately toggle
         self.apply_act = QAction("Apply Immediately", self)
         self.apply_act.setCheckable(True)
@@ -221,6 +229,8 @@ class BOMEditorPane(QWidget):
         self.delegate = CycleToggleDelegate(self.table)
         self.delegate.valueChanged.connect(self._on_value_changed)
         self.wrap_delegate = WrapTextDelegate(self.table)
+        self.wrap_delegate.set_line_count(self.lines_spin.value())
+        self.lines_spin.valueChanged.connect(self._on_lines_changed)
         # Column assignment done in _rebuild_model
 
         self.filter_edit.textChanged.connect(self.proxy.setFilterString)
@@ -242,6 +252,7 @@ class BOMEditorPane(QWidget):
 
         self._load_data()
         self._rebuild_model()
+        self._on_lines_changed(self.lines_spin.value())
 
     # ------------------------------------------------------------------
     def _setup_columns_menu(self) -> None:
@@ -449,6 +460,12 @@ class BOMEditorPane(QWidget):
         if checked and self._dirty_parts:
             self._save_changes()
 
+    def _on_lines_changed(self, lines: int) -> None:
+        """Adjust row heights when the visible line count changes."""
+        self.wrap_delegate.set_line_count(lines)
+        self.table.resizeRowsToContents()
+        self._settings.setValue("lines", lines)
+
     def _save_changes(self) -> None:
         if not self._dirty_parts:
             return
@@ -614,7 +631,17 @@ class BOMEditorPane(QWidget):
 
 
 class WrapTextDelegate(QStyledItemDelegate):
-    """Delegate that wraps long text (e.g., References) within column width."""
+    """Delegate that wraps long text (e.g., References) within column width.
+
+    The visible number of lines can be adjusted to change row height.
+    """
+
+    def __init__(self, parent=None, lines: int = 1) -> None:
+        super().__init__(parent)
+        self._lines = lines
+
+    def set_line_count(self, lines: int) -> None:
+        self._lines = max(1, lines)
 
     def paint(self, painter: QPainter, option: 'QStyleOptionViewItem', index):  # pragma: no cover - UI glue
         opt = QStyleOptionViewItem(option)
@@ -641,16 +668,9 @@ class WrapTextDelegate(QStyledItemDelegate):
     def sizeHint(self, option: 'QStyleOptionViewItem', index):  # pragma: no cover - UI glue
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
-        doc = QTextDocument()
-        doc.setDefaultFont(opt.font)
-        topt = QTextOption()
-        topt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
-        doc.setDefaultTextOption(topt)
         # Provide a sensible width (fallback if opt.rect is empty)
         width = max(100, opt.rect.width())
-        doc.setTextWidth(width)
-        doc.setPlainText(opt.text)
-        s = doc.size()
+        line_height = opt.fontMetrics.lineSpacing()
         # Add padding
-        return QSize(int(width), int(s.height()) + 6)
+        return QSize(int(width), int(line_height * self._lines) + 6)
 
