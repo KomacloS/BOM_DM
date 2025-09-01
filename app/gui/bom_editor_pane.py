@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget, QTableView, QVBoxLayout, QLineEdit, QPushButton, QToolBar, QMenu,
     QToolButton, QStyle, QApplication,
     QStyledItemDelegate, QHeaderView, QAbstractItemView, QStyleOptionViewItem,
-    QLabel, QMessageBox, QSpinBox
+    QLabel, QMessageBox, QSpinBox, QComboBox, QFileDialog, QStyleOptionButton
 )
 from PyQt6.QtGui import QKeySequence, QPainter, QBrush, QColor, QDesktopServices, QGuiApplication, QTextDocument, QTextOption
 from .. import services
@@ -45,6 +45,7 @@ class BOMFilterProxy(QSortFilterProxyModel):
         super().__init__(parent)
         self._filter = ""
         self._ref_col: Optional[int] = None  # column index for natural sorting of references
+        self._skip_cols: set[int] = set()
 
     def setFilterString(self, text: str) -> None:
         self._filter = text.lower()
@@ -54,13 +55,18 @@ class BOMFilterProxy(QSortFilterProxyModel):
         self._ref_col = col
         self.invalidate()
 
+    def setSkipColumns(self, cols: set[int]) -> None:
+        self._skip_cols = set(cols)
+        self.invalidateFilter()
+
     def filterAcceptsRow(self, source_row: int, source_parent):  # pragma: no cover - Qt glue
         if not self._filter:
             return True
         model = self.sourceModel()
-        # Filter across all visible columns except the AP column (last)
-        cols = max(0, model.columnCount() - 1)
+        cols = model.columnCount()
         for col in range(cols):
+            if col in self._skip_cols:
+                continue
             idx = model.index(source_row, col, source_parent)
             data = model.data(idx)
             if data and self._filter in str(data).lower():
@@ -137,6 +143,68 @@ class CycleToggleDelegate(QStyledItemDelegate):
         return None
 
 
+class TestMethodDelegate(QStyledItemDelegate):
+    """Delegate providing a combobox for selecting test method."""
+
+    methodChanged = pyqtSignal(int, str)  # part_id, method
+
+    def createEditor(self, parent, option, index):  # pragma: no cover - Qt glue
+        combo = QComboBox(parent)
+        combo.addItems(["", "Macro", "Complex", "Quick test (QT)", "Python code"])
+        combo.activated.connect(lambda _=0, w=combo: self._commit_close(w))
+        return combo
+
+    def setEditorData(self, editor: QComboBox, index):  # pragma: no cover - Qt glue
+        editor.setCurrentText(index.data() or "")
+
+    def setModelData(self, editor: QComboBox, model, index):  # pragma: no cover - Qt glue
+        text = editor.currentText()
+        model.setData(index, text)
+        part_id = index.data(PartIdRole)
+        self.methodChanged.emit(part_id, text)
+
+    def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
+        if event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            if option.widget:
+                option.widget.openPersistentEditor(index)
+            return True
+        return False
+
+    def _commit_close(self, editor):  # pragma: no cover - Qt glue
+        self.commitData.emit(editor)
+        self.closeEditor.emit(editor)
+
+
+class TestDetailDelegate(QStyledItemDelegate):
+    """Delegate rendering a button-like area for test detail actions."""
+
+    detailClicked = pyqtSignal(int)  # part_id
+
+    def paint(self, painter: QPainter, option, index):  # pragma: no cover - UI glue
+        text = index.data() or ""
+        enabled = text != "—"
+        btn = QStyleOptionButton()
+        btn.rect = option.rect.adjusted(4, 4, -4, -4)
+        btn.text = text
+        btn.state = QStyle.StateFlag.State_Raised
+        if enabled:
+            btn.state |= QStyle.StateFlag.State_Enabled
+        style = option.widget.style() if option.widget else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_PushButton, btn, painter)
+
+    def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
+        if event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            if (index.data() or "") == "—":
+                return False
+            part_id = index.data(PartIdRole)
+            self.detailClicked.emit(part_id)
+            return True
+        return False
+
+    def createEditor(self, parent, option, index):  # pragma: no cover - no inline editor
+        return None
+
+
 class BOMEditorPane(QWidget):
     """Widget presenting BOM items with active/passive classification."""
 
@@ -148,6 +216,7 @@ class BOMEditorPane(QWidget):
         self._parts_state: Dict[int, Optional[str]] = {}
         self._rows_raw: list = []  # canonical read-model rows
         self._part_datasheets: Dict[int, Optional[str]] = {}
+        self._test_assignments: Dict[int, dict] = {}
         # View mode: 'by_pn' or 'by_ref'
         self._view_mode = self._settings.value("view_mode", "by_pn")
         self._col_indices = {  # will be updated on model rebuild
@@ -157,6 +226,8 @@ class BOMEditorPane(QWidget):
             "mfg": 3,
             "ap": 4,
             "ds": 5,
+            "test_method": 6,
+            "test_detail": 7,
         }
 
         layout = QVBoxLayout(self)
@@ -230,6 +301,10 @@ class BOMEditorPane(QWidget):
         self.delegate.valueChanged.connect(self._on_value_changed)
         self.wrap_delegate = WrapTextDelegate(self.table)
         self.wrap_delegate.set_line_count(self.lines_spin.value())
+        self.method_delegate = TestMethodDelegate(self.table)
+        self.method_delegate.methodChanged.connect(self._on_method_changed)
+        self.detail_delegate = TestDetailDelegate(self.table)
+        self.detail_delegate.detailClicked.connect(self._on_detail_clicked)
         self.lines_spin.valueChanged.connect(self._on_lines_changed)
         # Column assignment done in _rebuild_model
 
@@ -260,9 +335,27 @@ class BOMEditorPane(QWidget):
         self.columns_menu.clear()
         self._column_actions: list[QAction] = []
         if self._view_mode == "by_pn":
-            headers = ["PN", "References", "Description", "Manufacturer", "Active/Passive", "Datasheet"]
+            headers = [
+                "PN",
+                "References",
+                "Description",
+                "Manufacturer",
+                "Active/Passive",
+                "Datasheet",
+                "Test Method",
+                "Test Detail",
+            ]
         else:
-            headers = ["Reference", "PN", "Description", "Manufacturer", "Active/Passive", "Datasheet"]
+            headers = [
+                "Reference",
+                "PN",
+                "Description",
+                "Manufacturer",
+                "Active/Passive",
+                "Datasheet",
+                "Test Method",
+                "Test Detail",
+            ]
         self.model.setHorizontalHeaderLabels(headers)
         # Persist settings per mode
         mode_key = "cols_by_pn" if self._view_mode == "by_pn" else "cols_by_ref"
@@ -278,14 +371,18 @@ class BOMEditorPane(QWidget):
             width = self._settings.value(f"{mode_key}/col{idx}_width", type=int)
             if width:
                 self.table.setColumnWidth(idx, int(width))
-        # Assign delegate to AP column
+        # Assign delegates
         ap_col = self._col_indices["ap"]
         self.table.setItemDelegateForColumn(ap_col, self.delegate)
-        # Wrap references column
         ref_col = self._col_indices["ref"]
         self.table.setItemDelegateForColumn(ref_col, self.wrap_delegate)
-        # Set reference column for natural sorting
-        self.proxy.setReferenceColumn(self._col_indices["ref"])
+        tm_col = self._col_indices["test_method"]
+        self.table.setItemDelegateForColumn(tm_col, self.method_delegate)
+        td_col = self._col_indices["test_detail"]
+        self.table.setItemDelegateForColumn(td_col, self.detail_delegate)
+        # Set reference column for natural sorting and skip AP from filter
+        self.proxy.setReferenceColumn(ref_col)
+        self.proxy.setSkipColumns({ap_col})
 
     def _load_data(self) -> None:
         # Keep canonical raw rows
@@ -310,13 +407,31 @@ class BOMEditorPane(QWidget):
     def _rebuild_model(self) -> None:
         # Build model based on view mode
         self.model.setRowCount(0)
-        self.model.setColumnCount(6)
+        self.model.setColumnCount(8)
         if self._view_mode == "by_pn":
             # Column map
-            self._col_indices = {"pn": 0, "ref": 1, "desc": 2, "mfg": 3, "ap": 4, "ds": 5}
+            self._col_indices = {
+                "pn": 0,
+                "ref": 1,
+                "desc": 2,
+                "mfg": 3,
+                "ap": 4,
+                "ds": 5,
+                "test_method": 6,
+                "test_detail": 7,
+            }
             self._build_by_pn()
         else:
-            self._col_indices = {"ref": 0, "pn": 1, "desc": 2, "mfg": 3, "ap": 4, "ds": 5}
+            self._col_indices = {
+                "ref": 0,
+                "pn": 1,
+                "desc": 2,
+                "mfg": 3,
+                "ap": 4,
+                "ds": 5,
+                "test_method": 6,
+                "test_detail": 7,
+            }
             self._build_by_ref()
         # Setup columns menu and sorting based on new headers
         self._setup_columns_menu()
@@ -345,6 +460,7 @@ class BOMEditorPane(QWidget):
             # Persist or stage auto-inferred, if any
             self._handle_auto_infer_persistence(part_id, mode_val, explicit)
 
+            ta = self._test_assignments.get(part_id, {"method": "", "qt_path": None})
             row_items = [
                 QStandardItem(rows[0].part_number),
                 QStandardItem(refs_str),
@@ -352,11 +468,14 @@ class BOMEditorPane(QWidget):
                 QStandardItem(rows[0].manufacturer or ""),
                 QStandardItem(mode_val or ""),
                 QStandardItem(""),
+                QStandardItem(ta["method"]),
+                QStandardItem(self._detail_label_for(ta)),
             ]
             for i, it in enumerate(row_items):
-                # Non-editable cells; delegate handles clicks in AP column
-                it.setEditable(False)
-                it.setFlags((it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled) & ~Qt.ItemFlag.ItemIsEditable)
+                flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+                if i != self._col_indices["test_method"]:
+                    flags &= ~Qt.ItemFlag.ItemIsEditable
+                it.setFlags(flags)
                 it.setData(part_id, PartIdRole)
                 if i == self._col_indices["ap"]:
                     it.setData(mode_val, ModeRole)
@@ -371,6 +490,7 @@ class BOMEditorPane(QWidget):
             if r.part_id in self._dirty_parts:
                 mode_val = self._dirty_parts[r.part_id]
             self._handle_auto_infer_persistence(r.part_id, mode_val, explicit)
+            ta = self._test_assignments.get(r.part_id, {"method": "", "qt_path": None})
             items = [
                 QStandardItem(r.reference),
                 QStandardItem(r.part_number),
@@ -378,16 +498,82 @@ class BOMEditorPane(QWidget):
                 QStandardItem(r.manufacturer or ""),
                 QStandardItem(mode_val or ""),
                 QStandardItem(""),
+                QStandardItem(ta["method"]),
+                QStandardItem(self._detail_label_for(ta)),
             ]
             for i, it in enumerate(items):
-                it.setEditable(False)
-                it.setFlags((it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled) & ~Qt.ItemFlag.ItemIsEditable)
+                flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+                if i != self._col_indices["test_method"]:
+                    flags &= ~Qt.ItemFlag.ItemIsEditable
+                it.setFlags(flags)
                 it.setData(r.part_id, PartIdRole)
                 if i == self._col_indices["ap"]:
                     it.setData(mode_val, ModeRole)
                 if i == self._col_indices["ds"]:
                     it.setData(self._part_datasheets.get(r.part_id), DatasheetRole)
             self.model.appendRow(items)
+
+    def _detail_label_for(self, ta: dict) -> str:
+        method = ta.get("method") or ""
+        if method == "Macro":
+            return "Choose Macro…"
+        if method == "Complex":
+            return "Link Complex…"
+        if method == "Quick test (QT)":
+            path = ta.get("qt_path")
+            return Path(path).name if path else "Select QT XML…"
+        if method == "Python code":
+            return "Open Python Project…"
+        return "—"
+
+    def _refresh_rows_for_part(self, part_id: int) -> None:
+        ta = self._test_assignments.get(part_id, {"method": "", "qt_path": None})
+        method = ta.get("method", "")
+        detail = self._detail_label_for(ta)
+        tm_col = self._col_indices.get("test_method")
+        td_col = self._col_indices.get("test_detail")
+        for row in range(self.model.rowCount()):
+            for c in range(self.model.columnCount()):
+                if self.model.data(self.model.index(row, c), PartIdRole) == part_id:
+                    if tm_col is not None:
+                        self.model.setData(self.model.index(row, tm_col), method)
+                    if td_col is not None:
+                        self.model.setData(self.model.index(row, td_col), detail)
+                    break
+
+    def _on_method_changed(self, part_id: int, new_method: str) -> None:
+        ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+        ta["method"] = new_method
+        if new_method != "Quick test (QT)":
+            ta["qt_path"] = None
+        self._refresh_rows_for_part(part_id)
+
+    def _on_detail_clicked(self, part_id: int) -> None:
+        ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+        method = ta.get("method", "")
+        if method == "Macro":
+            self._show_stub_dialog(
+                "This would open the Macro selector (closed list) and save the chosen Macro for this PN. (Not implemented yet)."
+            )
+        elif method == "Complex":
+            self._show_stub_dialog(
+                "This would open the Complex linker (select complex from MDB) and link it to this PN. (Not implemented yet)."
+            )
+        elif method == "Quick test (QT)":
+            path, _ = QFileDialog.getOpenFileName(self, "Select Quick Test XML", "", "Quick Test XML (*.xml)")
+            if path:
+                ta["qt_path"] = path
+                self._refresh_rows_for_part(part_id)
+        elif method == "Python code":
+            self._show_stub_dialog(
+                "This would open a project chooser (folder with code, description, library links) and link it to this PN. (Not implemented yet)."
+            )
+
+    def _show_stub_dialog(self, message: str) -> None:
+        from .dialogs.tm_stub_dialog import TestMethodStubDialog
+
+        dlg = TestMethodStubDialog(message, self)
+        dlg.exec()
 
     def _handle_auto_infer_persistence(self, part_id: int, inferred: Optional[str], explicit: Optional[str]) -> None:
         # Persist/stage only when there is no explicit value in DB and we inferred a mode
