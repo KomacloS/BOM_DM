@@ -23,6 +23,7 @@ class JoinedBOMRow(BaseModel):
     qty: int
     description: str | None
     manufacturer: str | None
+    function: str | None = None
     active_passive: Optional[Literal["active", "passive"]] = None
     datasheet_url: str | None = None
 
@@ -48,6 +49,7 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
                 qty=item.qty,
                 description=part.description,
                 manufacturer=item.manufacturer,
+                function=part.function,
                 active_passive=ap,
                 datasheet_url=part.datasheet_url,
             )

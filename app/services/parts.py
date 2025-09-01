@@ -34,3 +34,20 @@ def update_part_datasheet_url(session: Session, part_id: int, url_or_path: str) 
     session.commit()
     session.refresh(part)
     return part
+
+
+def update_part_function(session: Session, part_id: int, function: str | None) -> Part:
+    """Update a part's function classification string.
+
+    Accepts None or empty string to clear the function.
+    """
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    # Normalize empty to None
+    func_norm = (function or "").strip() or None
+    part.function = func_norm
+    session.add(part)
+    session.commit()
+    session.refresh(part)
+    return part

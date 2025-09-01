@@ -39,7 +39,7 @@ from .assemblies import list_assemblies, list_bom_items, create_assembly, delete
 from .tasks import list_tasks
 from .bom_import import ImportReport, validate_headers, import_bom
 from .bom_read_models import JoinedBOMRow, get_joined_bom_for_assembly
-from .parts import update_part_active_passive, update_part_datasheet_url
+from .parts import update_part_active_passive, update_part_datasheet_url, update_part_function
 from .datasheets import (
     DATASHEET_STORE,
     sha256_of_file,
@@ -69,6 +69,7 @@ __all__ = [
     "get_joined_bom_for_assembly",
     "update_part_active_passive",
     "update_part_datasheet_url",
+    "update_part_function",
     "DATASHEET_STORE",
     "sha256_of_file",
     "canonical_path_for_hash",
