@@ -22,3 +22,15 @@ def update_part_active_passive(
     session.commit()
     session.refresh(part)
     return part
+
+
+def update_part_datasheet_url(session: Session, part_id: int, url_or_path: str) -> Part:
+    """Update a part's datasheet URL/path."""
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    part.datasheet_url = url_or_path
+    session.add(part)
+    session.commit()
+    session.refresh(part)
+    return part

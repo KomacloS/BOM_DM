@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Literal
+from typing import List, Literal, Optional
 import re
 
 from pydantic import BaseModel
@@ -23,7 +23,8 @@ class JoinedBOMRow(BaseModel):
     qty: int
     description: str | None
     manufacturer: str | None
-    active_passive: Literal["active", "passive"]
+    active_passive: Optional[Literal["active", "passive"]] = None
+    datasheet_url: str | None = None
 
 
 def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[JoinedBOMRow]:
@@ -38,7 +39,6 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
     result: List[JoinedBOMRow] = []
     for item, part in rows:
         ap = part.active_passive.value if isinstance(part.active_passive, PartType) else part.active_passive
-        ap = ap or PartType.passive.value
         result.append(
             JoinedBOMRow(
                 bom_item_id=item.id,
@@ -49,6 +49,7 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
                 description=part.description,
                 manufacturer=item.manufacturer,
                 active_passive=ap,
+                datasheet_url=part.datasheet_url,
             )
         )
     result.sort(key=lambda r: natural_key(r.reference))

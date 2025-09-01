@@ -39,7 +39,14 @@ from .assemblies import list_assemblies, list_bom_items, create_assembly, delete
 from .tasks import list_tasks
 from .bom_import import ImportReport, validate_headers, import_bom
 from .bom_read_models import JoinedBOMRow, get_joined_bom_for_assembly
-from .parts import update_part_active_passive
+from .parts import update_part_active_passive, update_part_datasheet_url
+from .datasheets import (
+    DATASHEET_STORE,
+    sha256_of_file,
+    canonical_path_for_hash,
+    ensure_store_dirs,
+    register_datasheet_for_part,
+)
 
 __all__ = [
     "list_customers",
@@ -61,5 +68,11 @@ __all__ = [
     "JoinedBOMRow",
     "get_joined_bom_for_assembly",
     "update_part_active_passive",
+    "update_part_datasheet_url",
+    "DATASHEET_STORE",
+    "sha256_of_file",
+    "canonical_path_for_hash",
+    "ensure_store_dirs",
+    "register_datasheet_for_part",
 ]
 

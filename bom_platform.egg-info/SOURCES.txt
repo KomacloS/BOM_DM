@@ -29,6 +29,7 @@ tests/test_bom_import_xlsx.py
 tests/test_bom_items_has_part_number.py
 tests/test_bom_list_with_part_number.py
 tests/test_bom_read_models.py
+tests/test_datasheets.py
 tests/test_db_safe_migrate.py
 tests/test_ensure_schema_part_number_migration.py
 tests/test_parts_updater.py

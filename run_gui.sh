@@ -3,7 +3,7 @@ set -e  # exit on error
 set -o pipefail
 
 echo "=== Step 0: Move to project root ==="
-cd "/c/Users/Michael/Documents/Python/BOM_DB" || { echo "Project path not found"; exit 1; }
+cd "/c/Users/Michael/Documents/Python/BOM_DB_project/BOM_DB" || { echo "Project path not found"; exit 1; }
 
 echo "=== Step 1: Create venv (if not exists) ==="
 if [ ! -d ".venv" ]; then
