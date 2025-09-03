@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QKeySequence, QPainter, QBrush, QColor, QDesktopServices, QGuiApplication, QTextDocument, QTextOption
 from .. import services
+from ..logic.autofill_rules import infer_from_pn_and_desc
 from . import state as app_state
 
 
@@ -175,44 +176,6 @@ class TestMethodDelegate(QStyledItemDelegate):
         self.closeEditor.emit(editor)
 
 
-class FunctionDelegate(QStyledItemDelegate):
-    """Delegate providing a combobox for selecting part function.
-
-    Options are provided at construction time.
-    """
-
-    functionChanged = pyqtSignal(int, object)  # part_id, function (str|None)
-
-    def __init__(self, parent=None, options: list[str] | None = None) -> None:
-        super().__init__(parent)
-        self._options = options or []
-
-    def createEditor(self, parent, option, index):  # pragma: no cover - Qt glue
-        combo = QComboBox(parent)
-        items = [""] + list(self._options)
-        combo.addItems(items)
-        combo.activated.connect(lambda _=0, w=combo: self._commit_close(w))
-        return combo
-
-    def setEditorData(self, editor: QComboBox, index):  # pragma: no cover - Qt glue
-        editor.setCurrentText(index.data() or "")
-
-    def setModelData(self, editor: QComboBox, model, index):  # pragma: no cover - Qt glue
-        text = (editor.currentText() or "").strip()
-        model.setData(index, text)
-        part_id = index.data(PartIdRole)
-        self.functionChanged.emit(part_id, text or None)
-
-    def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
-        if event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-            if option.widget:
-                option.widget.openPersistentEditor(index)
-            return True
-        return False
-
-    def _commit_close(self, editor):  # pragma: no cover - Qt glue
-        self.commitData.emit(editor)
-        self.closeEditor.emit(editor)
 
 
 class TestDetailDelegate(QStyledItemDelegate):
@@ -344,8 +307,12 @@ class BOMEditorPane(QWidget):
         self._rows_raw: list = []  # canonical read-model rows
         self._part_datasheets: Dict[int, Optional[str]] = {}
         self._test_assignments: Dict[int, dict] = {}
-        self._part_functions: Dict[int, Optional[str]] = {}
-        self._dirty_functions: Dict[int, Optional[str]] = {}
+        self._part_packages: Dict[int, Optional[str]] = {}
+        self._dirty_packages: Dict[int, Optional[str]] = {}
+        self._part_values: Dict[int, Optional[str]] = {}
+        self._dirty_values: Dict[int, Optional[str]] = {}
+        self._tolerances: dict[int, tuple[Optional[str], Optional[str]]] = {}
+        self._dirty_tolerances: dict[int, tuple[Optional[str], Optional[str]]] = {}
         self._dirty_tests: set[int] = set()
         # View mode: 'by_pn' or 'by_ref'
         self._view_mode = self._settings.value("view_mode", "by_pn")
@@ -358,6 +325,10 @@ class BOMEditorPane(QWidget):
             "ds": 5,
             "test_method": 6,
             "test_detail": 7,
+            "package": 8,
+            "value": 9,
+            "tol_p": 10,
+            "tol_n": 11,
         }
 
         layout = QVBoxLayout(self)
@@ -414,20 +385,25 @@ class BOMEditorPane(QWidget):
         self.save_act.setEnabled(False)
         self.toolbar.addAction(self.save_act)
 
-        # Auto Fill button
-        self.auto_fill_act = QAction("Auto Fill", self)
-        self.toolbar.addAction(self.auto_fill_act)
+        # Autofill button
+        self.autofill_act = QAction("Autofill", self)
+        self.toolbar.addAction(self.autofill_act)
 
         # Table
         self.table = QTableView()
         layout.addWidget(self.table)
         self.model = QStandardItemModel(0, 5, self)
+        self.model.itemChanged.connect(self._on_item_changed)
+        self._updating = False
         # headers set in _rebuild_model()
         self.proxy = BOMFilterProxy(self)
         self.proxy.setSourceModel(self.model)
         self.table.setModel(self.proxy)
         self.table.setAlternatingRowColors(True)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 
         # Delegates
@@ -437,10 +413,8 @@ class BOMEditorPane(QWidget):
         self.wrap_delegate.set_line_count(self.lines_spin.value())
         self.method_delegate = TestMethodDelegate(self.table)
         self.method_delegate.methodChanged.connect(self._on_method_changed)
-        # Function combobox delegate with options loaded from external file
+        # Function options loaded for test detail delegate
         self._function_options = self._load_function_options()
-        self.function_delegate = FunctionDelegate(self.table, options=self._function_options)
-        self.function_delegate.functionChanged.connect(self._on_function_changed)
         self.detail_delegate = TestDetailDelegate(self.table, options=self._function_options)
         self.detail_delegate.detailClicked.connect(self._on_detail_clicked)
         self.detail_delegate.detailChanged.connect(self._on_detail_changed)
@@ -450,7 +424,7 @@ class BOMEditorPane(QWidget):
         self.filter_edit.textChanged.connect(self.proxy.setFilterString)
         self.apply_act.toggled.connect(self._on_apply_toggled)
         self.save_act.triggered.connect(self._save_changes)
-        self.auto_fill_act.triggered.connect(self._auto_fill_selected)
+        self.autofill_act.triggered.connect(self._autofill_fields)
         self.view_by_pn_act.toggled.connect(lambda checked: self._on_view_mode_changed("by_pn", checked))
         self.view_by_ref_act.toggled.connect(lambda checked: self._on_view_mode_changed("by_ref", checked))
 
@@ -480,11 +454,14 @@ class BOMEditorPane(QWidget):
                 "References",
                 "Description",
                 "Manufacturer",
-                "Function",
                 "Active/Passive",
                 "Datasheet",
                 "Test Method",
                 "Test Detail",
+                "Package",
+                "Value",
+                "Tol Positive",
+                "Tol Negative",
             ]
         else:
             headers = [
@@ -492,11 +469,14 @@ class BOMEditorPane(QWidget):
                 "PN",
                 "Description",
                 "Manufacturer",
-                "Function",
                 "Active/Passive",
                 "Datasheet",
                 "Test Method",
                 "Test Detail",
+                "Package",
+                "Value",
+                "Tol Positive",
+                "Tol Negative",
             ]
         self.model.setHorizontalHeaderLabels(headers)
         # Persist settings per mode
@@ -518,9 +498,6 @@ class BOMEditorPane(QWidget):
         self.table.setItemDelegateForColumn(ap_col, self.delegate)
         ref_col = self._col_indices["ref"]
         self.table.setItemDelegateForColumn(ref_col, self.wrap_delegate)
-        fn_col = self._col_indices.get("function")
-        if fn_col is not None:
-            self.table.setItemDelegateForColumn(fn_col, self.function_delegate)
         tm_col = self._col_indices["test_method"]
         self.table.setItemDelegateForColumn(tm_col, self.method_delegate)
         td_col = self._col_indices["test_detail"]
@@ -540,12 +517,16 @@ class BOMEditorPane(QWidget):
         # Seed parts state from DB
         self._parts_state.clear()
         self._part_datasheets.clear()
-        self._part_functions.clear()
+        self._part_packages.clear()
+        self._part_values.clear()
+        self._tolerances.clear()
         for r in self._rows_raw:
-            # Use DB-provided value; may be None in future schema, or 'active'/'passive'
+            # Use DB-provided value; may be None in future schema
             self._parts_state[r.part_id] = getattr(r, "active_passive", None)
             self._part_datasheets[r.part_id] = getattr(r, "datasheet_url", None)
-            self._part_functions[r.part_id] = getattr(r, "function", None)
+            self._part_packages[r.part_id] = getattr(r, "package", None)
+            self._part_values[r.part_id] = getattr(r, "value", None)
+            self._tolerances[r.part_id] = (getattr(r, "tol_p", None), getattr(r, "tol_n", None))
         # Overlay any saved test assignments from settings for visible parts
         self._load_test_assignments_from_settings()
 
@@ -560,7 +541,7 @@ class BOMEditorPane(QWidget):
     def _rebuild_model(self) -> None:
         # Build model based on view mode
         self.model.setRowCount(0)
-        self.model.setColumnCount(9)
+        self.model.setColumnCount(12)
         if self._view_mode == "by_pn":
             # Column map
             self._col_indices = {
@@ -568,11 +549,14 @@ class BOMEditorPane(QWidget):
                 "ref": 1,
                 "desc": 2,
                 "mfg": 3,
-                "function": 4,
-                "ap": 5,
-                "ds": 6,
-                "test_method": 7,
-                "test_detail": 8,
+                "ap": 4,
+                "ds": 5,
+                "test_method": 6,
+                "test_detail": 7,
+                "package": 8,
+                "value": 9,
+                "tol_p": 10,
+                "tol_n": 11,
             }
             self._build_by_pn()
         else:
@@ -581,11 +565,14 @@ class BOMEditorPane(QWidget):
                 "pn": 1,
                 "desc": 2,
                 "mfg": 3,
-                "function": 4,
-                "ap": 5,
-                "ds": 6,
-                "test_method": 7,
-                "test_detail": 8,
+                "ap": 4,
+                "ds": 5,
+                "test_method": 6,
+                "test_detail": 7,
+                "package": 8,
+                "value": 9,
+                "tol_p": 10,
+                "tol_n": 11,
             }
             self._build_by_ref()
         # Setup columns menu and sorting based on new headers
@@ -622,16 +609,26 @@ class BOMEditorPane(QWidget):
                 QStandardItem(refs_str),
                 QStandardItem(rows[0].description or ""),
                 QStandardItem(rows[0].manufacturer or ""),
-                QStandardItem(self._part_functions.get(part_id) or ""),
                 QStandardItem(mode_val or ""),
                 QStandardItem(""),
                 QStandardItem(ta["method"]),
                 QStandardItem(self._detail_text_for(ta)),
+                QStandardItem(self._part_packages.get(part_id) or ""),
+                QStandardItem(self._part_values.get(part_id) or ""),
+                QStandardItem(self._tolerances.get(part_id, (None, None))[0] or ""),
+                QStandardItem(self._tolerances.get(part_id, (None, None))[1] or ""),
             ]
             for i, it in enumerate(row_items):
                 flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
-                # Allow editing for test_method, function, and test_detail columns
-                if i not in (self._col_indices["test_method"], self._col_indices["function"], self._col_indices["test_detail"]):
+                editable = {
+                    self._col_indices["test_method"],
+                    self._col_indices["test_detail"],
+                    self._col_indices["package"],
+                    self._col_indices["value"],
+                    self._col_indices["tol_p"],
+                    self._col_indices["tol_n"],
+                }
+                if i not in editable:
                     flags &= ~Qt.ItemFlag.ItemIsEditable
                 it.setFlags(flags)
                 it.setData(part_id, PartIdRole)
@@ -654,15 +651,26 @@ class BOMEditorPane(QWidget):
                 QStandardItem(r.part_number),
                 QStandardItem(r.description or ""),
                 QStandardItem(r.manufacturer or ""),
-                QStandardItem(self._part_functions.get(r.part_id) or ""),
                 QStandardItem(mode_val or ""),
                 QStandardItem(""),
                 QStandardItem(ta["method"]),
                 QStandardItem(self._detail_text_for(ta)),
+                QStandardItem(self._part_packages.get(r.part_id) or ""),
+                QStandardItem(self._part_values.get(r.part_id) or ""),
+                QStandardItem(self._tolerances.get(r.part_id, (None, None))[0] or ""),
+                QStandardItem(self._tolerances.get(r.part_id, (None, None))[1] or ""),
             ]
             for i, it in enumerate(items):
                 flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
-                if i not in (self._col_indices["test_method"], self._col_indices["function"], self._col_indices["test_detail"]):
+                editable = {
+                    self._col_indices["test_method"],
+                    self._col_indices["test_detail"],
+                    self._col_indices["package"],
+                    self._col_indices["value"],
+                    self._col_indices["tol_p"],
+                    self._col_indices["tol_n"],
+                }
+                if i not in editable:
                     flags &= ~Qt.ItemFlag.ItemIsEditable
                 it.setFlags(flags)
                 it.setData(r.part_id, PartIdRole)
@@ -726,84 +734,6 @@ class BOMEditorPane(QWidget):
                 "This would open a project chooser (folder with code, description, library links) and link it to this PN. (Not implemented yet)."
             )
 
-    def _auto_fill_selected(self) -> None:
-        # Confirm action
-        ret = QMessageBox.question(
-            self,
-            "Auto Fill",
-            "Are you sure you want to auto-fill Test Method and Detail for the selected components?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if ret != QMessageBox.StandardButton.Yes:
-            return
-
-        proxy = self.table.model()  # QSortFilterProxyModel
-        if proxy is None:
-            return
-        sel = self.table.selectionModel()
-        if sel is None:
-            return
-        idxs = sel.selectedIndexes()
-        if not idxs:
-            return
-
-        ref_col = self._col_indices.get("ref")
-        if ref_col is None:
-            return
-
-        updated_parts: set[int] = set()
-        rows = sorted({i.row() for i in idxs})
-        for r in rows:
-            ref_idx = proxy.index(r, ref_col)
-            ref_text = str(proxy.data(ref_idx) or "")
-            first_ref = ref_text.split(",")[0].strip() if ref_text else ""
-            prefix = self._extract_prefix(first_ref)
-            macro_detail: Optional[str] = None
-            if prefix == "R":
-                macro_detail = "RESISTOR"
-            elif prefix == "C":
-                macro_detail = "CAPACITOR"
-            elif prefix == "L":
-                macro_detail = "INDUCTANCE"
-            if not macro_detail:
-                continue
-            # Resolve part_id
-            pid = proxy.data(ref_idx, PartIdRole)
-            if pid is None:
-                # fallback: check any column
-                for c in range(self.model.columnCount()):
-                    any_idx = proxy.index(r, c)
-                    pid = proxy.data(any_idx, PartIdRole)
-                    if pid is not None:
-                        break
-            if pid is None:
-                continue
-            ta = self._test_assignments.setdefault(pid, {"method": "", "qt_path": None})
-            ta["method"] = "Macro"
-            ta["detail"] = macro_detail
-            ta["qt_path"] = None
-            updated_parts.add(pid)
-
-        for pid in updated_parts:
-            self._refresh_rows_for_part(pid)
-        self._sync_detail_editors()
-        # Persist or stage per Apply toggle
-        if self.apply_act.isChecked():
-            for pid in updated_parts:
-                self._persist_test_assignment(pid)
-        else:
-            self._dirty_tests.update(updated_parts)
-            if updated_parts:
-                self.save_act.setEnabled(True)
-
-    def _extract_prefix(self, ref: str) -> str:
-        if not ref:
-            return ""
-        i = 0
-        while i < len(ref) and ref[i].isalpha():
-            i += 1
-        return ref[:i].upper()
 
     def _on_detail_changed(self, part_id: int, new_detail: Optional[str]) -> None:
         # Record selection and refresh label, keep persistent editor
@@ -947,8 +877,137 @@ class BOMEditorPane(QWidget):
             self._dirty_parts[part_id] = value
             self.save_act.setEnabled(True)
 
+    def _fanout_part_field(self, part_id: int, field: str, value: Optional[str]) -> None:
+        col = self._col_indices.get(field)
+        if col is None:
+            return
+        self._updating = True
+        for row in range(self.model.rowCount()):
+            if self.model.data(self.model.index(row, col), PartIdRole) == part_id:
+                self.model.setData(self.model.index(row, col), value or "")
+        self._updating = False
+
+    def _persist_or_stage_package(self, part_id: int, value: Optional[str]) -> None:
+        if self.apply_act.isChecked():
+            try:
+                with app_state.get_session() as session:
+                    services.update_part_package(session, part_id, value or "")
+            except Exception as exc:
+                QMessageBox.warning(self, "Update failed", str(exc))
+                old_val = self._part_packages.get(part_id, None)
+                self._fanout_part_field(part_id, "package", old_val)
+                return
+            self._part_packages[part_id] = value or None
+            self._dirty_packages.pop(part_id, None)
+        else:
+            self._dirty_packages[part_id] = value or None
+            self.save_act.setEnabled(True)
+
+    def _persist_or_stage_value(self, part_id: int, value: Optional[str]) -> None:
+        if self.apply_act.isChecked():
+            try:
+                with app_state.get_session() as session:
+                    services.update_part_value(session, part_id, value or "")
+            except Exception as exc:
+                QMessageBox.warning(self, "Update failed", str(exc))
+                old_val = self._part_values.get(part_id, None)
+                self._fanout_part_field(part_id, "value", old_val)
+                return
+            self._part_values[part_id] = value or None
+            self._dirty_values.pop(part_id, None)
+        else:
+            self._dirty_values[part_id] = value or None
+            self.save_act.setEnabled(True)
+
+    def _persist_or_stage_tolerances(
+        self, part_id: int, tol_p: Optional[str], tol_n: Optional[str]
+    ) -> None:
+        if self.apply_act.isChecked():
+            try:
+                with app_state.get_session() as session:
+                    services.update_part_tolerances(session, part_id, tol_p, tol_n)
+            except Exception as exc:
+                QMessageBox.warning(self, "Update failed", str(exc))
+                old = self._tolerances.get(part_id, (None, None))
+                self._fanout_part_field(part_id, "tol_p", old[0])
+                self._fanout_part_field(part_id, "tol_n", old[1])
+                return
+            self._tolerances[part_id] = (tol_p, tol_n)
+            self._dirty_tolerances.pop(part_id, None)
+        else:
+            self._tolerances[part_id] = (tol_p, tol_n)
+            self._dirty_tolerances[part_id] = (tol_p, tol_n)
+            self.save_act.setEnabled(True)
+
+    def _on_item_changed(self, item: QStandardItem) -> None:
+        if self._updating:
+            return
+        part_id = item.data(PartIdRole)
+        if part_id is None:
+            return
+        col = item.column()
+        text = (item.text() or "").strip() or None
+        if col == self._col_indices.get("package"):
+            self._part_packages[part_id] = text
+            self._fanout_part_field(part_id, "package", text)
+            self._persist_or_stage_package(part_id, text)
+        elif col == self._col_indices.get("value"):
+            self._part_values[part_id] = text
+            self._fanout_part_field(part_id, "value", text)
+            self._persist_or_stage_value(part_id, text)
+        elif col == self._col_indices.get("tol_p"):
+            cur = self._tolerances.get(part_id, (None, None))
+            new_pair = (text, cur[1])
+            self._tolerances[part_id] = new_pair
+            self._fanout_part_field(part_id, "tol_p", text)
+            self._persist_or_stage_tolerances(part_id, new_pair[0], new_pair[1])
+        elif col == self._col_indices.get("tol_n"):
+            cur = self._tolerances.get(part_id, (None, None))
+            new_pair = (cur[0], text)
+            self._tolerances[part_id] = new_pair
+            self._fanout_part_field(part_id, "tol_n", text)
+            self._persist_or_stage_tolerances(part_id, new_pair[0], new_pair[1])
+
+    def _autofill_fields(self) -> None:
+        proxy = self.table.model()
+        if proxy is None:
+            return
+        pn_col = self._col_indices.get("pn")
+        desc_col = self._col_indices.get("desc")
+        rows = proxy.rowCount()
+        for r in range(rows):
+            pn = str(proxy.data(proxy.index(r, pn_col)) or "")
+            desc = str(proxy.data(proxy.index(r, desc_col)) or "")
+            part_id = proxy.data(proxy.index(r, pn_col), PartIdRole)
+            if part_id is None:
+                part_id = proxy.data(proxy.index(r, desc_col), PartIdRole)
+            if part_id is None:
+                continue
+            ar = infer_from_pn_and_desc(pn, desc)
+            if ar.package and not self._part_packages.get(part_id):
+                self._part_packages[part_id] = ar.package
+                self._fanout_part_field(part_id, "package", ar.package)
+                self._persist_or_stage_package(part_id, ar.package)
+            if ar.value and not self._part_values.get(part_id):
+                self._part_values[part_id] = ar.value
+                self._fanout_part_field(part_id, "value", ar.value)
+                self._persist_or_stage_value(part_id, ar.value)
+            if ar.tol_pos and ar.tol_neg:
+                cur_p, cur_n = self._tolerances.get(part_id, (None, None))
+                if not cur_p and not cur_n:
+                    pair = (ar.tol_pos, ar.tol_neg)
+                    self._tolerances[part_id] = pair
+                    self._fanout_part_field(part_id, "tol_p", pair[0])
+                    self._fanout_part_field(part_id, "tol_n", pair[1])
+                    self._persist_or_stage_tolerances(part_id, pair[0], pair[1])
+
     def _on_apply_toggled(self, checked: bool) -> None:
-        if checked and (self._dirty_parts or self._dirty_functions):
+        if checked and (
+            self._dirty_parts
+            or self._dirty_packages
+            or self._dirty_values
+            or self._dirty_tolerances
+        ):
             self._save_changes()
 
     def _on_lines_changed(self, lines: int) -> None:
@@ -958,7 +1017,13 @@ class BOMEditorPane(QWidget):
         self._settings.setValue("lines", lines)
 
     def _save_changes(self) -> None:
-        if not self._dirty_parts and not self._dirty_functions and not self._dirty_tests:
+        if (
+            not self._dirty_parts
+            and not self._dirty_packages
+            and not self._dirty_values
+            and not self._dirty_tests
+            and not self._dirty_tolerances
+        ):
             return
         failures = []
         for part_id, value in list(self._dirty_parts.items()):
@@ -976,21 +1041,40 @@ class BOMEditorPane(QWidget):
             else:
                 self._parts_state[part_id] = value
                 del self._dirty_parts[part_id]
-        for part_id, func in list(self._dirty_functions.items()):
+        for part_id, pkg in list(self._dirty_packages.items()):
             try:
                 with app_state.get_session() as session:
-                    services.update_part_function(session, part_id, func)
+                    services.update_part_package(session, part_id, pkg or "")
             except Exception as exc:
                 failures.append(str(exc))
-                # revert
-                old_val = self._part_functions.get(part_id, None)
-                for row in range(self.model.rowCount()):
-                    for c in range(self.model.columnCount()):
-                        if self.model.data(self.model.index(row, c), PartIdRole) == part_id:
-                            self.model.setData(self.model.index(row, self._col_indices["function"]), old_val or "")
+                old_val = self._part_packages.get(part_id, None)
+                self._fanout_part_field(part_id, "package", old_val)
             else:
-                self._part_functions[part_id] = func or None
-                del self._dirty_functions[part_id]
+                self._part_packages[part_id] = pkg or None
+                del self._dirty_packages[part_id]
+        for part_id, val in list(self._dirty_values.items()):
+            try:
+                with app_state.get_session() as session:
+                    services.update_part_value(session, part_id, val or "")
+            except Exception as exc:
+                failures.append(str(exc))
+                old_val = self._part_values.get(part_id, None)
+                self._fanout_part_field(part_id, "value", old_val)
+            else:
+                self._part_values[part_id] = val or None
+                del self._dirty_values[part_id]
+        for part_id, (tp, tn) in list(self._dirty_tolerances.items()):
+            try:
+                with app_state.get_session() as session:
+                    services.update_part_tolerances(session, part_id, tp, tn)
+            except Exception as exc:
+                failures.append(str(exc))
+                old = self._tolerances.get(part_id, (None, None))
+                self._fanout_part_field(part_id, "tol_p", old[0])
+                self._fanout_part_field(part_id, "tol_n", old[1])
+            else:
+                self._tolerances[part_id] = (tp, tn)
+                del self._dirty_tolerances[part_id]
         # Persist test assignments via settings
         for part_id in list(self._dirty_tests):
             try:
@@ -1003,7 +1087,13 @@ class BOMEditorPane(QWidget):
             QMessageBox.warning(self, "Save failed", "; ".join(failures))
         else:
             QMessageBox.information(self, "Saved", "Changes saved.")
-        self.save_act.setEnabled(bool(self._dirty_parts) or bool(self._dirty_functions) or bool(self._dirty_tests))
+        self.save_act.setEnabled(
+            bool(self._dirty_parts)
+            or bool(self._dirty_packages)
+            or bool(self._dirty_values)
+            or bool(self._dirty_tolerances)
+            or bool(self._dirty_tests)
+        )
 
     def _on_view_mode_changed(self, mode: str, checked: bool) -> None:
         if not checked:
@@ -1093,35 +1183,6 @@ class BOMEditorPane(QWidget):
             except Exception:
                 continue
         return []
-
-    def _on_function_changed(self, part_id: int, new_function: Optional[str]) -> None:
-        # Update all rows with this part_id in the current model
-        fn_col = self._col_indices.get("function")
-        if fn_col is None:
-            return
-        for row in range(self.model.rowCount()):
-            for c in range(self.model.columnCount()):
-                if self.model.data(self.model.index(row, c), PartIdRole) == part_id:
-                    self.model.setData(self.model.index(row, fn_col), new_function or "")
-                    break
-        if self.apply_act.isChecked():
-            try:
-                with app_state.get_session() as session:
-                    services.update_part_function(session, part_id, new_function or None)
-            except Exception as exc:
-                QMessageBox.warning(self, "Update failed", str(exc))
-                # revert UI
-                old_value = self._part_functions.get(part_id, None)
-                for row in range(self.model.rowCount()):
-                    for c in range(self.model.columnCount()):
-                        if self.model.data(self.model.index(row, c), PartIdRole) == part_id:
-                            self.model.setData(self.model.index(row, fn_col), old_value or "")
-                return
-            self._part_functions[part_id] = new_function or None
-        else:
-            # Stage for save
-            self._dirty_functions[part_id] = new_function or None
-            self.save_act.setEnabled(True)
 
     # ------------------------------------------------------------------
     def _icon_for_pdf(self) -> QIcon:

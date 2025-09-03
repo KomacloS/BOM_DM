@@ -51,3 +51,45 @@ def update_part_function(session: Session, part_id: int, function: str | None) -
     session.commit()
     session.refresh(part)
     return part
+
+
+def update_part_package(session: Session, part_id: int, package: str) -> Part:
+    """Update a part's package string."""
+
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    part.package = package
+    session.add(part)
+    session.commit()
+    session.refresh(part)
+    return part
+
+
+def update_part_value(session: Session, part_id: int, value: str) -> Part:
+    """Update a part's value string."""
+
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    part.value = value
+    session.add(part)
+    session.commit()
+    session.refresh(part)
+    return part
+
+
+def update_part_tolerances(
+    session: Session, part_id: int, tol_p: str | None, tol_n: str | None
+) -> Part:
+    """Update a part's tolerance values."""
+
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    part.tol_p = tol_p or None
+    part.tol_n = tol_n or None
+    session.add(part)
+    session.commit()
+    session.refresh(part)
+    return part
