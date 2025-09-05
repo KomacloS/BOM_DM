@@ -124,8 +124,10 @@ class UndoableStandardItemModel(QStandardItemModel):
     changed = pyqtSignal(QModelIndex, object, object)
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
+        if isinstance(index, QPersistentModelIndex):
+            index = QModelIndex(index)
         if role == Qt.ItemDataRole.EditRole:
-            old = self.data(index, role)
+            old = super().data(index, role)
             res = super().setData(index, value, role)
             if res and old != value:
                 self.changed.emit(index, old, value)
@@ -150,7 +152,7 @@ class SetCellCommand(QUndoCommand):
     def undo(self) -> None:  # pragma: no cover - Qt glue
         model = self.pane.model
         self.pane._updating = True
-        model.setData(self.index, self.old)
+        model.setData(QModelIndex(self.index), self.old)
         self.pane._updating = False
 
     def redo(self) -> None:  # pragma: no cover - Qt glue
@@ -159,7 +161,7 @@ class SetCellCommand(QUndoCommand):
             return
         model = self.pane.model
         self.pane._updating = True
-        model.setData(self.index, self.new)
+        model.setData(QModelIndex(self.index), self.new)
         self.pane._updating = False
 
 
@@ -423,7 +425,6 @@ class BOMEditorPane(QWidget):
         # Filter
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("Filterâ€¦")
-        self.toolbar.addWidget(self.filter_edit)
 
         # View mode toggle
         self.view_by_pn_act = QAction("By PN", self)
@@ -440,54 +441,39 @@ class BOMEditorPane(QWidget):
         else:
             self._view_mode = "by_pn"
             self.view_by_pn_act.setChecked(True)
-        self.toolbar.addAction(self.view_by_pn_act)
-        self.toolbar.addAction(self.view_by_ref_act)
 
-        # Columns button
-        self.columns_btn = QToolButton()
-        self.columns_btn.setText("Columns")
-        self.columns_menu = QMenu(self)
-        self.columns_btn.setMenu(self.columns_menu)
-        self.columns_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.toolbar.addWidget(self.columns_btn)
+        # Columns menu
+        self.columns_menu = QMenu("Columns", self)
 
         # Visible lines control
         self.lines_label = QLabel("Lines:")
-        self.toolbar.addWidget(self.lines_label)
         self.lines_spin = NoWheelSpinBox()
         self.lines_spin.setRange(1, 10)
         self.lines_spin.setValue(self._settings.value("lines", 1, type=int))
-        self.toolbar.addWidget(self.lines_spin)
 
         # Apply immediately toggle
         self.apply_act = QAction("Apply Immediately", self)
         self.apply_act.setCheckable(True)
-        self.toolbar.addAction(self.apply_act)
 
         # Save button
         self.save_act = QAction("Save", self)
         self.save_act.setEnabled(False)
-        self.toolbar.addAction(self.save_act)
 
         # Autofill button
         self.autofill_act = QAction("Autofill", self)
-        self.toolbar.addAction(self.autofill_act)
 
         # Auto datasheet button
         self.auto_ds_act = QAction("Auto Datasheet…", self)
         self.auto_ds_act.setEnabled(False)
         self.auto_ds_act.triggered.connect(self._auto_datasheet)
-        self.toolbar.addAction(self.auto_ds_act)
 
         # BOM to VIVA export
         self.export_viva_act = QAction("BOM to VIVA", self)
         self.export_viva_act.triggered.connect(self._on_export_viva)
-        self.toolbar.addAction(self.export_viva_act)
 
         # Reload prefix map
         self.reload_prefix_map_act = QAction("Reload Prefix Map", self)
         self.reload_prefix_map_act.triggered.connect(self._reload_prefix_map)
-        self.toolbar.addAction(self.reload_prefix_map_act)
 
         # Table
         self.table = QTableView()
@@ -544,8 +530,6 @@ class BOMEditorPane(QWidget):
         self.paste_act.triggered.connect(self._paste_selection)
         self.table.addAction(self.paste_act)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
-        self.addAction(self.copy_act)
-        self.addAction(self.paste_act)
 
         # Undo/Redo support via QUndoStack
         self.undo_act = QAction("Undo", self, shortcut=QKeySequence.StandardKey.Undo)
@@ -556,10 +540,55 @@ class BOMEditorPane(QWidget):
         self.redo_act.setEnabled(False)
         self.undo_stack.canUndoChanged.connect(self.undo_act.setEnabled)
         self.undo_stack.canRedoChanged.connect(self.redo_act.setEnabled)
-        self.addAction(self.undo_act)
-        self.addAction(self.redo_act)
         self.table.addAction(self.undo_act)
         self.table.addAction(self.redo_act)
+
+        # Toolbar menus
+        self.btn_edit = QToolButton(self)
+        self.btn_edit.setText("Edit")
+        self.btn_edit.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu_edit = QMenu(self.btn_edit)
+        self.menu_edit.addAction(self.undo_act)
+        self.menu_edit.addAction(self.redo_act)
+        self.menu_edit.addAction(self.copy_act)
+        self.menu_edit.addAction(self.paste_act)
+        self.btn_edit.setMenu(self.menu_edit)
+        self.toolbar.addWidget(self.btn_edit)
+
+        self.btn_view = QToolButton(self)
+        self.btn_view.setText("View")
+        self.btn_view.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu_view = QMenu(self.btn_view)
+        self.menu_view.addAction(self.view_by_pn_act)
+        self.menu_view.addAction(self.view_by_ref_act)
+        self.menu_view.addMenu(self.columns_menu)
+        self.btn_view.setMenu(self.menu_view)
+        self.toolbar.addWidget(self.btn_view)
+
+        self.btn_data = QToolButton(self)
+        self.btn_data.setText("Data")
+        self.btn_data.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu_data = QMenu(self.btn_data)
+        self.menu_data.addAction(self.apply_act)
+        self.menu_data.addAction(self.save_act)
+        self.btn_data.setMenu(self.menu_data)
+        self.toolbar.addWidget(self.btn_data)
+
+        self.btn_tools = QToolButton(self)
+        self.btn_tools.setText("Tools")
+        self.btn_tools.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.menu_tools = QMenu(self.btn_tools)
+        self.menu_tools.addAction(self.autofill_act)
+        self.menu_tools.addAction(self.reload_prefix_map_act)
+        self.menu_tools.addAction(self.auto_ds_act)
+        self.menu_tools.addAction(self.export_viva_act)
+        self.btn_tools.setMenu(self.menu_tools)
+        self.toolbar.addWidget(self.btn_tools)
+
+        # Filter and lines widgets
+        self.toolbar.addWidget(self.filter_edit)
+        self.toolbar.addWidget(self.lines_label)
+        self.toolbar.addWidget(self.lines_spin)
 
         # Enable wrapping and resize rows when columns change
         self.table.setWordWrap(True)
