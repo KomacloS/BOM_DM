@@ -110,3 +110,48 @@ python -m gui.control_center
 
 This opens a simple interface for authentication, importing BOMs, and other
 debug actions.
+
+## Datasheet Search & AI Rerank
+
+The GUI can search the web for datasheet PDFs and optionally use an AI model
+to pick the best URL from search results.
+
+- Search providers: set one of the following environment variables and the
+  app will auto-detect in this order: `BING_SEARCH_KEY`, `GOOGLE_API_KEY` +
+  `GOOGLE_CSE_ID`, `SERPAPI_KEY`, or `BRAVE_API_KEY`.
+
+- AI reranker: configure an OpenAI-compatible chat completions endpoint via
+  environment variables:
+  - `AI_CHAT_URL` (default: `https://api.openai.com/v1/chat/completions`)
+  - `AI_CHAT_MODEL` (default: `gpt-4o-mini`)
+  - `AI_CHAT_API_KEY` (fallbacks: `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
+    `AZURE_OPENAI_API_KEY`)
+  - `AI_CHAT_AUTH_HEADER` (default: `Authorization`)
+  - `AI_CHAT_AUTH_SCHEME` (default: `Bearer`)
+
+Examples:
+
+```bash
+# OpenAI
+export AI_CHAT_URL=https://api.openai.com/v1/chat/completions
+export AI_CHAT_MODEL=gpt-4o-mini
+export AI_CHAT_API_KEY=sk-...
+
+# OpenRouter
+export AI_CHAT_URL=https://openrouter.ai/api/v1/chat/completions
+export AI_CHAT_MODEL=google/gemini-1.5-flash
+export AI_CHAT_API_KEY=or-...
+
+# LM Studio (no auth)
+export AI_CHAT_URL=http://localhost:1234/v1/chat/completions
+unset AI_CHAT_API_KEY
+
+# Azure OpenAI
+export AI_CHAT_URL="https://<resource>.openai.azure.com/openai/deployments/<deploy>/chat/completions?api-version=2024-02-15-preview"
+export AI_CHAT_MODEL=<ignored-by-azure>
+export AI_CHAT_API_KEY=<azure-key>
+export AI_CHAT_AUTH_HEADER=api-key
+export AI_CHAT_AUTH_SCHEME=""  # not used when header != Authorization
+```
+
+On Windows PowerShell, replace `export VAR=value` with `$env:VAR = "value"`.

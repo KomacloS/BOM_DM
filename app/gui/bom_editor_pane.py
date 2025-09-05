@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QLabel, QMessageBox, QSpinBox, QComboBox, QFileDialog, QStyleOptionButton
 )
 from PyQt6.QtGui import QKeySequence, QPainter, QBrush, QColor, QDesktopServices, QGuiApplication, QTextDocument, QTextOption
+import logging
 from .. import services
 from ..logic.autofill_rules import infer_from_pn_and_desc
 from . import state as app_state
@@ -306,6 +307,8 @@ class BOMEditorPane(QWidget):
         self._parts_state: Dict[int, Optional[str]] = {}
         self._rows_raw: list = []  # canonical read-model rows
         self._part_datasheets: Dict[int, Optional[str]] = {}
+        # Track parts with an in-progress Auto Datasheet operation
+        self._datasheet_loading: set[int] = set()
         self._test_assignments: Dict[int, dict] = {}
         self._part_packages: Dict[int, Optional[str]] = {}
         self._dirty_packages: Dict[int, Optional[str]] = {}
@@ -1033,6 +1036,10 @@ class BOMEditorPane(QWidget):
         if not work:
             QMessageBox.warning(self, "Auto Datasheet", "No resolvable parts in selection.")
             return
+        logging.info("BOMEditor: starting Auto Datasheet for %d parts", len(work))
+        # Mark selected parts as in-progress and update UI
+        self._datasheet_loading |= {w.part_id for w in work}
+        QTimer.singleShot(0, self._install_datasheet_widgets)
         dlg = AutoDatasheetDialog(self, work, on_locked_parts_changed=self._set_parts_locked)
         dlg.exec()
         # Refresh datasheet paths for affected parts
@@ -1042,6 +1049,8 @@ class BOMEditorPane(QWidget):
                 p = session.get(Part, w.part_id)
                 if p:
                     self._part_datasheets[w.part_id] = p.datasheet_url
+        # Clear loading state and refresh icons
+        self._datasheet_loading -= {w.part_id for w in work}
         QTimer.singleShot(0, self._install_datasheet_widgets)
 
     def _set_parts_locked(self, parts: set[int], lock: bool):
@@ -1248,8 +1257,8 @@ class BOMEditorPane(QWidget):
                 return QIcon(str(p))
         except Exception:
             pass
-        # Fallback to style icon
-        return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+        # Fallback to a generic file icon
+        return self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
 
     def _icon_for_plus(self) -> QIcon:
         try:
@@ -1260,6 +1269,26 @@ class BOMEditorPane(QWidget):
         except Exception:
             pass
         return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
+
+    def _icon_for_loading(self) -> QIcon:
+        try:
+            from pathlib import Path
+            p = Path(__file__).resolve().parent / "icons" / "loading.png"
+            if p.exists():
+                return QIcon(str(p))
+        except Exception:
+            pass
+        return self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+
+    def _icon_for_attached(self) -> QIcon:
+        try:
+            from pathlib import Path
+            p = Path(__file__).resolve().parent / "icons" / "check_green.png"
+            if p.exists():
+                return QIcon(str(p))
+        except Exception:
+            pass
+        return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
 
     def _install_datasheet_widgets(self) -> None:
         # Rebuild buttons for Datasheet column
@@ -1279,8 +1308,12 @@ class BOMEditorPane(QWidget):
                 continue
             path = self._part_datasheets.get(part_id)
             btn = QToolButton(self.table)
-            if path and Path(path).exists():
-                btn.setIcon(self._icon_for_pdf())
+            if part_id in self._datasheet_loading:
+                btn.setIcon(self._icon_for_loading())
+                btn.setEnabled(False)
+                btn.setToolTip("Searching datasheet...")
+            elif path and Path(path).exists():
+                btn.setIcon(self._icon_for_attached())
                 btn.setToolTip("Open datasheet")
                 btn.clicked.connect(lambda _=False, p=path: QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
             else:

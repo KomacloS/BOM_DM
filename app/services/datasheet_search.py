@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
-import os, requests
+import os, requests, logging
 
 @dataclass
 class SearchResult:
@@ -26,12 +26,16 @@ def _is_pdf_url(u: str) -> bool:
 def search_web(query: str, count: int = 10) -> List[SearchResult]:
     """Dispatch to the configured provider."""
     if _env("BING_SEARCH_KEY"):
+        logging.info("datasheet_search: provider=bing q=\"%s\" n=%s", query, count)
         return _bing_search(query, count)
     if _env("GOOGLE_API_KEY") and _env("GOOGLE_CSE_ID"):
+        logging.info("datasheet_search: provider=google_cse q=\"%s\" n=%s", query, count)
         return _google_cse_search(query, count)
     if _env("SERPAPI_KEY"):
+        logging.info("datasheet_search: provider=serpapi q=\"%s\" n=%s", query, count)
         return _serpapi_search(query, count)
     if _env("BRAVE_API_KEY"):
+        logging.info("datasheet_search: provider=brave q=\"%s\" n=%s", query, count)
         return _brave_search(query, count)
     raise NoSearchProviderConfigured(
         "Configure at least one search provider: BING_SEARCH_KEY, or GOOGLE_API_KEY + GOOGLE_CSE_ID, or SERPAPI_KEY, or BRAVE_API_KEY."

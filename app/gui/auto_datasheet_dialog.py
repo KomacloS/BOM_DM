@@ -15,6 +15,7 @@ from ..services.datasheet_search import search_web, NoSearchProviderConfigured
 from ..services.gpt_rerank import choose_best_datasheet_url
 from . import state as app_state
 import requests
+import logging
 
 
 @dataclass
@@ -39,6 +40,7 @@ class _Worker(QRunnable):
         self.sig = sig
 
     def run(self):
+        logging.info("Auto-datasheet worker start: row=%s part_id=%s pn=%s", self.row, self.wi.part_id, self.wi.pn)
         try:
             self.sig.rowStatus.emit(self.row, "Searching…")
             cands: List[dict] = []
@@ -62,6 +64,7 @@ class _Worker(QRunnable):
                 self.sig.rowDone.emit(self.row, False, False)
                 return
             self.sig.rowStatus.emit(self.row, "Downloading…")
+            logging.info("Auto-datasheet: downloading %s", best)
             tmp = self._download_pdf(best)
             if not tmp:
                 self.sig.rowStatus.emit(self.row, "Download failed")
@@ -81,6 +84,7 @@ class _Worker(QRunnable):
             self.sig.rowDone.emit(self.row, False, False)
         except Exception:
             self.sig.rowStatus.emit(self.row, "Error")
+            logging.exception("Auto-datasheet: unexpected error in worker")
             self.sig.rowDone.emit(self.row, False, False)
 
     def _queries(self, wi: WorkItem) -> List[str]:
@@ -100,15 +104,18 @@ class _Worker(QRunnable):
     def _download_pdf(self, url: str) -> Optional[str]:
         with requests.get(url, stream=True, timeout=30) as r:
             if r.status_code != 200:
+                logging.warning("Auto-datasheet: HTTP %s for %s", r.status_code, url)
                 return None
             ctype = r.headers.get("Content-Type", "").lower()
             if "pdf" not in ctype and not url.lower().endswith(".pdf"):
+                logging.warning("Auto-datasheet: not a PDF content-type=%s url=%s", ctype, url)
                 return None
             fd, path = tempfile.mkstemp(suffix=".pdf")
             with os.fdopen(fd, "wb") as f:
                 for chunk in r.iter_content(1024 * 64):
                     if chunk:
                         f.write(chunk)
+        logging.info("Auto-datasheet: downloaded to temp %s", path)
             return path
 
 

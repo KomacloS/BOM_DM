@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+import os
+import logging
 
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
@@ -114,6 +116,9 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:  # pragma: no cover - thin wrapper
+    # Basic logging to terminal so user sees actions
+    level = os.getenv("BOM_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(levelname)s %(name)s: %(message)s")
     app = QApplication(sys.argv)
     state = AppState()
     win = MainWindow(state)

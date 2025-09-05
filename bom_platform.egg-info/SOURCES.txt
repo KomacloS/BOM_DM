@@ -20,6 +20,8 @@ bom_platform.egg-info/top_level.txt
 gui/__init__.py
 gui/control_center.py
 tests/test_auth_smoke.py
+tests/test_autofill_integration.py
+tests/test_autofill_rules.py
 tests/test_bom_import.py
 tests/test_bom_import_minimal.py
 tests/test_bom_import_price_blank.py
