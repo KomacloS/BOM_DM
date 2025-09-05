@@ -83,6 +83,20 @@ class BOMFilterProxy(QSortFilterProxyModel):
         return super().lessThan(left, right)
 
 
+class NoWheelComboBox(QComboBox):
+    """QComboBox that ignores wheel events to prevent accidental changes."""
+
+    def wheelEvent(self, event):  # pragma: no cover - Qt glue
+        event.ignore()
+
+
+class NoWheelSpinBox(QSpinBox):
+    """QSpinBox that ignores wheel events to prevent accidental changes."""
+
+    def wheelEvent(self, event):  # pragma: no cover - Qt glue
+        event.ignore()
+
+
 class CycleToggleDelegate(QStyledItemDelegate):
     """Delegate that draws a small pill and toggles value on click.
 
@@ -151,7 +165,7 @@ class TestMethodDelegate(QStyledItemDelegate):
     methodChanged = pyqtSignal(int, str)  # part_id, method
 
     def createEditor(self, parent, option, index):  # pragma: no cover - Qt glue
-        combo = QComboBox(parent)
+        combo = NoWheelComboBox(parent)
         combo.addItems(["", "Macro", "Complex", "Quick test (QT)", "Python code"])
         combo.activated.connect(lambda _=0, w=combo: self._commit_close(w))
         return combo
@@ -277,7 +291,7 @@ class TestDetailDelegate(QStyledItemDelegate):
         method = (self._method_for_index(index) or "")
         if method != "Macro":
             return None
-        combo = QComboBox(parent)
+        combo = NoWheelComboBox(parent)
         items = [""] + list(self._options)
         combo.addItems(items)
         combo.activated.connect(lambda _=0, w=combo: self._commit_close(w))
@@ -374,7 +388,7 @@ class BOMEditorPane(QWidget):
         # Visible lines control
         self.lines_label = QLabel("Lines:")
         self.toolbar.addWidget(self.lines_label)
-        self.lines_spin = QSpinBox()
+        self.lines_spin = NoWheelSpinBox()
         self.lines_spin.setRange(1, 10)
         self.lines_spin.setValue(self._settings.value("lines", 1, type=int))
         self.toolbar.addWidget(self.lines_spin)
@@ -443,11 +457,15 @@ class BOMEditorPane(QWidget):
         self.view_by_pn_act.toggled.connect(lambda checked: self._on_view_mode_changed("by_pn", checked))
         self.view_by_ref_act.toggled.connect(lambda checked: self._on_view_mode_changed("by_ref", checked))
 
-        # Copy support for PN/References
+        # Copy/Paste support
         self.copy_act = QAction("Copy", self)
         self.copy_act.setShortcut(QKeySequence.StandardKey.Copy)
         self.copy_act.triggered.connect(self._copy_selection)
         self.table.addAction(self.copy_act)
+        self.paste_act = QAction("Paste", self)
+        self.paste_act.setShortcut(QKeySequence.StandardKey.Paste)
+        self.paste_act.triggered.connect(self._paste_selection)
+        self.table.addAction(self.paste_act)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
 
         # Enable wrapping and resize rows when columns change
@@ -1269,11 +1287,6 @@ class BOMEditorPane(QWidget):
                 idxs = [cur]
         if not idxs:
             return
-        allowed_cols = {self._col_indices.get("pn"), self._col_indices.get("ref")}
-        # Filter to allowed columns
-        idxs = [i for i in idxs if i.column() in allowed_cols]
-        if not idxs:
-            return
         # Build grid by row/col
         rows = sorted({i.row() for i in idxs})
         cols = sorted({i.column() for i in idxs})
@@ -1286,6 +1299,32 @@ class BOMEditorPane(QWidget):
             lines.append("\t".join(vals))
         text = "\n".join(lines)
         QGuiApplication.clipboard().setText(text)
+
+    def _paste_selection(self) -> None:
+        model = self.table.model()
+        if model is None:
+            return
+        text = QGuiApplication.clipboard().text()
+        if text == "":
+            return
+        idxs = self.table.selectionModel().selectedIndexes() if self.table.selectionModel() else []
+        if not idxs:
+            cur = self.table.currentIndex()
+            if cur.isValid():
+                idxs = [cur]
+        if not idxs:
+            return
+        col = idxs[0].column()
+        if any(i.column() != col for i in idxs):
+            return
+        value = text.splitlines()[0].split("\t")[0]
+        for idx in idxs:
+            part_id = model.data(idx, PartIdRole)
+            model.setData(idx, value)
+            if col == self._col_indices.get("test_method") and part_id is not None:
+                self._on_method_changed(part_id, value)
+            elif col == self._col_indices.get("test_detail") and part_id is not None:
+                self._on_detail_changed(part_id, value or None)
 
     # ------------------------------------------------------------------
     def _load_function_options(self) -> list[str]:
