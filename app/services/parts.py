@@ -93,3 +93,16 @@ def update_part_tolerances(
     session.commit()
     session.refresh(part)
     return part
+
+
+def clear_part_datasheet(session: Session, part_id: int) -> Part:
+    """Clear the datasheet association for a part.
+
+    This is a thin wrapper around :func:`update_part_datasheet_url` that sets
+    the ``datasheet_url`` field to ``None``.  The physical datasheet file is
+    intentionally left untouched so that other parts may continue to reference
+    it.
+    """
+
+    # ``update_part_datasheet_url`` performs validation and commits the change.
+    return update_part_datasheet_url(session, part_id, None)

@@ -13,7 +13,15 @@ from __future__ import annotations
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 
-from PyQt6.QtGui import QAction, QStandardItemModel, QStandardItem, QIcon  # QAction/QStandardItem* are in QtGui
+from PyQt6.QtGui import (
+    QAction,
+    QStandardItemModel,
+    QStandardItem,
+    QIcon,
+    QKeySequence,
+    QUndoStack,
+    QUndoCommand,
+)  # QAction/QStandardItem* are in QtGui
 from PyQt6.QtCore import (
     Qt,
     QSortFilterProxyModel,
@@ -33,7 +41,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QHeaderView, QAbstractItemView, QStyleOptionViewItem,
     QLabel, QMessageBox, QSpinBox, QComboBox, QFileDialog, QStyleOptionButton
 )
-from PyQt6.QtGui import QKeySequence, QPainter, QBrush, QColor, QDesktopServices, QGuiApplication, QTextDocument, QTextOption
+from PyQt6.QtGui import QPainter, QBrush, QColor, QDesktopServices, QGuiApplication, QTextDocument, QTextOption
 import logging
 from .. import services
 from ..logic.autofill_rules import infer_from_pn_and_desc
@@ -123,6 +131,36 @@ class UndoableStandardItemModel(QStandardItemModel):
                 self.changed.emit(index, old, value)
             return res
         return super().setData(index, value, role)
+
+
+class SetCellCommand(QUndoCommand):
+    """Undo command encapsulating a single cell edit."""
+
+    def __init__(self, pane: "BOMEditorPane", index: QModelIndex, old: object, new: object) -> None:
+        super().__init__("Set Cell")
+        self.pane = pane
+        self.index = QPersistentModelIndex(index)
+        self.old = old
+        self.new = new
+        # When first pushed the model already contains ``new``.  Track this so
+        # that the initial ``redo`` executed by :class:`QUndoStack` is a no-op
+        # and does not trigger change handlers again.
+        self._first = True
+
+    def undo(self) -> None:  # pragma: no cover - Qt glue
+        model = self.pane.model
+        self.pane._updating = True
+        model.setData(self.index, self.old)
+        self.pane._updating = False
+
+    def redo(self) -> None:  # pragma: no cover - Qt glue
+        if self._first:
+            self._first = False
+            return
+        model = self.pane.model
+        self.pane._updating = True
+        model.setData(self.index, self.new)
+        self.pane._updating = False
 
 
 class CycleToggleDelegate(QStyledItemDelegate):
@@ -457,9 +495,9 @@ class BOMEditorPane(QWidget):
         self.model = UndoableStandardItemModel(0, 5, self)
         self.model.itemChanged.connect(self._on_item_changed)
         self.model.changed.connect(self._on_model_changed)
-        self._undo_stack: list[tuple[QPersistentModelIndex, object, object]] = []
-        self._redo_stack: list[tuple[QPersistentModelIndex, object, object]] = []
         self._updating = False
+        self.undo_stack = QUndoStack(self)
+        self.undo_stack.setUndoLimit(10)
         # headers set in _rebuild_model()
         self.proxy = BOMFilterProxy(self)
         self.proxy.setSourceModel(self.model)
@@ -509,18 +547,18 @@ class BOMEditorPane(QWidget):
         self.addAction(self.copy_act)
         self.addAction(self.paste_act)
 
-        # Undo/Redo support
-        self.undo_act = QAction("Undo", self)
-        self.undo_act.setShortcut(QKeySequence.StandardKey.Undo)
-        self.undo_act.triggered.connect(self._undo)
+        # Undo/Redo support via QUndoStack
+        self.undo_act = QAction("Undo", self, shortcut=QKeySequence.StandardKey.Undo)
+        self.redo_act = QAction("Redo", self, shortcut=QKeySequence.StandardKey.Redo)
+        self.undo_act.triggered.connect(self.undo_stack.undo)
+        self.redo_act.triggered.connect(self.undo_stack.redo)
         self.undo_act.setEnabled(False)
-        self.addAction(self.undo_act)
-        self.table.addAction(self.undo_act)
-        self.redo_act = QAction("Redo", self)
-        self.redo_act.setShortcut(QKeySequence.StandardKey.Redo)
-        self.redo_act.triggered.connect(self._redo)
         self.redo_act.setEnabled(False)
+        self.undo_stack.canUndoChanged.connect(self.undo_act.setEnabled)
+        self.undo_stack.canRedoChanged.connect(self.redo_act.setEnabled)
+        self.addAction(self.undo_act)
         self.addAction(self.redo_act)
+        self.table.addAction(self.undo_act)
         self.table.addAction(self.redo_act)
 
         # Enable wrapping and resize rows when columns change
@@ -1440,36 +1478,11 @@ class BOMEditorPane(QWidget):
     def _on_model_changed(self, index: QModelIndex, old, new) -> None:
         if self._updating:
             return
-        self._undo_stack.append((QPersistentModelIndex(index), old, new))
-        if len(self._undo_stack) > 10:
-            self._undo_stack.pop(0)
-        self._redo_stack.clear()
-        self.undo_act.setEnabled(bool(self._undo_stack))
-        self.redo_act.setEnabled(False)
-
-    def _undo(self) -> None:
-        if not self._undo_stack:
-            return
-        idx, old, new = self._undo_stack.pop()
-        self._updating = True
-        self.model.setData(idx, old)
-        self._updating = False
-        self._redo_stack.append((idx, old, new))
-        self.undo_act.setEnabled(bool(self._undo_stack))
-        self.redo_act.setEnabled(True)
-
-    def _redo(self) -> None:
-        if not self._redo_stack:
-            return
-        idx, old, new = self._redo_stack.pop()
-        self._updating = True
-        self.model.setData(idx, new)
-        self._updating = False
-        self._undo_stack.append((idx, old, new))
-        if len(self._undo_stack) > 10:
-            self._undo_stack.pop(0)
-        self.undo_act.setEnabled(True)
-        self.redo_act.setEnabled(bool(self._redo_stack))
+        # Push an undo command capturing this change. The command itself will
+        # reapply the change when pushed, but the ``_updating`` flag prevents
+        # recursive signal handling.
+        cmd = SetCellCommand(self, index, old, new)
+        self.undo_stack.push(cmd)
 
     # ------------------------------------------------------------------
     def _load_function_options(self) -> list[str]:
