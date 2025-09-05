@@ -396,6 +396,11 @@ class BOMEditorPane(QWidget):
         self.auto_ds_act.triggered.connect(self._auto_datasheet)
         self.toolbar.addAction(self.auto_ds_act)
 
+        # BOM to VIVA export
+        self.export_viva_act = QAction("BOM to VIVA", self)
+        self.export_viva_act.triggered.connect(self._on_export_viva)
+        self.toolbar.addAction(self.export_viva_act)
+
         # Table
         self.table = QTableView()
         layout.addWidget(self.table)
@@ -1176,6 +1181,65 @@ class BOMEditorPane(QWidget):
         except Exception:
             # Best-effort sizing; ignore issues in headless envs
             pass
+
+    # ------------------------------------------------------------------
+    def _collect_table_rows(self) -> list[dict]:
+        """Return current table rows as dictionaries for export."""
+        tm_col = self._col_indices.get("test_method")
+        td_col = self._col_indices.get("test_detail")
+        ref_col = self._col_indices.get("ref")
+        pn_col = self._col_indices.get("pn")
+        rows: list[dict] = []
+        for r in range(self.model.rowCount()):
+            pn = self.model.data(self.model.index(r, pn_col)) if pn_col is not None else ""
+            refs = self.model.data(self.model.index(r, ref_col)) if ref_col is not None else ""
+            tm = self.model.data(self.model.index(r, tm_col)) if tm_col is not None else ""
+            td = self.model.data(self.model.index(r, td_col)) if td_col is not None else ""
+            if self._view_mode == "by_pn":
+                ref_list = [x.strip() for x in (refs or "").split(",") if x.strip()]
+                for ref in ref_list:
+                    rows.append(
+                        {
+                            "reference": ref,
+                            "part_number": pn or "",
+                            "test_method": tm or "",
+                            "test_detail": td or "",
+                        }
+                    )
+            else:
+                rows.append(
+                    {
+                        "reference": (refs or "").strip(),
+                        "part_number": pn or "",
+                        "test_method": tm or "",
+                        "test_detail": td or "",
+                    }
+                )
+        return rows
+
+    def _on_export_viva(self) -> None:  # pragma: no cover - UI glue
+        table_rows = self._collect_table_rows()
+        with app_state.get_session() as session:
+            try:
+                rows = services.build_viva_groups(table_rows, session, self._assembly_id)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Cannot export", str(exc))
+                return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save BOM to VIVA",
+            f"BOM_to_VIVA_{self._assembly_id}.txt",
+            "Text files (*.txt)",
+        )
+        if not path:
+            return
+        services.write_viva_txt(path, rows)
+        total_refs = sum(int(r["quantity"]) for r in rows)
+        QMessageBox.information(
+            self,
+            "Export complete",
+            f"Exported {len(rows)} groups / {total_refs} references to {path}",
+        )
 
     def closeEvent(self, event) -> None:  # pragma: no cover - UI glue
         # Persist column settings per mode
