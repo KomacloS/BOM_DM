@@ -314,6 +314,7 @@ class BOMEditorPane(QWidget):
         self._tolerances: dict[int, tuple[Optional[str], Optional[str]]] = {}
         self._dirty_tolerances: dict[int, tuple[Optional[str], Optional[str]]] = {}
         self._dirty_tests: set[int] = set()
+        self._locked_parts: set[int] = set()
         # View mode: 'by_pn' or 'by_ref'
         self._view_mode = self._settings.value("view_mode", "by_pn")
         self._col_indices = {  # will be updated on model rebuild
@@ -389,6 +390,12 @@ class BOMEditorPane(QWidget):
         self.autofill_act = QAction("Autofill", self)
         self.toolbar.addAction(self.autofill_act)
 
+        # Auto datasheet button
+        self.auto_ds_act = QAction("Auto Datasheet…", self)
+        self.auto_ds_act.setEnabled(False)
+        self.auto_ds_act.triggered.connect(self._auto_datasheet)
+        self.toolbar.addAction(self.auto_ds_act)
+
         # Table
         self.table = QTableView()
         layout.addWidget(self.table)
@@ -442,6 +449,9 @@ class BOMEditorPane(QWidget):
         self._load_data()
         self._rebuild_model()
         self._on_lines_changed(self.lines_spin.value())
+        if self.table.selectionModel():
+            self.table.selectionModel().selectionChanged.connect(lambda *_: self._update_auto_ds_act())
+        self._update_auto_ds_act()
 
     # ------------------------------------------------------------------
     def _setup_columns_menu(self) -> None:
@@ -628,7 +638,7 @@ class BOMEditorPane(QWidget):
                     self._col_indices["tol_p"],
                     self._col_indices["tol_n"],
                 }
-                if i not in editable:
+                if i not in editable or part_id in self._locked_parts:
                     flags &= ~Qt.ItemFlag.ItemIsEditable
                 it.setFlags(flags)
                 it.setData(part_id, PartIdRole)
@@ -670,7 +680,7 @@ class BOMEditorPane(QWidget):
                     self._col_indices["tol_p"],
                     self._col_indices["tol_n"],
                 }
-                if i not in editable:
+                if i not in editable or r.part_id in self._locked_parts:
                     flags &= ~Qt.ItemFlag.ItemIsEditable
                 it.setFlags(flags)
                 it.setData(r.part_id, PartIdRole)
@@ -1000,6 +1010,50 @@ class BOMEditorPane(QWidget):
                     self._fanout_part_field(part_id, "tol_p", pair[0])
                     self._fanout_part_field(part_id, "tol_n", pair[1])
                     self._persist_or_stage_tolerances(part_id, pair[0], pair[1])
+
+    def _auto_datasheet(self) -> None:
+        proxy = self.table.model()
+        sel = self.table.selectionModel()
+        if proxy is None or sel is None or not sel.selectedIndexes():
+            QMessageBox.information(self, "Auto Datasheet", "Select one or more rows first.")
+            return
+        rows = sorted({i.row() for i in sel.selectedIndexes()})
+        pn_col = self._col_indices.get("pn")
+        desc_col = self._col_indices.get("desc")
+        mfg_col = self._col_indices.get("mfg")
+        work = []
+        for r in rows:
+            pn = str(proxy.data(proxy.index(r, pn_col)) or "")
+            desc = str(proxy.data(proxy.index(r, desc_col)) or "")
+            mfg = str(proxy.data(proxy.index(r, mfg_col)) or "")
+            pid = proxy.data(proxy.index(r, pn_col), PartIdRole) or proxy.data(proxy.index(r, desc_col), PartIdRole)
+            if pid:
+                from .auto_datasheet_dialog import WorkItem, AutoDatasheetDialog
+                work.append(WorkItem(part_id=pid, pn=pn, mfg=mfg, desc=desc))
+        if not work:
+            QMessageBox.warning(self, "Auto Datasheet", "No resolvable parts in selection.")
+            return
+        dlg = AutoDatasheetDialog(self, work, on_locked_parts_changed=self._set_parts_locked)
+        dlg.exec()
+        # Refresh datasheet paths for affected parts
+        from ..models import Part
+        with app_state.get_session() as session:
+            for w in work:
+                p = session.get(Part, w.part_id)
+                if p:
+                    self._part_datasheets[w.part_id] = p.datasheet_url
+        QTimer.singleShot(0, self._install_datasheet_widgets)
+
+    def _set_parts_locked(self, parts: set[int], lock: bool):
+        if lock:
+            self._locked_parts |= set(parts)
+        else:
+            self._locked_parts -= set(parts)
+        self._rebuild_model()
+
+    def _update_auto_ds_act(self) -> None:
+        sel = self.table.selectionModel()
+        self.auto_ds_act.setEnabled(bool(sel and sel.selectedIndexes()))
 
     def _on_apply_toggled(self, checked: bool) -> None:
         if checked and (
