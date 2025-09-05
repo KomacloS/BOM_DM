@@ -35,7 +35,14 @@ from .customers import (
     DeleteBlockedError,
 )
 from .projects import list_projects, create_project, delete_project
-from .assemblies import list_assemblies, list_bom_items, create_assembly, delete_assembly
+from .assemblies import (
+    list_assemblies,
+    list_bom_items,
+    create_assembly,
+    delete_assembly,
+    delete_bom_items,
+    delete_bom_items_for_part,
+)
 from .tasks import list_tasks
 from .bom_import import ImportReport, validate_headers, import_bom
 from .bom_read_models import JoinedBOMRow, get_joined_bom_for_assembly
@@ -46,6 +53,7 @@ from .parts import (
     update_part_package,
     update_part_value,
     update_part_tolerances,
+    clear_part_datasheet,
 )
 from .export_viva import build_viva_groups, write_viva_txt
 from .datasheets import (
@@ -66,6 +74,8 @@ __all__ = [
     "list_bom_items",
     "create_assembly",
     "delete_assembly",
+    "delete_bom_items",
+    "delete_bom_items_for_part",
     "delete_customer",
     "DeleteBlockedError",
     "list_tasks",
@@ -81,6 +91,7 @@ __all__ = [
     "update_part_package",
     "update_part_value",
     "update_part_tolerances",
+    "clear_part_datasheet",
     "build_viva_groups",
     "write_viva_txt",
     "DATASHEET_STORE",

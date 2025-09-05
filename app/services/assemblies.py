@@ -66,3 +66,48 @@ def delete_assembly(assembly_id: int, session: Session) -> None:
     session.delete(asm)
     session.commit()
 
+
+def delete_bom_items(session: Session, bom_item_ids: List[int]) -> int:
+    """Delete ``BOMItem`` rows with the given ids.
+
+    Parameters
+    ----------
+    session:
+        Active database session.
+    bom_item_ids:
+        List of ``BOMItem`` primary key ids to remove.
+
+    Returns
+    -------
+    int
+        Number of rows deleted.
+    """
+
+    if not bom_item_ids:
+        return 0
+
+    stmt = BOMItem.__table__.delete().where(BOMItem.id.in_(bom_item_ids))
+    result = session.exec(stmt)
+    session.commit()
+    # ``rowcount`` is available on the SQLAlchemy result object; fall back to
+    # ``0`` if the backend does not provide it for some reason.
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+def delete_bom_items_for_part(
+    session: Session, assembly_id: int, part_id: int
+) -> int:
+    """Delete all ``BOMItem`` rows for ``assembly_id``/``part_id``.
+
+    This is a convenience wrapper used when operating in the *By PN* view
+    where a single row represents multiple references of the same part.
+
+    Returns the number of rows deleted.
+    """
+
+    stmt = select(BOMItem.id).where(
+        BOMItem.assembly_id == assembly_id, BOMItem.part_id == part_id
+    )
+    ids = list(session.exec(stmt))
+    return delete_bom_items(session, ids)
+
