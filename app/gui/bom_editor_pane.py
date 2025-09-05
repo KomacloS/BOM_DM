@@ -14,7 +14,19 @@ from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 
 from PyQt6.QtGui import QAction, QStandardItemModel, QStandardItem, QIcon  # QAction/QStandardItem* are in QtGui
-from PyQt6.QtCore import Qt, QSortFilterProxyModel, QModelIndex, pyqtSignal, QSettings, QRect, QSize, QTimer, QUrl, QRectF
+from PyQt6.QtCore import (
+    Qt,
+    QSortFilterProxyModel,
+    QModelIndex,
+    pyqtSignal,
+    QSettings,
+    QRect,
+    QSize,
+    QTimer,
+    QUrl,
+    QRectF,
+    QPersistentModelIndex,
+)
 from PyQt6.QtWidgets import (
     QWidget, QTableView, QVBoxLayout, QLineEdit, QPushButton, QToolBar, QMenu,
     QToolButton, QStyle, QApplication,
@@ -25,6 +37,7 @@ from PyQt6.QtGui import QKeySequence, QPainter, QBrush, QColor, QDesktopServices
 import logging
 from .. import services
 from ..logic.autofill_rules import infer_from_pn_and_desc
+from ..logic.prefix_macros import load_prefix_macros, reload_prefix_macros
 from . import state as app_state
 
 
@@ -95,6 +108,21 @@ class NoWheelSpinBox(QSpinBox):
 
     def wheelEvent(self, event):  # pragma: no cover - Qt glue
         event.ignore()
+
+
+class UndoableStandardItemModel(QStandardItemModel):
+    """QStandardItemModel that emits old/new values on changes."""
+
+    changed = pyqtSignal(QModelIndex, object, object)
+
+    def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
+        if role == Qt.ItemDataRole.EditRole:
+            old = self.data(index, role)
+            res = super().setData(index, value, role)
+            if res and old != value:
+                self.changed.emit(index, old, value)
+            return res
+        return super().setData(index, value, role)
 
 
 class CycleToggleDelegate(QStyledItemDelegate):
@@ -418,11 +446,19 @@ class BOMEditorPane(QWidget):
         self.export_viva_act.triggered.connect(self._on_export_viva)
         self.toolbar.addAction(self.export_viva_act)
 
+        # Reload prefix map
+        self.reload_prefix_map_act = QAction("Reload Prefix Map", self)
+        self.reload_prefix_map_act.triggered.connect(self._reload_prefix_map)
+        self.toolbar.addAction(self.reload_prefix_map_act)
+
         # Table
         self.table = QTableView()
         layout.addWidget(self.table)
-        self.model = QStandardItemModel(0, 5, self)
+        self.model = UndoableStandardItemModel(0, 5, self)
         self.model.itemChanged.connect(self._on_item_changed)
+        self.model.changed.connect(self._on_model_changed)
+        self._undo_stack: list[tuple[QPersistentModelIndex, object, object]] = []
+        self._redo_stack: list[tuple[QPersistentModelIndex, object, object]] = []
         self._updating = False
         # headers set in _rebuild_model()
         self.proxy = BOMFilterProxy(self)
@@ -444,6 +480,9 @@ class BOMEditorPane(QWidget):
         self.method_delegate.methodChanged.connect(self._on_method_changed)
         # Function options loaded for test detail delegate
         self._function_options = self._load_function_options()
+        # Map for case-insensitive validation and canonicalization
+        self._function_options_canon = {opt.upper(): opt for opt in (self._function_options or [])}
+        self._prefix_macros = load_prefix_macros()
         self.detail_delegate = TestDetailDelegate(self.table, options=self._function_options)
         self.detail_delegate.detailClicked.connect(self._on_detail_clicked)
         self.detail_delegate.detailChanged.connect(self._on_detail_changed)
@@ -467,6 +506,22 @@ class BOMEditorPane(QWidget):
         self.paste_act.triggered.connect(self._paste_selection)
         self.table.addAction(self.paste_act)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        self.addAction(self.copy_act)
+        self.addAction(self.paste_act)
+
+        # Undo/Redo support
+        self.undo_act = QAction("Undo", self)
+        self.undo_act.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_act.triggered.connect(self._undo)
+        self.undo_act.setEnabled(False)
+        self.addAction(self.undo_act)
+        self.table.addAction(self.undo_act)
+        self.redo_act = QAction("Redo", self)
+        self.redo_act.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_act.triggered.connect(self._redo)
+        self.redo_act.setEnabled(False)
+        self.addAction(self.redo_act)
+        self.table.addAction(self.redo_act)
 
         # Enable wrapping and resize rows when columns change
         self.table.setWordWrap(True)
@@ -1004,6 +1059,24 @@ class BOMEditorPane(QWidget):
             self._fanout_part_field(part_id, "tol_n", text)
             self._persist_or_stage_tolerances(part_id, new_pair[0], new_pair[1])
 
+    def _extract_prefix(self, ref: str) -> str:
+        i = 0
+        while i < len(ref) and ref[i].isalpha():
+            i += 1
+        return ref[:i].upper()
+
+    def _macro_for_reference(self, reference: str) -> str | None:
+        if not reference:
+            return None
+        pfx = self._extract_prefix(reference)
+        if not pfx:
+            return None
+        for key, macro in self._prefix_macros:
+            if pfx.startswith(key):
+                canon = self._function_options_canon.get(macro.upper())
+                return canon
+        return None
+
     def _autofill_fields(self) -> None:
         proxy = self.table.model()
         if proxy is None:
@@ -1036,6 +1109,32 @@ class BOMEditorPane(QWidget):
                     self._fanout_part_field(part_id, "tol_p", pair[0])
                     self._fanout_part_field(part_id, "tol_n", pair[1])
                     self._persist_or_stage_tolerances(part_id, pair[0], pair[1])
+            tm_col = self._col_indices.get("test_method")
+            ref_col = self._col_indices.get("ref")
+            if tm_col is not None and ref_col is not None:
+                tm_text = str(proxy.data(proxy.index(r, tm_col)) or "").strip()
+                if not tm_text:
+                    ref_text = str(proxy.data(proxy.index(r, ref_col)) or "")
+                    if self._view_mode == "by_pn":
+                        first_ref = ref_text.split(",")[0].strip() if ref_text else ""
+                    else:
+                        first_ref = ref_text
+                    macro = self._macro_for_reference(first_ref)
+                    if macro:
+                        ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+                        ta["method"] = "Macro"
+                        ta["detail"] = macro
+                        ta["qt_path"] = None
+                        self._refresh_rows_for_part(part_id)
+                        if self.apply_act.isChecked():
+                            self._persist_test_assignment(part_id)
+                        else:
+                            self._dirty_tests.add(part_id)
+                            self.save_act.setEnabled(True)
+
+    def _reload_prefix_map(self):
+        self._prefix_macros = reload_prefix_macros()
+        QMessageBox.information(self, "Prefix Map", "Prefix-to-macro map reloaded.")
 
     def _auto_datasheet(self) -> None:
         proxy = self.table.model()
@@ -1318,6 +1417,18 @@ class BOMEditorPane(QWidget):
         if any(i.column() != col for i in idxs):
             return
         value = text.splitlines()[0].split("\t")[0]
+        # Validate against allowed options for combo columns
+        if col == self._col_indices.get("test_method"):
+            allowed = {"", "Macro", "Complex", "Quick test (QT)", "Python code"}
+            if value not in allowed:
+                return
+        elif col == self._col_indices.get("test_detail"):
+            if value and value not in self._function_options:
+                return
+        elif col == self._col_indices.get("ap"):
+            allowed = {"", "active", "passive"}
+            if value not in allowed:
+                return
         for idx in idxs:
             part_id = model.data(idx, PartIdRole)
             model.setData(idx, value)
@@ -1325,6 +1436,40 @@ class BOMEditorPane(QWidget):
                 self._on_method_changed(part_id, value)
             elif col == self._col_indices.get("test_detail") and part_id is not None:
                 self._on_detail_changed(part_id, value or None)
+
+    def _on_model_changed(self, index: QModelIndex, old, new) -> None:
+        if self._updating:
+            return
+        self._undo_stack.append((QPersistentModelIndex(index), old, new))
+        if len(self._undo_stack) > 10:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+        self.undo_act.setEnabled(bool(self._undo_stack))
+        self.redo_act.setEnabled(False)
+
+    def _undo(self) -> None:
+        if not self._undo_stack:
+            return
+        idx, old, new = self._undo_stack.pop()
+        self._updating = True
+        self.model.setData(idx, old)
+        self._updating = False
+        self._redo_stack.append((idx, old, new))
+        self.undo_act.setEnabled(bool(self._undo_stack))
+        self.redo_act.setEnabled(True)
+
+    def _redo(self) -> None:
+        if not self._redo_stack:
+            return
+        idx, old, new = self._redo_stack.pop()
+        self._updating = True
+        self.model.setData(idx, new)
+        self._updating = False
+        self._undo_stack.append((idx, old, new))
+        if len(self._undo_stack) > 10:
+            self._undo_stack.pop(0)
+        self.undo_act.setEnabled(True)
+        self.redo_act.setEnabled(bool(self._redo_stack))
 
     # ------------------------------------------------------------------
     def _load_function_options(self) -> list[str]:
