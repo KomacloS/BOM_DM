@@ -174,9 +174,20 @@ class CycleToggleDelegate(QStyledItemDelegate):
     valueChanged = pyqtSignal(int, object)  # part_id, new_value (str or None)
 
     def paint(self, painter: QPainter, option, index):  # pragma: no cover - UI glue
+        opt = QStyleOptionViewItem(option)
+        opt.state &= ~QStyle.StateFlag.State_HasFocus
+
+        # Fill the background based on state so it matches QSS selection/hover
+        if opt.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(opt.rect, QColor("#DCEBFF"))
+        elif opt.state & QStyle.StateFlag.State_MouseOver:
+            painter.fillRect(opt.rect, QColor("#F3F4F6"))
+        else:
+            painter.fillRect(opt.rect, opt.palette.base().color())
+
         value = index.data() or None
-        rect: QRect = option.rect.adjusted(6, 4, -6, -4)
-        pal = option.palette
+        rect: QRect = opt.rect.adjusted(6, 4, -6, -4)
+        pal = opt.palette
 
         if value == "active":
             bg = pal.highlight().color()
@@ -267,15 +278,26 @@ class TestDetailDelegate(QStyledItemDelegate):
     detailClicked = pyqtSignal(int)  # part_id
 
     def paint(self, painter: QPainter, option, index):  # pragma: no cover - UI glue
+        opt = QStyleOptionViewItem(option)
+        opt.state &= ~QStyle.StateFlag.State_HasFocus
+
+        # Fill the background based on state so it matches QSS selection/hover
+        if opt.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(opt.rect, QColor("#DCEBFF"))
+        elif opt.state & QStyle.StateFlag.State_MouseOver:
+            painter.fillRect(opt.rect, QColor("#F3F4F6"))
+        else:
+            painter.fillRect(opt.rect, opt.palette.base().color())
+
         text = index.data() or ""
         enabled = text != "â€”"
         btn = QStyleOptionButton()
-        btn.rect = option.rect.adjusted(4, 4, -4, -4)
+        btn.rect = opt.rect.adjusted(4, 4, -4, -4)
         btn.text = text
         btn.state = QStyle.StateFlag.State_Raised
         if enabled:
             btn.state |= QStyle.StateFlag.State_Enabled
-        style = option.widget.style() if option.widget else QApplication.style()
+        style = opt.widget.style() if opt.widget else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_PushButton, btn, painter)
 
     def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
@@ -320,10 +342,20 @@ class TestDetailDelegate(QStyledItemDelegate):
             return ""
 
     def paint(self, painter: QPainter, option, index):  # pragma: no cover - UI glue
+        opt = QStyleOptionViewItem(option)
+        opt.state &= ~QStyle.StateFlag.State_HasFocus
+
+        # Fill the background based on state so it matches QSS selection/hover
+        if opt.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(opt.rect, QColor("#DCEBFF"))
+        elif opt.state & QStyle.StateFlag.State_MouseOver:
+            painter.fillRect(opt.rect, QColor("#F3F4F6"))
+        else:
+            painter.fillRect(opt.rect, opt.palette.base().color())
+
         method = (self._method_for_index(index) or "")
         if method == "Macro":
             # Leave space for editor; draw base item look
-            opt = QStyleOptionViewItem(option)
             self.initStyleOption(opt, index)
             style = opt.widget.style() if opt.widget else QApplication.style()
             style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
@@ -332,12 +364,12 @@ class TestDetailDelegate(QStyledItemDelegate):
         text = index.data() or ""
         enabled = bool(text)
         btn = QStyleOptionButton()
-        btn.rect = option.rect.adjusted(4, 4, -4, -4)
+        btn.rect = opt.rect.adjusted(4, 4, -4, -4)
         btn.text = text
         btn.state = QStyle.StateFlag.State_Raised
         if enabled:
             btn.state |= QStyle.StateFlag.State_Enabled
-        style = option.widget.style() if option.widget else QApplication.style()
+        style = opt.widget.style() if opt.widget else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_PushButton, btn, painter)
 
     def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
@@ -478,6 +510,44 @@ class BOMEditorPane(QWidget):
         # Table
         self.table = QTableView()
         layout.addWidget(self.table)
+
+        # Enable per-cell hover
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
+
+        # Style: white background, light-blue selection, light-gray hover.
+        # Ensure hover doesn’t look like native “blue selection” on Windows.
+        self.table.setStyleSheet(
+            """
+QTableView {
+    background: #FFFFFF;
+    alternate-background-color: #FAFAFA;
+}
+
+QTableView::item {
+    selection-color: black;  /* readable text on light backgrounds */
+}
+
+/* Hover on non-selected cells */
+QTableView::item:hover:!selected {
+    background: #F3F4F6;  /* light gray */
+}
+
+/* Selected cells, whether view is active or not */
+QTableView::item:selected,
+QTableView::item:selected:active,
+QTableView::item:selected:!active {
+    background: #DCEBFF;  /* light blue */
+    color: black;
+}
+
+/* When a selected cell is also hovered, keep it in the same palette (slightly stronger if you prefer) */
+QTableView::item:selected:hover {
+    background: #CFE3FF;  /* optional slightly darker blue on hover+selected */
+}
+"""
+        )
+
         self.model = UndoableStandardItemModel(0, 5, self)
         self.model.itemChanged.connect(self._on_item_changed)
         self.model.changed.connect(self._on_model_changed)
