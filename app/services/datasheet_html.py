@@ -5,6 +5,7 @@ from typing import List
 from urllib.parse import urljoin, urlparse
 import os
 import logging
+import asyncio
 
 import requests
 
@@ -75,19 +76,68 @@ def find_pdfs_in_page(url: str, pn: str, mfg: str | None, timeout: tuple[int, in
     html = None
     if want_headless:
         try:
-            from requests_html import HTMLSession  # type: ignore
-            sess = HTMLSession()
-            resp = sess.get(url, headers=headers, timeout=timeout[0] + timeout[1])
-            # render() downloads Chromium on first run; may take time
-            resp.html.render(timeout=max(timeout[1], 30), sleep=1.0)
-            html = resp.html.html
-            logging.getLogger(__name__).info("datasheet_html: headless rendered %s", url)
-            try:
-                sess.close()
-            except Exception:
-                pass
-        except Exception:
-            logging.getLogger(__name__).info("datasheet_html: headless render failed; falling back for %s", url)
+            # If a system Chromium/Chrome/Edge is provided, use it directly via pyppeteer
+            browser_path = os.getenv("BOM_HEADLESS_BROWSER_PATH", "").strip()
+            if browser_path and os.path.exists(browser_path):
+                async def _render_with_pyppeteer() -> str:
+                    from pyppeteer import launch  # type: ignore
+                    args = ["--no-sandbox", "--disable-dev-shm-usage"]
+                    browser = await launch(executablePath=browser_path, headless=True, args=args)
+                    page = await browser.newPage()
+                    # Apply headers/User-Agent similar to requests
+                    await page.setUserAgent(headers.get("User-Agent", "Mozilla/5.0"))
+                    await page.setExtraHTTPHeaders({k: v for k, v in headers.items() if k.lower() != "user-agent"})
+                    await page.goto(url, timeout=max(timeout[1], 60) * 1000, waitUntil="networkidle2")
+                    await asyncio.sleep(2.0)
+                    content = await page.content()
+                    await browser.close()
+                    return content
+
+                try:
+                    # Ensure a suitable event loop exists on Windows
+                    if os.name == "nt":
+                        try:
+                            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                    html = asyncio.get_event_loop().run_until_complete(_render_with_pyppeteer())
+                    logging.getLogger(__name__).info("datasheet_html: headless rendered via system browser %s", url)
+                except RuntimeError:
+                    # No running loop
+                    loop = asyncio.new_event_loop()
+                    try:
+                        html = loop.run_until_complete(_render_with_pyppeteer())
+                        logging.getLogger(__name__).info("datasheet_html: headless rendered via system browser %s", url)
+                    finally:
+                        loop.close()
+                except Exception as e:
+                    logging.getLogger(__name__).info(
+                        "datasheet_html: system-browser headless failed for %s (%s: %s)",
+                        url,
+                        e.__class__.__name__,
+                        str(e)[:200],
+                    )
+                    html = None
+            else:
+                # Fallback to requests_html (may download Chromium on first run)
+                from requests_html import HTMLSession  # type: ignore
+                sess = HTMLSession()
+                resp = sess.get(url, headers=headers, timeout=timeout[0] + timeout[1])
+                # render() downloads Chromium on first run; increase timeout/sleep to allow dynamic content
+                resp.html.render(timeout=max(timeout[1], 60), sleep=2.0)
+                html = resp.html.html
+                logging.getLogger(__name__).info("datasheet_html: headless rendered %s", url)
+                try:
+                    sess.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.getLogger(__name__).info(
+                "datasheet_html: headless render failed; falling back for %s (%s: %s)",
+                url,
+                e.__class__.__name__,
+                str(e)[:200],
+            )
             html = None
     if html is None:
         r = requests.get(url, headers=headers, timeout=timeout)

@@ -25,6 +25,8 @@ full = [
     "apscheduler",
     "requests>=2.31",
     "httpx",
+    "requests_html",
+    "pyppeteer",
     "PySide6",
     "PyQt6",
 ]

@@ -15,6 +15,7 @@ apscheduler
 requests>=2.31
 jinja2
 requests_html
+pyppeteer
 pillow
 toml
 reportlab

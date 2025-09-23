@@ -49,6 +49,9 @@ class _Worker(QRunnable):
         self.auto = auto_link_dupes
         self.sig = sig
         self.manual_ok = True
+        # Shared session to persist cookies (helps Mouser PDF fetch)
+        import requests
+        self._sess = requests.Session()
 
     def run(self):
         logging.info("Auto-datasheet worker start: row=%s part_id=%s pn=%s", self.row, self.wi.part_id, self.wi.pn)
@@ -62,12 +65,15 @@ class _Worker(QRunnable):
             self.sig.rowStatus.emit(self.row, "Searching...")
             # API-first resolution (Mouser/Digi-Key/Nexar) before web search
             api_pdf_urls, api_page_urls = resolve_datasheet_api_first(self.wi.pn)
+            src_page: Optional[str] = None
             if api_pdf_urls or api_page_urls:
                 tmp = None
+                had_api_pdf = bool(api_pdf_urls)
+                api_referer = api_page_urls[0] if api_page_urls else (f"https://www.mouser.com/" if "mouser" in (self.wi.mfg or "").lower() else None)
                 for idx, u in enumerate(api_pdf_urls, start=1):
                     self.sig.rowStatus.emit(self.row, f"Downloading API {idx}/{len(api_pdf_urls)}...")
                     logging.info("Auto-datasheet: downloading (API) %s", u)
-                    tmp = self._download_pdf(u)
+                    tmp = self._download_pdf(u, trusted=True, referer=api_referer)
                     if tmp:
                         break
                 # If no direct API PDF succeeded, try extracting PDFs from API product pages
@@ -81,7 +87,8 @@ class _Worker(QRunnable):
                             continue
                         for kdx, pdf_url in enumerate(pdfs, start=1):
                             logging.info("Auto-datasheet: downloading %s (API-extracted)", pdf_url)
-                            tmp = self._download_pdf(pdf_url)
+                            # Treat PDFs extracted from distributor API product pages as trusted
+                            tmp = self._download_pdf(pdf_url, trusted=True, referer=page)
                             if tmp:
                                 break
                         if tmp:
@@ -95,6 +102,12 @@ class _Worker(QRunnable):
                         else:
                             canonical = str(dst)
                             services.update_part_datasheet_url(session, self.wi.part_id, canonical)
+                            # Also persist a product link if we know one
+                            try:
+                                if api_page_urls:
+                                    services.update_part_product_url(session, self.wi.part_id, api_page_urls[0])
+                            except Exception:
+                                pass
                             # notify listeners so UI can update immediately
                             self.sig.attached.emit(self.wi.part_id, canonical)
                             self.sig.rowStatus.emit(self.row, "Attached")
@@ -106,6 +119,34 @@ class _Worker(QRunnable):
                     except Exception:
                         pass
                     return
+                # If API provided at least one PDF URL but none were downloadable as real PDFs,
+                # stop here to avoid web search per user preference; optionally save product page link.
+                if had_api_pdf:
+                    first_page = api_page_urls[0] if api_page_urls else None
+                    if first_page:
+                        # Persist product page URL and expose link to UI; do not open browser
+                        try:
+                            with app_state.get_session() as session:
+                                services.update_part_product_url(session, self.wi.part_id, first_page)
+                        except Exception:
+                            pass
+                        self.sig.manualLink.emit(self.wi.part_id, first_page)
+                        self.sig.rowStatus.emit(self.row, "Link saved")
+                        self.sig.rowDone.emit(self.row, False, False)
+                    else:
+                        self.sig.rowStatus.emit(self.row, "API PDF blocked")
+                        self.sig.failed.emit(self.wi.part_id)
+                        self.sig.rowDone.emit(self.row, False, False)
+                    return
+                # If we have API product pages (even without API PDFs), save a link now and continue to web search
+                elif api_page_urls:
+                    first_page = api_page_urls[0]
+                    try:
+                        with app_state.get_session() as session:
+                            services.update_part_product_url(session, self.wi.part_id, first_page)
+                    except Exception:
+                        pass
+                    self.sig.manualLink.emit(self.wi.part_id, first_page)
             # Build exclusion list: avoid hosts already attempted via APIs
             exclude_hosts: set[str] = set()
             from urllib.parse import urlparse
@@ -164,10 +205,16 @@ class _Worker(QRunnable):
                 else:
                     manual_urls.append(u)
             tmp = None
+            api_pdf_set = set(api_pdf_urls)
             for idx, u in enumerate(urls, start=1):
                 self.sig.rowStatus.emit(self.row, f"Downloading {idx}/{len(urls)}...")
                 logging.info("Auto-datasheet: downloading %s", u)
-                tmp = self._download_pdf(u)
+                # Only validate PDFs that came from web search; accept API PDFs without strict validation
+                is_api = (u in api_pdf_set)
+                tmp = self._download_pdf(u, trusted=is_api)
+                if tmp and (not is_api):
+                    # For web search direct PDFs, use the PDF URL as product link
+                    src_page = u
                 if tmp:
                     break
                 if not tmp:
@@ -187,27 +234,32 @@ class _Worker(QRunnable):
                             logging.info("Auto-datasheet: downloading %s (extracted)", pdf_url)
                             tmp = self._download_pdf(pdf_url)
                             if tmp:
+                                src_page = page_url
+                            if tmp:
                                 extracted_any = True
                                 break
                         if extracted_any:
                             break
                 if not tmp:
                     # As a last resort, open the first page for manual download (UI thread)
-                    if self.manual_ok and manual_urls:
+                    if manual_urls:
                         first = next((u for u in manual_urls if _is_http(u)), None)
                         if first:
-                            self.sig.openUrl.emit(first)
+                            try:
+                                with app_state.get_session() as session:
+                                    services.update_part_product_url(session, self.wi.part_id, first)
+                            except Exception:
+                                pass
                             self.sig.manualLink.emit(self.wi.part_id, first)
+                            self.sig.rowStatus.emit(self.row, "Link saved")
+                            # Mark done without attachment; UI shows link icon
+                            self.sig.rowDone.emit(self.row, False, False)
+                            return
                         else:
-                            # nothing usable to open
                             self.sig.rowStatus.emit(self.row, "No manual page available")
                             self.sig.failed.emit(self.wi.part_id)
                             self.sig.rowDone.emit(self.row, False, False)
                             return
-                        self.sig.rowStatus.emit(self.row, "Manual: opened page in browser")
-                        # Mark done without attachment; UI shows link icon
-                        self.sig.rowDone.emit(self.row, False, False)
-                        return
                     else:
                         self.sig.rowStatus.emit(self.row, "Download failed")
                         self.sig.failed.emit(self.wi.part_id)
@@ -221,6 +273,12 @@ class _Worker(QRunnable):
                 else:
                     canonical = str(dst)
                     services.update_part_datasheet_url(session, self.wi.part_id, canonical)
+                    # Save product link for web-search success when available
+                    try:
+                        if src_page:
+                            services.update_part_product_url(session, self.wi.part_id, src_page)
+                    except Exception:
+                        pass
                     # notify listeners so UI can update immediately
                     self.sig.attached.emit(self.wi.part_id, canonical)
                     self.sig.rowStatus.emit(self.row, "Attached")
@@ -236,10 +294,20 @@ class _Worker(QRunnable):
             self.sig.failed.emit(self.wi.part_id)
             self.sig.rowDone.emit(self.row, False, False)
         except Exception:
-            self.sig.rowStatus.emit(self.row, "Error")
+            # Avoid crashing if UI dialog/signals are already destroyed
+            try:
+                self.sig.rowStatus.emit(self.row, "Error")
+            except RuntimeError:
+                pass
             logging.exception("Auto-datasheet: unexpected error in worker")
-            self.sig.failed.emit(self.wi.part_id)
-            self.sig.rowDone.emit(self.row, False, False)
+            try:
+                self.sig.failed.emit(self.wi.part_id)
+            except RuntimeError:
+                pass
+            try:
+                self.sig.rowDone.emit(self.row, False, False)
+            except RuntimeError:
+                pass
 
     def _queries(self, wi: WorkItem, exclude_hosts: set[str] | None = None) -> List[str]:
         q: List[str] = []
@@ -265,7 +333,7 @@ class _Worker(QRunnable):
             q.append(f'site:{dom} "{wi.pn}" datasheet')
         return q
 
-    def _download_pdf(self, url: str) -> Optional[str]:
+    def _download_pdf(self, url: str, trusted: bool = False, referer: Optional[str] = None) -> Optional[str]:
         try:
             # Heuristic headers for distributor/aggregator hosts
             ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
@@ -282,7 +350,7 @@ class _Worker(QRunnable):
                 pass
             # Add Referer for known sites that may require it
             if "mouser.com" in host:
-                headers.setdefault("Referer", "https://www.mouser.com/")
+                headers.setdefault("Referer", referer or "https://www.mouser.com/")
             elif "digikey.com" in host:
                 headers.setdefault("Referer", "https://www.digikey.com/")
             # Tune timeouts per host (connect, read)
@@ -291,8 +359,11 @@ class _Worker(QRunnable):
                 to = (10, int(os.getenv("BOM_DS_READ_TIMEOUT", 90)))
 
             # Separate connect/read timeouts; retry once on transient timeouts
+            sess = self._sess
+            if referer:
+                headers["Referer"] = referer
             def _try_download(connect_read_timeout):
-                return requests.get(url, stream=True, headers=headers, timeout=connect_read_timeout)
+                return sess.get(url, stream=True, headers=headers, timeout=connect_read_timeout, allow_redirects=True)
 
             try:
                 r = _try_download(to)
@@ -325,9 +396,26 @@ class _Worker(QRunnable):
                             except Exception:
                                 pass
                             return None
+            # Quick integrity check: verify PDF magic header
+            try:
+                with open(path, "rb") as _pf:
+                    magic = _pf.read(5)
+                if magic != b"%PDF-":
+                    logging.warning("Auto-datasheet: invalid PDF signature for %s; discarding", url)
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+                    return None
+            except Exception:
+                pass
+
             logging.info("Auto-datasheet: downloaded to temp %s", path)
-            # Validate the PDF matches the requested PN/manufacturer
-            ok, score = pdf_matches_request(self.wi.pn, self.wi.mfg or "", self.wi.desc or "", Path(path), source_name=url)
+            # Distributor/API PDFs are considered reliable; only validate for web-search results
+            if trusted:
+                ok, score = True, 2.0
+            else:
+                ok, score = pdf_matches_request(self.wi.pn, self.wi.mfg or "", self.wi.desc or "", Path(path), source_name=url)
             if not ok:
                 logging.info(
                     "Auto-datasheet: validation failed (score=%.2f) for %s; discarding",

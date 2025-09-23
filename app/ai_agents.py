@@ -251,3 +251,15 @@ def apply_env_from_agents() -> None:
         bool(os.getenv("DIGIKEY_ACCESS_TOKEN")),
         bool(os.getenv("NEXAR_ACCESS_TOKEN")),
     )
+
+    # Enable helpful defaults for debugging and headless rendering
+    # PDF opening debug logs
+    os.environ.setdefault("BOM_PDF_OPEN_DEBUG", "1")
+    # Prefer Chrome for opening PDFs unless explicitly overridden
+    os.environ.setdefault("BOM_PDF_VIEWER", "chrome")
+    # Turn on API debug logging unless explicitly disabled
+    os.environ.setdefault("BOM_API_DEBUG", "1")
+    # Enable headless rendering for Mouser (and optionally all)
+    os.environ.setdefault("BOM_HEADLESS_MOUSER", "1")
+    # Global headless opt-in (user can set to 0 to disable)
+    os.environ.setdefault("BOM_HEADLESS_ALL", "1")

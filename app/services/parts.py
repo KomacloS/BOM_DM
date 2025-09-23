@@ -38,6 +38,18 @@ def update_part_datasheet_url(session: Session, part_id: int, url_or_path: str) 
     return part
 
 
+def update_part_product_url(session: Session, part_id: int, url: str | None) -> Part:
+    """Update a part's product (device) page URL."""
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    part.product_url = (url or None)
+    session.add(part)
+    session.commit()
+    session.refresh(part)
+    return part
+
+
 def update_part_function(session: Session, part_id: int, function: str | None) -> Part:
     """Update a part's function classification string.
 

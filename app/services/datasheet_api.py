@@ -331,48 +331,27 @@ def nexar_document_urls(mpn: str, access_token: str) -> List[str]:
         except Exception:
             pass
 
-    def _extract_from_search(data: dict):
-        srch = (data.get("data") or {}).get("search") or {}
-        items = srch.get("results") or []
+    # Minimal supply search: bestDatasheet only, avoids account-specific fields
+    q = "query($mpn:String!){ supSearch(q:$mpn, limit:5){ results{ part{ bestDatasheet{ url } } } } }"
+    try:
+        logging.info("API-first: Nexar supSearch (minimal) for %s", mpn)
+        r = requests.post(
+            endpoint,
+            headers=headers,
+            json={"query": q, "variables": {"mpn": mpn}},
+            timeout=15,
+        )
+        if r.status_code >= 400:
+            logging.info("API-first: Nexar supSearch error %s: %s", r.status_code, (r.text or "")[:200])
+        r.raise_for_status()
+        data = r.json() or {}
+        sup = (data.get("data") or {}).get("supSearch") or {}
+        items = sup.get("results") or []
         for res in items:
             part = res.get("part") or {}
-            if not isinstance(part, dict):
-                continue
-            _collect_doc_url(((part.get("best_datasheet") or {}).get("url")))
-            for coll in (part.get("document_collections") or []):
-                for doc in (coll.get("documents") or []):
-                    if isinstance(doc, dict):
-                        _collect_doc_url(doc.get("url"))
-
-    queries = [
-        # Minimal (best_datasheet URL only)
-        "query($q:String!){ search(q:$q, limit:5){ results{ part{ best_datasheet{ url } } } } }",
-        # Full with document collections
-        "query($q:String!){ search(q:$q, limit:5){ results{ part{ mpn manufacturer{ name } best_datasheet{ url name } document_collections{ documents{ url name } } } } } }",
-    ]
-    for q in queries:
-        try:
-            logging.info("API-first: Nexar search for %s", mpn)
-            r = requests.post(
-                endpoint,
-                headers=headers,
-                json={"query": q, "variables": {"q": mpn}},
-                timeout=15,
-            )
-            if r.status_code >= 400:
-                logging.info(
-                    "API-first: Nexar search error %s: %s",
-                    r.status_code,
-                    (r.text or "")[:200],
-                )
-                continue
-            data = r.json() or {}
-            _extract_from_search(data)
-            if urls:
-                break
-        except requests.RequestException as e:
-            logging.info("API-first: Nexar search failed: %s", e)
-            continue
+            _collect_doc_url(((part.get("bestDatasheet") or {}).get("url")))
+    except requests.RequestException as e:
+        logging.info("API-first: Nexar supSearch failed: %s", e)
 
     # De-dup
     seen: set[str] = set()

@@ -49,6 +49,7 @@ from .bom_read_models import JoinedBOMRow, get_joined_bom_for_assembly
 from .parts import (
     update_part_active_passive,
     update_part_datasheet_url,
+    update_part_product_url,
     remove_part_datasheet,
     update_part_function,
     update_part_package,
@@ -88,6 +89,7 @@ __all__ = [
     "get_joined_bom_for_assembly",
     "update_part_active_passive",
     "update_part_datasheet_url",
+    "update_part_product_url",
     "remove_part_datasheet",
     "update_part_function",
     "update_part_package",

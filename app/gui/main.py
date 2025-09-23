@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import asyncio
 import os
 import logging
 
@@ -121,6 +122,12 @@ def main() -> None:  # pragma: no cover - thin wrapper
     # Basic logging to terminal so user sees actions
     level = os.getenv("BOM_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(levelname)s %(name)s: %(message)s")
+    # Ensure pyppeteer/requests_html are happy on Windows threads
+    if sys.platform.startswith("win"):
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception:
+            pass
     # Optional: force DEBUG for API layer with BOM_API_DEBUG=1
     if os.getenv("BOM_API_DEBUG", "").lower() in ("1", "true", "yes", "on"):
         logging.getLogger().setLevel(logging.DEBUG)

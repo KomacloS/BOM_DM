@@ -91,6 +91,7 @@ class Part(SQLModel, table=True):
     active_passive: PartType = Field(default=PartType.passive)
     power_required: bool = False
     datasheet_url: Optional[str] = None
+    product_url: Optional[str] = None
     tol_p: Optional[str] = Field(default=None, max_length=8)
     tol_n: Optional[str] = Field(default=None, max_length=8)
     created_at: datetime = Field(default_factory=datetime.utcnow)
