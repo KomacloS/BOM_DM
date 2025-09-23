@@ -28,4 +28,4 @@ else
 fi
 
 echo "=== Step 5: Run control_center GUI ==="
-python -m app.gui 
+python -m app.gui

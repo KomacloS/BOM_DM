@@ -44,6 +44,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPainter, QBrush, QColor, QDesktopServices, QGuiApplication, QTextDocument, QTextOption
 import logging
 from .. import services
+from ..services.datasheets import get_local_open_path
+from ..config import PDF_VIEWER, PDF_VIEWER_PATH, PDF_OPEN_DEBUG
+import subprocess, shutil, time, os
+from datetime import datetime
 from ..logic.autofill_rules import infer_from_pn_and_desc
 from ..logic.prefix_macros import load_prefix_macros, reload_prefix_macros
 from . import state as app_state
@@ -421,6 +425,8 @@ class BOMEditorPane(QWidget):
         self._parts_state: Dict[int, Optional[str]] = {}
         self._rows_raw: list = []  # canonical read-model rows
         self._part_datasheets: Dict[int, Optional[str]] = {}
+        self._datasheet_failed: set[int] = set()
+        self._part_manual_links: Dict[int, str] = {}
         # Track parts with an in-progress Auto Datasheet operation
         self._datasheet_loading: set[int] = set()
         self._test_assignments: Dict[int, dict] = {}
@@ -600,6 +606,11 @@ QTableView::item:selected:hover {
         self.paste_act.triggered.connect(self._paste_selection)
         self.table.addAction(self.paste_act)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+
+        # Remove datasheet action (context menu)
+        self.remove_ds_act = QAction("Remove Datasheet", self)
+        self.remove_ds_act.triggered.connect(self._remove_selected_datasheets)
+        self.table.addAction(self.remove_ds_act)
 
         # Undo/Redo support via QUndoStack
         self.undo_act = QAction("Undo", self, shortcut=QKeySequence.StandardKey.Undo)
@@ -1300,6 +1311,12 @@ QTableView::item:selected:hover {
         self._datasheet_loading |= {w.part_id for w in work}
         QTimer.singleShot(0, self._install_datasheet_widgets)
         dlg = AutoDatasheetDialog(self, work, on_locked_parts_changed=self._set_parts_locked)
+        # Update UI immediately for each part as it's attached
+        dlg.attached.connect(self._on_datasheet_attached)
+        # Mark parts as searched-but-not-found in this BOM session
+        dlg.failed.connect(self._on_datasheet_failed)
+        # Receive manual page suggestions for hard downloads
+        dlg.manualLink.connect(self._on_manual_link)
         dlg.exec()
         # Refresh datasheet paths for affected parts
         from ..models import Part
@@ -1650,6 +1667,13 @@ QTableView::item:selected:hover {
             pass
         return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
 
+    def _icon_for_notfound(self) -> QIcon:
+        return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton)
+
+    def _icon_for_link(self) -> QIcon:
+        # Prefer a generic 'open' icon
+        return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
+
     def _install_datasheet_widgets(self) -> None:
         # Rebuild buttons for Datasheet column
         ds_col = self._col_indices.get("ds")
@@ -1675,14 +1699,100 @@ QTableView::item:selected:hover {
             elif path and Path(path).exists():
                 btn.setIcon(self._icon_for_attached())
                 btn.setToolTip("Open datasheet")
-                btn.clicked.connect(lambda _=False, p=path: QDesktopServices.openUrl(QUrl.fromLocalFile(p)))
+                def _open_pdf(_checked: bool = False, p: str = path):
+                    t0 = time.perf_counter()
+                    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    try:
+                        size = Path(p).stat().st_size if Path(p).exists() else -1
+                    except Exception:
+                        size = -1
+                    if PDF_OPEN_DEBUG:
+                        logging.info(
+                            "Open-PDF[%s]: start part_path=%s size=%s bytes viewer=%s",
+                            ts,
+                            p,
+                            size,
+                            PDF_VIEWER,
+                        )
+                    # Resolve a fast local path (may copy once into cache)
+                    t1 = time.perf_counter()
+                    try:
+                        local_path = str(get_local_open_path(Path(p)))
+                    except Exception:
+                        local_path = p
+                    t2 = time.perf_counter()
+                    if PDF_OPEN_DEBUG:
+                        logging.info(
+                            "Open-PDF: resolved local path in %.1f ms -> %s",
+                            (t2 - t1) * 1000.0,
+                            local_path,
+                        )
+
+                    # Choose open strategy
+                    opened = False
+                    open_err = None
+                    t3 = time.perf_counter()
+                    try:
+                        if PDF_VIEWER == "chrome":
+                            exe = (
+                                PDF_VIEWER_PATH
+                                or shutil.which("chrome")
+                                or shutil.which("chrome.exe")
+                                or r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+                            )
+                            if exe and os.path.exists(exe):
+                                # Use file:// URL form for Chrome
+                                url = QUrl.fromLocalFile(local_path).toString()
+                                subprocess.Popen([exe, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                opened = True
+                            else:
+                                open_err = f"Chrome not found (PDF_VIEWER_PATH={PDF_VIEWER_PATH})"
+                        elif PDF_VIEWER == "edge":
+                            exe = (
+                                PDF_VIEWER_PATH
+                                or shutil.which("msedge")
+                                or shutil.which("msedge.exe")
+                                or r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+                            )
+                            if exe and os.path.exists(exe):
+                                url = QUrl.fromLocalFile(local_path).toString()
+                                subprocess.Popen([exe, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                opened = True
+                            else:
+                                open_err = f"Edge not found (PDF_VIEWER_PATH={PDF_VIEWER_PATH})"
+                        else:
+                            # system default
+                            QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
+                            opened = True
+                    except Exception as e:
+                        open_err = str(e)
+                    t4 = time.perf_counter()
+                    if PDF_OPEN_DEBUG:
+                        logging.info(
+                            "Open-PDF: open call returned in %.1f ms (ok=%s)%s",
+                            (t4 - t3) * 1000.0,
+                            opened,
+                            f" err={open_err}" if open_err else "",
+                        )
+                        logging.info("Open-PDF: total time %.1f ms", (t4 - t0) * 1000.0)
+                btn.clicked.connect(_open_pdf)
             else:
-                if path and not Path(path).exists():
-                    btn.setToolTip("Stored path not found. Re-attach?")
+                manual = self._part_manual_links.get(part_id)
+                if manual:
+                    btn.setToolTip("Open candidate page to download")
+                    btn.setIcon(self._icon_for_link())
+                    btn.clicked.connect(lambda _=False, u=manual: QDesktopServices.openUrl(QUrl.fromUserInput(u)))
                 else:
-                    btn.setToolTip("Attach datasheet")
-                btn.setIcon(self._icon_for_plus())
-                btn.clicked.connect(lambda _=False, pid=part_id: self._open_attach_dialog(pid))
+                    if part_id in self._datasheet_failed:
+                        btn.setToolTip("Search attempted; no datasheet found")
+                        btn.setIcon(self._icon_for_notfound())
+                    else:
+                        if path and not Path(path).exists():
+                            btn.setToolTip("Stored path not found. Re-attach?")
+                        else:
+                            btn.setToolTip("Attach datasheet")
+                        btn.setIcon(self._icon_for_plus())
+                    btn.clicked.connect(lambda _=False, pid=part_id: self._open_attach_dialog(pid))
             proxy_idx = self.proxy.mapFromSource(src_idx)
             self.table.setIndexWidget(proxy_idx, btn)
 
@@ -1695,6 +1805,8 @@ QTableView::item:selected:hover {
     def _on_datasheet_attached(self, part_id: int, canonical: str) -> None:
         # Update mapping and refresh buttons for affected rows
         self._part_datasheets[part_id] = canonical
+        self._datasheet_failed.discard(part_id)
+        self._part_manual_links.pop(part_id, None)
         ds_col = self._col_indices.get("ds")
         if ds_col is not None:
             for r in range(self.model.rowCount()):
@@ -1703,6 +1815,62 @@ QTableView::item:selected:hover {
                         self.model.setData(self.model.index(r, ds_col), canonical)
                         break
         self._install_datasheet_widgets()
+
+    def _on_datasheet_failed(self, part_id: int) -> None:
+        self._datasheet_failed.add(part_id)
+        self._install_datasheet_widgets()
+
+    def _on_manual_link(self, part_id: int, url: str) -> None:
+        self._part_manual_links[part_id] = url
+        self._datasheet_failed.discard(part_id)
+        self._install_datasheet_widgets()
+
+    def _remove_selected_datasheets(self) -> None:
+        proxy = self.table.model()
+        sel = self.table.selectionModel()
+        if proxy is None or sel is None or not sel.selectedIndexes():
+            return
+        rows = sorted({i.row() for i in sel.selectedIndexes()})
+        # Collect part IDs that currently have a datasheet path
+        target_pids: list[int] = []
+        ds_col = self._col_indices.get("ds")
+        for r in rows:
+            # find part_id on this row
+            part_id = None
+            for c in range(proxy.columnCount()):
+                pid = proxy.data(proxy.index(r, c), PartIdRole)
+                if pid is not None:
+                    part_id = pid
+                    break
+            if part_id is None:
+                continue
+            path = self._part_datasheets.get(part_id)
+            if path:
+                target_pids.append(part_id)
+        if not target_pids:
+            return
+        # Confirm
+        msg = (
+            "Remove datasheet for the selected part?" if len(target_pids) == 1
+            else f"Remove datasheets for {len(target_pids)} parts?"
+        )
+        res = QMessageBox.question(self, "Remove Datasheet", msg)
+        if res != QMessageBox.StandardButton.Yes:
+            return
+        # Perform removal
+        from . import state as app_state
+        removed_any = False
+        with app_state.get_session() as session:
+            for pid in target_pids:
+                try:
+                    services.remove_part_datasheet(session, pid, delete_file=True)
+                    self._part_datasheets[pid] = None
+                    removed_any = True
+                except Exception as exc:
+                    QMessageBox.warning(self, "Remove failed", str(exc))
+        if removed_any:
+            # Refresh buttons for affected rows
+            self._install_datasheet_widgets()
 
 
 class WrapTextDelegate(QStyledItemDelegate):

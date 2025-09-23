@@ -32,7 +32,8 @@ def choose_best_datasheet_url(
     system = (
         "You are a precision assistant. Given a part number, manufacturer, and web search results, "
         "pick the single best URL that is the OFFICIAL datasheet PDF for that exact part. "
-        "Prefer manufacturer domains and URLs ending with .pdf. If uncertain, return NONE."
+        "Prefer manufacturer domains and URLs ending with .pdf. If uncertain, return NONE. "
+        "Respond ONLY with a JSON object like {\"best_url\": \"https://...\"}. This must be valid JSON."
     )
     user = {
         "pn": pn,
@@ -47,6 +48,9 @@ def choose_best_datasheet_url(
             headers[auth_header] = f"{auth_scheme} {api_key}".strip()
         else:
             headers[auth_header] = api_key
+    else:
+        logging.warning("gpt_rerank: no API key configured; skipping rerank")
+        return None
     try:
         logging.info(
             "gpt_rerank: model=%s base_url=%s candidates=%d pn=%s mfg=%s",
@@ -58,32 +62,54 @@ def choose_best_datasheet_url(
         )
     except Exception:
         pass
-    r = requests.post(
-        base_url,
-        headers=headers,
-        json={
+    try:
+        payload = {
             "model": model,
-            "temperature": 0,
+            # omit temperature by default for maximum provider compatibility
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": json.dumps(user)},
             ],
             "response_format": {"type": "json_object"},
-        },
-        timeout=30,
-    )
-    r.raise_for_status()
-    data = r.json()
+        }
+        if os.environ.get("AI_CHAT_TEMPERATURE"):
+            try:
+                payload["temperature"] = float(os.environ["AI_CHAT_TEMPERATURE"])  # type: ignore
+            except Exception:
+                pass
+        r = requests.post(
+            base_url,
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        if not r.ok:
+            try:
+                err = r.json()
+            except Exception:
+                err = {"text": r.text[:500]}
+            logging.warning(
+                "gpt_rerank: HTTP %s error from provider: %s", r.status_code, err
+            )
+            return None
+        data = r.json()
+    except requests.RequestException as e:
+        logging.warning("gpt_rerank: request failed: %s", e)
+        return None
     text = data["choices"][0]["message"]["content"]
     try:
         obj = json.loads(text)
         best = obj.get("best_url") or obj.get("url")
-        if isinstance(best, str) and best.strip():
-            logging.info("gpt_rerank: selected %s", best.strip())
-            return best.strip()
+        if isinstance(best, str):
+            best = best.strip()
+            # Treat placeholders like NONE as no result; require http/https URL
+            if best and best.lower() not in ("none", "null", "n/a") and re.match(r"^https?://", best, re.I):
+                logging.info("gpt_rerank: selected %s", best)
+                return best
     except Exception:
         pass
     m = re.search(r"https?://\S+?\.pdf\b", text, re.I)
     if m:
         logging.info("gpt_rerank: extracted %s via regex", m.group(0))
-    return m.group(0) if m else None
+        return m.group(0)
+    return None

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Tuple
+from pathlib import Path
+import os
 
 from sqlmodel import Session
 
@@ -93,6 +95,40 @@ def update_part_tolerances(
     session.commit()
     session.refresh(part)
     return part
+
+
+def remove_part_datasheet(session: Session, part_id: int, delete_file: bool = True) -> Tuple[Part, bool]:
+    """Clear the part's datasheet association and optionally delete the file.
+
+    Returns (part, deleted_file).
+    If the file is referenced by other parts, it is not deleted.
+    """
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    path = (part.datasheet_url or "").strip()
+    # Clear association first
+    part.datasheet_url = None
+    session.add(part)
+    session.commit()
+    session.refresh(part)
+
+    deleted = False
+    if delete_file and path:
+        # Check if other parts still reference this path
+        from sqlmodel import select
+
+        others = session.exec(select(Part.id).where(Part.datasheet_url == path)).first()
+        if others is None:
+            try:
+                p = Path(path)
+                if p.exists():
+                    os.remove(p)
+                    deleted = True
+            except Exception:
+                # Ignore file system errors; association is already cleared
+                pass
+    return part, deleted
 
 
 def clear_part_datasheet(session: Session, part_id: int) -> Part:

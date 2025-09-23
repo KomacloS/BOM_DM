@@ -4,10 +4,13 @@ from pathlib import Path
 import hashlib
 import shutil
 from typing import Tuple
+import os
+import shutil
 
+from ..config import DATASHEETS_DIR
 
-# Default store under repo root: <repo_root>/data/datasheets
-DATASHEET_STORE = Path(__file__).resolve().parents[2] / "data" / "datasheets"
+# Default store is provided by central config; can be local or a network path
+DATASHEET_STORE = Path(DATASHEETS_DIR)
 
 
 def sha256_of_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -42,3 +45,41 @@ def register_datasheet_for_part(session, part_id: int, pdf_src: Path) -> Tuple[P
         shutil.copy2(pdf_src, dst)
     return dst, existed
 
+
+# ---------------------- Local open path (optional cache) ----------------------
+def get_local_open_path(canonical: Path) -> Path:
+    """Return a local path to open for a datasheet.
+
+    If the datasheets store is on a slow or remote path, you can set
+    BOM_DATASHEETS_CACHE_DIR (or accept the default) to cache a local copy for
+    faster opening in external viewers.
+
+    - If the cache is configured and the file is not present in cache, copy it once.
+    - If the cache exists, use the cached file.
+    - Otherwise, return the canonical path as-is.
+    """
+    cache_root = os.getenv("BOM_DATASHEETS_CACHE_DIR")
+    if not cache_root:
+        # Default under user profile
+        cache_root = str(Path.home() / ".bom_platform" / "cache" / "datasheets")
+    cache_dir = Path(cache_root)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return canonical
+    # Use same hashed subdirectory layout when canonical resides under DATASHEETS_DIR
+    try:
+        rel = canonical.relative_to(DATASHEETS_DIR)
+    except Exception:
+        rel = Path(canonical.name)
+    dst = cache_dir / rel
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if not dst.exists():
+        try:
+            shutil.copy2(canonical, dst)
+        except Exception:
+            return canonical
+    return dst

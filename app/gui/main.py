@@ -6,6 +6,8 @@ import sys
 import os
 import logging
 
+from ..ai_agents import apply_env_from_agents
+
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
     QApplication,
@@ -119,6 +121,21 @@ def main() -> None:  # pragma: no cover - thin wrapper
     # Basic logging to terminal so user sees actions
     level = os.getenv("BOM_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(levelname)s %(name)s: %(message)s")
+    # Optional: force DEBUG for API layer with BOM_API_DEBUG=1
+    if os.getenv("BOM_API_DEBUG", "").lower() in ("1", "true", "yes", "on"):
+        logging.getLogger().setLevel(logging.DEBUG)
+        for name in (
+            "app.services.datasheet_api",
+            "app.services.datasheet_html",
+            "app.services.gpt_rerank",
+            "app.gui.auto_datasheet_dialog",
+        ):
+            logging.getLogger(name).setLevel(logging.DEBUG)
+        # Keep noisy libraries at warning
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+        logging.getLogger("requests").setLevel(logging.WARNING)
+    # Bridge agents.local.toml into environment for search/rerank services
+    apply_env_from_agents()
     app = QApplication(sys.argv)
     state = AppState()
     win = MainWindow(state)

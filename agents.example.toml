@@ -1,0 +1,48 @@
+# Example configuration for local AI agent keys.
+#
+# Copy this file to `agents.local.toml` and fill in your real credentials.
+# The application will read `agents.local.toml` if present, and you can
+# optionally override any value via environment variables.
+
+[google]
+# Google Custom Search API key
+search_api_key = ""
+# Google Custom Search Engine (CSE) ID
+cse_id = ""
+
+[openai]
+# OpenAI (ChatGPT) API key
+api_key = ""
+# Optional: override the API base URL (e.g. a proxy or Azure endpoint)
+base_url = ""
+# Optional: default model to use for datasheet analysis
+model = "gpt-4o-mini"
+
+[mouser]
+# Mouser Search API key. Endpoints used (POST JSON):
+#  - https://api.mouser.com/api/v1/search/keyword?apiKey=...
+#  - https://api.mouser.com/api/v1/search/partnumber?apiKey=...
+#  - Optionally: https://api.mouser.com/api/v1/search/manufacturerpartnumber?apiKey=...
+# Docs: https://api.mouser.com/
+api_key = ""
+
+[digikey]
+# Digi-Key OAuth2 (Product Information v4). Provide either a short-lived
+# access token directly, or client credentials if you manage OAuth elsewhere.
+# Product Information v4 Media endpoint returns PDFs.
+# Docs: https://developer.digikey.com/
+access_token = ""
+client_id = ""
+client_secret = ""
+
+[nexar]
+# Nexar (Octopart) GraphQL credentials. Use client credentials to obtain
+# a bearer token (or paste a short-lived token below). Endpoint:
+#   https://api.nexar.com/graphql
+# Docs: https://nexar.com/ and https://api.nexar.com/
+client_id = ""
+client_secret = ""
+# Optional: if you already manage OAuth elsewhere, provide a short-lived
+# bearer token directly. If both client credentials and access_token are set,
+# the direct access_token will be preferred.
+access_token = ""

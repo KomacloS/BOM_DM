@@ -10,3 +10,4 @@ __pycache__/
 .idea/
 datasheets/
 assets/
+agents.local.toml
