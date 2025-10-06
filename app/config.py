@@ -19,7 +19,7 @@ import os
 import sys
 import copy
 from contextlib import suppress
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 from sqlmodel import create_engine
 from sqlalchemy.engine import Engine, make_url
 
@@ -259,7 +259,7 @@ def load_settings() -> str:
 DATABASE_URL = load_settings()
 _ENGINE: Engine = create_engine(DATABASE_URL, echo=False)
 
-def get_engine(url: str | None = None) -> Engine:
+def get_engine(url: Optional[str] = None) -> Engine:
     """Return engine, recreating if the URL changed."""
     global _ENGINE, DATABASE_URL
     new_url = _ensure_sqlite_directory(url) if url is not None else load_settings()
@@ -357,9 +357,9 @@ def get_agents_file_path() -> Path:
     return AGENTS_FILE_PATH
 
 def save_paths_config(
-    data_root: Path | None = None,
-    datasheets_dir: Path | None = None,
-    agents_file: Path | None = None,
+    data_root: Optional[Path] = None,
+    datasheets_dir: Optional[Path] = None,
+    agents_file: Optional[Path] = None,
 ) -> None:
     """Persist path configuration into settings.toml.
     Any value left as None is preserved.
@@ -462,16 +462,16 @@ def get_complex_editor_settings() -> Dict[str, Any]:
     return settings
 def save_complex_editor_settings(
     *,
-    exe_path: str | None = None,
-    config_path: str | None = None,
-    auto_start_bridge: bool | None = None,
-    auto_stop_bridge_on_exit: bool | None = None,
-    bridge_enabled: bool | None = None,
-    bridge_base_url: str | None = None,
-    bridge_auth_token: str | None = None,
-    bridge_request_timeout_seconds: int | None = None,
-    note_or_link: str | None = None,
-    ui_enabled: bool | None = None,
+    exe_path: Optional[str] = None,
+    config_path: Optional[str] = None,
+    auto_start_bridge: Optional[bool] = None,
+    auto_stop_bridge_on_exit: Optional[bool] = None,
+    bridge_enabled: Optional[bool] = None,
+    bridge_base_url: Optional[str] = None,
+    bridge_auth_token: Optional[str] = None,
+    bridge_request_timeout_seconds: Optional[int] = None,
+    note_or_link: Optional[str] = None,
+    ui_enabled: Optional[bool] = None,
 ) -> None:
     """Persist Complex Editor settings into settings.toml."""
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -515,9 +515,9 @@ def save_complex_editor_settings(
     _write_settings_data(data)
 
 def save_viewer_config(
-    pdf_viewer: str | None = None,
-    pdf_viewer_path: str | None = None,
-    pdf_open_debug: bool | None = None,
+    pdf_viewer: Optional[str] = None,
+    pdf_viewer_path: Optional[str] = None,
+    pdf_open_debug: Optional[bool] = None,
 ) -> None:
     """Persist viewer preferences into settings.toml.
     Any value left as None is preserved.
