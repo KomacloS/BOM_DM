@@ -7,6 +7,12 @@ hiddenimports = []
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
+# sqlmodel is a runtime dependency that PyInstaller fails to detect because it
+# is mostly used via SQLAlchemy style imports.  Explicitly collect it so the
+# frozen executable ships with the bundled package.
+tmp_ret = collect_all('sqlmodel')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
 
 a = Analysis(
     ['app\\gui\\__main__.py'],
