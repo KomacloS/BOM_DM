@@ -882,7 +882,7 @@ QTableView::item:selected:hover {
         for part_id, rows in groups.items():
             # Aggregate references
             refs_sorted = sorted((x.reference for x in rows), key=natural_key)
-            refs_str = ", ".join(refs_sorted)
+            refs_str = ",".join(refs_sorted)
             # Determine value: use explicit if present, else auto-infer, then overlay staged
             explicit = next((x.active_passive for x in rows if getattr(x, "active_passive", None) in ("active", "passive")), None)
             mode_val = explicit or self._auto_infer(None, rows[0].reference)

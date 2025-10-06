@@ -15,6 +15,7 @@ _CAP_RE = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)[\s]*?(pF|nF|uF|µF|PF|NF|
 _IND_RE = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)[\s]*?(nH|uH|µH|mH|H)(?![A-Za-z0-9])", re.I)
 _RES_UNIT_RE = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)(?:\s*|\s*[- ]?)?(R|Ω|OHM|K|k|M|Meg|G)(?![A-Za-z0-9])", re.I)
 _RES_CODE_TOKEN_RE = re.compile(r"\b\d+[RrKkMm]\d*\b")
+_RES_CODE_LOOKAHEAD_RE = re.compile(r"(?=(\d+[RrKkMm]\d*))")
 _TOL_ASYM_RE1 = re.compile(r"\+(\d+(?:\.\d+)?)(?:\s*%)?.*-(\d+(?:\.\d+)?)(?:\s*%)", re.I)
 _TOL_ASYM_RE2 = re.compile(r"-(\d+(?:\.\d+)?)(?:\s*%)?.*\+(\d+(?:\.\d+)?)(?:\s*%)", re.I)
 _TOL_SYM_RE = re.compile(r"(?:±|\+/-)?\s*(\d+(?:\.\d+)?)\s*%", re.I)
@@ -71,7 +72,7 @@ def _norm_res_ohms(ohms: float) -> str:
     if ohms >= 1e6:
         return f"{_strip(ohms/1e6)}MΩ"
     if ohms >= 1e3:
-        return f"{_strip(ohms/1e3)}k"
+        return f"{_strip(ohms/1e3)}K"
     return f"{_strip(ohms)}Ω"
 
 
@@ -91,6 +92,30 @@ def _value_from_res_code(token: str) -> Optional[str]:
     else:
         return None
     return _norm_res_ohms(ohms)
+
+
+def _res_code_tokens_from_pn(pn: str) -> list[str]:
+    tokens = [m.group(1) for m in _RES_CODE_LOOKAHEAD_RE.finditer(pn)]
+    if not tokens:
+        return []
+
+    def score(token: str) -> tuple[int, int, int]:
+        m = re.match(r"(\d+)[RrKkMm](\d*)", token)
+        if not m:
+            return (len(token), len(token), len(token))
+        left, right = m.group(1), m.group(2)
+        left_sig = left.lstrip("0") or "0"
+        return (len(left_sig), len(right), len(token))
+
+    min_score = min(score(t) for t in tokens)
+    best = [t for t in tokens if score(t) == min_score]
+    seen: set[str] = set()
+    result: list[str] = []
+    for tok in best:
+        if tok not in seen:
+            seen.add(tok)
+            result.append(tok)
+    return result
 
 
 def _cap_value_from_desc(desc: str) -> tuple[Optional[str], Optional[float]]:
@@ -158,6 +183,7 @@ def infer_from_pn_and_desc(pn: str, desc: str) -> AutoResult:
     pn = pn or ""
     desc = desc or ""
     res = AutoResult()
+    is_digital = bool(re.search(r"digital", desc, re.I))
 
     # Package
     matches = set(_PACK_RE.findall(pn))
@@ -182,7 +208,7 @@ def infer_from_pn_and_desc(pn: str, desc: str) -> AutoResult:
                 res.value = vind
 
     # PN helpers
-    if res.value is None:
+    if res.value is None and not is_digital:
         # Capacitor EIA code
         m = _EIA_CODE_RE.search(pn)
         if m and (_CAP_KEY_RE.search(desc) or re.search(r"C\d{4}C", pn, re.I)):
@@ -196,8 +222,8 @@ def infer_from_pn_and_desc(pn: str, desc: str) -> AutoResult:
             if _normalize_cap_pf(pf) != _normalize_cap_pf(pf_desc):
                 pass  # keep description value
     # Resistor PN codes if description indicates resistor
-    if res.value is None and _RES_KEY_RE.search(desc):
-        vals = {_value_from_res_code(t) for t in _RES_CODE_TOKEN_RE.findall(pn)}
+    if res.value is None and not is_digital and _RES_KEY_RE.search(desc):
+        vals = {_value_from_res_code(t) for t in _res_code_tokens_from_pn(pn)}
         vals.discard(None)
         if len(vals) == 1:
             res.value = vals.pop()
@@ -206,7 +232,7 @@ def infer_from_pn_and_desc(pn: str, desc: str) -> AutoResult:
     tol = _parse_tol(desc)
     if tol:
         res.tol_pos, res.tol_neg = tol
-    else:
+    elif not is_digital:
         m = _EIA_TOL_RE.search(pn)
         if m and (_CAP_KEY_RE.search(desc) or re.search(r"C\d{4}C", pn, re.I)):
             t = _TOL_MAP.get(m.group(1).upper())
