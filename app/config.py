@@ -135,6 +135,31 @@ def _read_settings_dict() -> Dict[str, Any]:
 
 _BOOL_TRUE_VALUES = {"1", "true", "yes", "on"}
 
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        if isinstance(value, (int, float)):
+            candidate = int(value)
+        else:
+            candidate = int(float(str(value).strip()))
+        if candidate > 0:
+            return candidate
+    except Exception:
+        pass
+    return default
+
+
+def _load_max_datasheet_mb(default: int = 25) -> int:
+    env_value = os.getenv("BOM_MAX_DS_MB")
+    if env_value is not None:
+        return _coerce_positive_int(env_value, default)
+    data = _read_settings_dict().get("datasheets")
+    if isinstance(data, Mapping):
+        for key in ("max_datasheet_mb", "max_size_mb", "max_mb"):
+            if key in data:
+                return _coerce_positive_int(data[key], default)
+    return default
+
 def _toml_scalar(value: Any) -> str:
     if isinstance(value, bool):
         return str(value).lower()
@@ -246,8 +271,10 @@ def get_engine(url: str | None = None) -> Engine:
 
 def reload_settings() -> None:
     """Reload settings from disk and rebuild engine if needed."""
+    global MAX_DATASHEET_MB
     get_engine(load_settings())
     refresh_paths()
+    MAX_DATASHEET_MB = _load_max_datasheet_mb()
 
 def _from_settings(section: str, key: str, default: str) -> str:
     try:
@@ -387,6 +414,8 @@ PDF_OPEN_DEBUG = _as_bool(
     os.getenv("BOM_PDF_OPEN_DEBUG")
     or _from_settings("viewer", "pdf_open_debug", "1")
 )
+
+MAX_DATASHEET_MB = _load_max_datasheet_mb()
 
 def get_complex_editor_settings() -> Dict[str, Any]:
     """Return Complex Editor UI/bridge configuration with defaults applied."""
