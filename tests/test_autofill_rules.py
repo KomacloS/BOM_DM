@@ -25,7 +25,7 @@ def test_cap_value_from_pn_eia():
 
 def test_res_value_from_desc():
     r = infer_from_pn_and_desc("", "RES 10K 1%")
-    assert r.value == "10k"
+    assert r.value == "10K"
     r = infer_from_pn_and_desc("", "RES 4R7 5%")
     assert r.value == "4.7Ω"
 
@@ -52,3 +52,13 @@ def test_conflict_desc_vs_eia():
     assert r.value == "0.1uF"
     r = infer_from_pn_and_desc("C0603C102K", "CAP CER")
     assert r.value == "1nF"
+
+
+def test_res_value_from_pn_with_embedded_code():
+    r = infer_from_pn_and_desc("CRCW04024K70FKED", "RES CHIP")
+    assert r.value == "4.7K"
+
+
+def test_res_value_not_from_pn_when_digital():
+    r = infer_from_pn_and_desc("CRCW04024K70FKED", "Digital isolator")
+    assert r.value is None

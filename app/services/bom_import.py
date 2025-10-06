@@ -140,8 +140,7 @@ def _expand_references(ref_str: str) -> list[str]:
             start, end = int(n1), int(n2)
             if start > end:
                 start, end = end, start
-            width = max(len(n1), len(n2))
-            out.extend([f"{p1}{str(i).zfill(width)}" for i in range(start, end + 1)])
+            out.extend([f"{p1}{i}" for i in range(start, end + 1)])
         else:
             out.append(tok)
     return out
