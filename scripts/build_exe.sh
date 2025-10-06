@@ -28,7 +28,14 @@ fi
 if [[ -f "requirements.txt" ]]; then
   echo "[build] Installing dependencies from requirements.txt..."
   python -m pip install --upgrade pip >/dev/null
-  python -m pip install -r requirements.txt >/dev/null
+  if ! python -m pip install -r requirements.txt; then
+    echo "[build] requirements install failed; continuing with existing environment."
+    echo "[build] Ensuring sqlmodel is available via direct install..."
+    if ! python -m pip install sqlmodel; then
+      echo "[build] Fallback sqlmodel install failed."
+      exit 1
+    fi
+  fi
 else
   echo "[build] requirements.txt not found; attempting editable install with extras..."
   python -m pip install --upgrade pip >/dev/null
