@@ -109,9 +109,13 @@ def ensure_ce_bridge_ready(timeout_seconds: float = 4.0) -> None:
     if not exe_path:
         raise CEBridgeError("Complex Editor executable path is not configured")
 
-    exe = Path(exe_path).expanduser()
+    exe = Path(exe_path).expanduser().resolve()
     if not exe.exists():
         raise CEBridgeError(f"Complex Editor executable not found: {exe}")
+    if exe.is_dir():
+        raise CEBridgeError(f"Complex Editor executable path is a directory: {exe}")
+    if os.name != "nt" and not os.access(exe, os.X_OK):
+        raise CEBridgeError(f"Complex Editor executable is not executable: {exe}")
 
     config_path = str(settings.get("config_path") or "").strip() or None
 
