@@ -24,6 +24,27 @@ if ! command -v pyinstaller >/dev/null 2>&1; then
   python -m pip install pyinstaller >/dev/null
 fi
 
+# Install project dependencies if a requirements file exists
+if [[ -f "requirements.txt" ]]; then
+  echo "[build] Installing dependencies from requirements.txt..."
+  python -m pip install --upgrade pip >/dev/null
+  python -m pip install -r requirements.txt >/dev/null
+else
+  echo "[build] requirements.txt not found; attempting editable install with extras..."
+  python -m pip install --upgrade pip >/dev/null
+  python -m pip install ".[full]" >/dev/null || true
+fi
+
+python - <<'PY'
+import sys
+try:
+    import sqlmodel
+    print("[build] sqlmodel import OK")
+except Exception as e:
+    print("[build] sqlmodel import FAILED:", e)
+    sys.exit(1)
+PY
+
 # Clean previous build artifacts
 rm -rf build "dist/${APP_NAME}" "${APP_NAME}.spec" || true
 
@@ -42,6 +63,7 @@ pyinstaller \
   --clean \
   --windowed \
   --collect-all PyQt6 \
+  --hidden-import sqlmodel \
   --add-data "app/gui/icons${DATA_SEP}app/gui/icons" \
   "$ENTRY"
 

@@ -6,6 +6,7 @@ binaries = []
 hiddenimports = []
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports += ["sqlmodel"]
 
 # sqlmodel is a runtime dependency that PyInstaller fails to detect because it
 # is mostly used via SQLAlchemy style imports.  Explicitly collect it so the

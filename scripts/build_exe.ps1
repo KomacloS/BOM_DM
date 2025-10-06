@@ -32,6 +32,7 @@ $args = @(
     "--noconfirm",
     "--clean",
     "--windowed",
+    "--hidden-import", "sqlmodel",
     "--name", $Name
 ) + $addDataArgs + @(
     "-m", "app.gui"
