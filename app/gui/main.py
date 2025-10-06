@@ -6,21 +6,30 @@ import sys
 import asyncio
 import os
 import logging
+import traceback
+from datetime import datetime
+
+from ..config import LOG_DIR, TRACEBACK_LOG_PATH
 
 from ..ai_agents import apply_env_from_agents
+from ..integration.ce_bridge_manager import stop_ce_bridge_if_started
 
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QGroupBox,
+    QHBoxLayout,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QSplitter,
     QVBoxLayout,
+    QWidget,
 )
 
 from .state import AppState
+from .dialogs.settings_dialog import SettingsDialog
 from .widgets import AssembliesPane, CustomersPane, ProjectsPane
 from .bom_editor_pane import BOMEditorPane
 
@@ -30,6 +39,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, state: AppState) -> None:
         super().__init__()
+        self._state = state
         self._settings = QSettings("BOM_DB", "ProjectsTerminal")
 
         self.setWindowTitle("BOM_DB – Projects Terminal")
@@ -68,7 +78,17 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.customers_group)
         splitter.addWidget(self.projects_group)
         splitter.addWidget(self.assemblies_group)
-        self.setCentralWidget(splitter)
+
+        container = QWidget()
+        main_layout = QVBoxLayout(container)
+        top_bar = QHBoxLayout()
+        self.settings_btn = QPushButton("Settings...")
+        self.settings_btn.clicked.connect(self._open_settings)
+        top_bar.addWidget(self.settings_btn)
+        top_bar.addStretch(1)
+        main_layout.addLayout(top_bar)
+        main_layout.addWidget(splitter)
+        self.setCentralWidget(container)
 
         self.resize(1200, 600)
         geom = self._settings.value("geometry")
@@ -90,6 +110,40 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # pragma: no cover - UI glue
         self._settings.setValue("geometry", self.saveGeometry())
         super().closeEvent(event)
+        stop_ce_bridge_if_started()
+
+    def _open_settings(self) -> None:
+        dialog = SettingsDialog(self)
+        result = dialog.exec()
+        if result == QDialog.DialogCode.Accepted and dialog.changes_applied():
+            if dialog.database_changed():
+                self._reset_data_views()
+                message = "Settings saved. Data was reloaded from the new database."
+            else:
+                self._state.refresh_customers()
+                message = "Settings saved."
+            QMessageBox.information(self, "Settings", message)
+
+    def _reset_data_views(self) -> None:
+        self.cust.table.clearSelection()
+        self.cust.table.setRowCount(0)
+        self.cust.delete_btn.setEnabled(False)
+        self.projects_group.setTitle("Projects - None")
+        self.proj.table.clearSelection()
+        self.proj.table.setRowCount(0)
+        self.proj.delete_btn.setEnabled(False)
+        self.assemblies_group.setTitle("Assemblies - None")
+        self.asm.table.clearSelection()
+        self.asm.table.setRowCount(0)
+        self.asm.items_table.setRowCount(0)
+        self.asm.tasks_table.setRowCount(0)
+        self.asm.delete_btn.setEnabled(False)
+        self.asm.import_btn.setEnabled(False)
+        self.asm.items_table.setEnabled(False)
+        self.cust.customerSelected.emit(0)
+        self.proj.projectSelected.emit(0)
+        self.asm.assemblySelected.emit(0)
+        self._state.refresh_customers()
 
     # --------------------------------------------------------------
     def _on_customer_selected(self, cid: int) -> None:  # pragma: no cover - UI glue
@@ -122,6 +176,21 @@ def main() -> None:  # pragma: no cover - thin wrapper
     # Basic logging to terminal so user sees actions
     level = os.getenv("BOM_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(levelname)s %(name)s: %(message)s")
+    # Write unhandled exceptions to a simple traceback log (not full debug)
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    def _excepthook(exc_type, exc_value, exc_tb):  # pragma: no cover - environment dependent
+        try:
+            with open(TRACEBACK_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write("\n===== Unhandled exception at " + datetime.utcnow().isoformat() + "Z =====\n")
+                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+        except Exception:
+            pass
+        # Also print to stderr
+        traceback.print_exception(exc_type, exc_value, exc_tb)
+    sys.excepthook = _excepthook
     # Ensure pyppeteer/requests_html are happy on Windows threads
     if sys.platform.startswith("win"):
         try:

@@ -13,6 +13,8 @@ import os
 from typing import Dict, Optional, TypedDict
 import logging
 
+from .config import get_agents_file_path
+
 # Support both stdlib tomllib (Python 3.11+) and third-party toml
 try:  # Python 3.11+
     import tomllib as _toml_mod  # type: ignore
@@ -35,13 +37,6 @@ except Exception:
             return {}
 
 
-APP_DIR = Path(__file__).resolve().parent
-REPO_ROOT = APP_DIR.parent
-
-# Project-local secrets file (ignored by git)
-AGENTS_LOCAL_PATH = REPO_ROOT / "agents.local.toml"
-
-
 class GoogleConfig(TypedDict, total=False):
     search_api_key: str
     cse_id: str
@@ -53,7 +48,8 @@ class OpenAIConfig(TypedDict, total=False):
     model: str
 
 
-def _load_file_config(path: Path) -> Dict[str, dict]:
+def _load_file_config(path: Optional[Path] = None) -> Dict[str, dict]:
+    path = path or get_agents_file_path()
     if not path.exists():
         return {}
     try:
@@ -76,7 +72,7 @@ def _load_file_config(path: Path) -> Dict[str, dict]:
         return {}
 
 
-def load_agents_config() -> Dict[str, dict]:
+def load_agents_config(path: Optional[Path] = None) -> Dict[str, dict]:
     """Load agents configuration, with env vars overriding file values.
 
     File format (agents.local.toml):
@@ -91,7 +87,7 @@ def load_agents_config() -> Dict[str, dict]:
         model = "gpt-4o-mini"                  # optional
     """
 
-    file_cfg = _load_file_config(AGENTS_LOCAL_PATH)
+    file_cfg = _load_file_config(path)
 
     google: GoogleConfig = {
         "search_api_key": file_cfg.get("google", {}).get("search_api_key", ""),

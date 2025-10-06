@@ -8,6 +8,7 @@ import logging
 import asyncio
 
 import requests
+import threading
 
 from .datasheet_rank import score_candidate
 
@@ -74,6 +75,13 @@ def find_pdfs_in_page(url: str, pn: str, mfg: str | None, timeout: tuple[int, in
         want_headless = True
 
     html = None
+    if want_headless:
+        # Avoid headless rendering from non-main threads; it can cause signal/loop issues on Windows
+        try:
+            if threading.current_thread() is not threading.main_thread():
+                want_headless = False
+        except Exception:
+            pass
     if want_headless:
         try:
             # If a system Chromium/Chrome/Edge is provided, use it directly via pyppeteer

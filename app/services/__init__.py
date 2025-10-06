@@ -42,6 +42,8 @@ from .assemblies import (
     delete_assembly,
     delete_bom_items,
     delete_bom_items_for_part,
+    update_bom_item_manufacturer,
+    update_manufacturer_for_part_in_assembly,
 )
 from .tasks import list_tasks
 from .bom_import import ImportReport, validate_headers, import_bom
@@ -50,6 +52,8 @@ from .parts import (
     update_part_active_passive,
     update_part_datasheet_url,
     update_part_product_url,
+    update_part_description_if_empty,
+    update_part_description,
     remove_part_datasheet,
     update_part_function,
     update_part_package,
@@ -78,6 +82,8 @@ __all__ = [
     "delete_assembly",
     "delete_bom_items",
     "delete_bom_items_for_part",
+    "update_bom_item_manufacturer",
+    "update_manufacturer_for_part_in_assembly",
     "delete_customer",
     "DeleteBlockedError",
     "list_tasks",
@@ -90,6 +96,8 @@ __all__ = [
     "update_part_active_passive",
     "update_part_datasheet_url",
     "update_part_product_url",
+    "update_part_description_if_empty",
+    "update_part_description",
     "remove_part_datasheet",
     "update_part_function",
     "update_part_package",

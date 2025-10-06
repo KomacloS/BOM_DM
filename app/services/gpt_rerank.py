@@ -1,6 +1,29 @@
 from __future__ import annotations
 from typing import List, Optional
-import os, json, requests, re, logging
+import os, json, requests, re, logging, datetime
+from pathlib import Path
+try:
+    # Optional config import for log paths; keep failures non-fatal
+    from ..config import AI_LOG_PATH, LOG_DIR, TRACEBACK_LOG_PATH
+except Exception:  # pragma: no cover - import guard
+    AI_LOG_PATH = None  # type: ignore
+    LOG_DIR = None  # type: ignore
+    TRACEBACK_LOG_PATH = None  # type: ignore
+
+
+def _append_ai_outcome(record: dict) -> None:
+    try:
+        # Ensure directory exists
+        if AI_LOG_PATH is None:
+            return
+        p = Path(AI_LOG_PATH)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        record.setdefault("ts", datetime.datetime.utcnow().isoformat() + "Z")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        # Do not raise from logging helpers
+        pass
 
 
 def choose_best_datasheet_url(
@@ -91,10 +114,28 @@ def choose_best_datasheet_url(
             logging.warning(
                 "gpt_rerank: HTTP %s error from provider: %s", r.status_code, err
             )
+            _append_ai_outcome({
+                "source": "gpt_rerank",
+                "pn": pn,
+                "mfg": mfg,
+                "desc": desc,
+                "ok": False,
+                "error": {"status": r.status_code, "detail": err},
+                "n_candidates": len(candidates),
+            })
             return None
         data = r.json()
     except requests.RequestException as e:
         logging.warning("gpt_rerank: request failed: %s", e)
+        _append_ai_outcome({
+            "source": "gpt_rerank",
+            "pn": pn,
+            "mfg": mfg,
+            "desc": desc,
+            "ok": False,
+            "error": {"exc": str(e)},
+            "n_candidates": len(candidates),
+        })
         return None
     text = data["choices"][0]["message"]["content"]
     try:
@@ -105,11 +146,42 @@ def choose_best_datasheet_url(
             # Treat placeholders like NONE as no result; require http/https URL
             if best and best.lower() not in ("none", "null", "n/a") and re.match(r"^https?://", best, re.I):
                 logging.info("gpt_rerank: selected %s", best)
+                _append_ai_outcome({
+                    "source": "gpt_rerank",
+                    "pn": pn,
+                    "mfg": mfg,
+                    "desc": desc,
+                    "ok": True,
+                    "best_url": best,
+                    "n_candidates": len(candidates),
+                    "model": model,
+                })
                 return best
     except Exception:
         pass
     m = re.search(r"https?://\S+?\.pdf\b", text, re.I)
     if m:
         logging.info("gpt_rerank: extracted %s via regex", m.group(0))
+        _append_ai_outcome({
+            "source": "gpt_rerank",
+            "pn": pn,
+            "mfg": mfg,
+            "desc": desc,
+            "ok": True,
+            "best_url": m.group(0),
+            "n_candidates": len(candidates),
+            "model": model,
+        })
         return m.group(0)
+    # No usable result
+    _append_ai_outcome({
+        "source": "gpt_rerank",
+        "pn": pn,
+        "mfg": mfg,
+        "desc": desc,
+        "ok": False,
+        "best_url": None,
+        "n_candidates": len(candidates),
+        "model": model,
+    })
     return None

@@ -111,3 +111,34 @@ def delete_bom_items_for_part(
     ids = list(session.exec(stmt))
     return delete_bom_items(session, ids)
 
+
+def update_bom_item_manufacturer(session: Session, bom_item_id: int, manufacturer: str | None) -> BOMItem:
+    """Update the ``manufacturer`` field for a single BOM item.
+
+    Returns the updated ``BOMItem`` instance.
+    """
+    item = session.get(BOMItem, bom_item_id)
+    if not item:
+        raise ValueError(f"BOMItem {bom_item_id} not found")
+    item.manufacturer = (manufacturer or None)
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    return item
+
+
+def update_manufacturer_for_part_in_assembly(
+    session: Session, assembly_id: int, part_id: int, manufacturer: str | None
+) -> int:
+    """Set ``manufacturer`` for all BOM items of ``part_id`` within ``assembly_id``.
+
+    Returns the number of rows updated.
+    """
+    # Use SQL expression update for efficiency
+    stmt = BOMItem.__table__.update().where(
+        (BOMItem.assembly_id == assembly_id) & (BOMItem.part_id == part_id)
+    ).values(manufacturer=(manufacturer or None))
+    result = session.exec(stmt)
+    session.commit()
+    return int(getattr(result, "rowcount", 0) or 0)
+

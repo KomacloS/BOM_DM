@@ -68,6 +68,33 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
 }
 
 
+def _table_exists(conn, table: str) -> bool:
+    return conn.execute(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name=:name"),
+        {"name": table},
+    ).fetchone() is not None
+
+
+def _ensure_complex_links_table(conn) -> bool:
+    if _table_exists(conn, 'complex_links'):
+        return False
+    conn.execute(text('''CREATE TABLE IF NOT EXISTS complex_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  part_id INTEGER NOT NULL,
+  ce_db_uri TEXT,
+  ce_complex_id TEXT NOT NULL,
+  aliases TEXT,
+  pin_map TEXT,
+  macro_ids TEXT,
+  source_hash TEXT,
+  synced_at TEXT,
+  created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+  updated_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+)'''))
+    conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_complex_links_part ON complex_links(part_id)'))
+    conn.execute(text('CREATE INDEX IF NOT EXISTS ix_complex_links_ce ON complex_links(ce_complex_id)'))
+    return True
+
 def _missing_columns(conn, table: str, columns: dict[str, str]) -> List[Tuple[str, str, str]]:
     """Return list of (table, column, ddl) for missing columns."""
     exists = conn.execute(
@@ -212,6 +239,9 @@ def run_sqlite_safe_migrations(engine: Engine) -> List[Tuple[str, str]]:
     with engine.begin() as conn:
         if _fix_part_legacy_number_column(conn):
             applied.append(("part", "fix_legacy_number"))
+
+        if _ensure_complex_links_table(conn):
+            applied.append(("complex_links", "create"))
 
         for table, cols in _MIGRATIONS.items():
             missing = _missing_columns(conn, table, cols)

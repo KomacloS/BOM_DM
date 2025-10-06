@@ -30,6 +30,7 @@ class JoinedBOMRow(BaseModel):
     tol_n: str | None = None
     active_passive: Optional[Literal["active", "passive"]] = None
     datasheet_url: str | None = None
+    product_url: str | None = None
 
 
 def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[JoinedBOMRow]:
@@ -60,6 +61,7 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
                 tol_n=part.tol_n,
                 active_passive=ap,
                 datasheet_url=part.datasheet_url,
+                product_url=part.product_url,
             )
         )
     result.sort(key=lambda r: natural_key(r.reference))

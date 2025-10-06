@@ -131,6 +131,75 @@ def mouser_candidate_urls(mpn: str, api_key: str) -> Tuple[List[str], List[str]]
     return valid_pdfs, page_uniq
 
 
+def _extract_mouser_description(parts: list) -> Optional[str]:
+    """Extract a concise description from Mouser parts payload.
+
+    Tries common fields across Mouser responses and returns the first
+    non-empty string found. Tolerant to key name variations.
+    """
+    if not parts:
+        return None
+    def _cand(p: dict) -> List[str]:
+        keys = [
+            "Description",
+            "ProductDescription",
+            "DescriptionText",
+            "ProductAttributeDescription",
+            "Category",
+            "ManufacturerPartNumber",
+        ]
+        out: List[str] = []
+        for k in keys:
+            v = p.get(k)
+            if isinstance(v, str) and v.strip():
+                out.append(v.strip())
+        return out
+    for p in parts:
+        for s in _cand(p):
+            if s and len(s) >= 4:
+                return s[:200]
+    return None
+
+
+def get_part_description_api_first(mpn: str) -> Optional[str]:
+    """Return a short description using official APIs (Mouser first).
+
+    Only uses formal APIs; returns None if not available or on errors.
+    """
+    m_key = (os.getenv("MOUSER_API_KEY") or os.getenv("PROVIDER_MOUSER_KEY") or "").strip()
+    if not m_key:
+        return None
+    headers = {"accept": "application/json", "Content-Type": "application/json"}
+    params = {"apiKey": m_key}
+    # Try exact partnumber first
+    try:
+        url = "https://api.mouser.com/api/v1/search/partnumber"
+        payload = {"SearchByPartRequest": {"manufacturerPartNumber": mpn}}
+        r = requests.post(url, json=payload, headers=headers, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json() or {}
+        p = (data.get("SearchResults") or {}).get("Parts", []) or []
+        d = _extract_mouser_description(p)
+        if d:
+            return d
+    except requests.RequestException:
+        pass
+    # Fallback: keyword search
+    try:
+        url = "https://api.mouser.com/api/v1/search/keyword"
+        payload = {"SearchByKeywordRequest": {"keyword": mpn}}
+        r = requests.post(url, json=payload, headers=headers, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json() or {}
+        p = (data.get("SearchResults") or {}).get("Parts", []) or []
+        d = _extract_mouser_description(p)
+        if d:
+            return d
+    except requests.RequestException:
+        pass
+    return None
+
+
 def _digikey_get_token(client_id: str, client_secret: str) -> Optional[str]:
     """Obtain an OAuth2 client-credentials access token from Digi-Key."""
     try:

@@ -17,7 +17,8 @@ from ..services.gpt_rerank import choose_best_datasheet_url
 from ..services.datasheet_validate import pdf_matches_request
 from ..services.datasheet_rank import score_candidate, recommended_domains_for
 from ..services.datasheet_html import find_pdfs_in_page
-from ..services.datasheet_api import resolve_datasheet_api_first
+from ..services.datasheet_api import resolve_datasheet_api_first, get_part_description_api_first
+from ..services.description_extract import infer_description_from_pdf
 from . import state as app_state
 import requests
 import logging
@@ -65,6 +66,15 @@ class _Worker(QRunnable):
             self.sig.rowStatus.emit(self.row, "Searching...")
             # API-first resolution (Mouser/Digi-Key/Nexar) before web search
             api_pdf_urls, api_page_urls = resolve_datasheet_api_first(self.wi.pn)
+            # If the part has no description, try to fill from official API (e.g., Mouser)
+            try:
+                if not (self.wi.desc or "").strip():
+                    api_desc = get_part_description_api_first(self.wi.pn)
+                    if api_desc:
+                        with app_state.get_session() as session:
+                            services.update_part_description_if_empty(session, self.wi.part_id, api_desc)
+            except Exception:
+                pass
             src_page: Optional[str] = None
             if api_pdf_urls or api_page_urls:
                 tmp = None
@@ -102,6 +112,13 @@ class _Worker(QRunnable):
                         else:
                             canonical = str(dst)
                             services.update_part_datasheet_url(session, self.wi.part_id, canonical)
+                            # If part has no description, try to infer one from this validated PDF
+                            try:
+                                desc = infer_description_from_pdf(self.wi.pn, self.wi.mfg or "", Path(tmp))
+                                if desc:
+                                    services.update_part_description_if_empty(session, self.wi.part_id, desc)
+                            except Exception:
+                                pass
                             # Also persist a product link if we know one
                             try:
                                 if api_page_urls:
@@ -273,6 +290,13 @@ class _Worker(QRunnable):
                 else:
                     canonical = str(dst)
                     services.update_part_datasheet_url(session, self.wi.part_id, canonical)
+                    # If part has no description, try to infer one from this validated PDF
+                    try:
+                        desc = infer_description_from_pdf(self.wi.pn, self.wi.mfg or "", Path(tmp))
+                        if desc:
+                            services.update_part_description_if_empty(session, self.wi.part_id, desc)
+                    except Exception:
+                        pass
                     # Save product link for web-search success when available
                     try:
                         if src_page:

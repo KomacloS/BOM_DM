@@ -36,7 +36,9 @@ def build_viva_groups(rows_from_gui: Iterable[dict], session: Session, assembly_
         tm = (r.get('test_method') or '').strip().lower()
         if tm == 'macro':
             func = (r.get('test_detail') or '').strip()
-        elif tm:  # any non-empty other value
+        elif tm == 'complex':
+            func = 'Digital'
+        elif tm:  # any other non-empty value
             func = 'Digital'
         else:
             continue  # already validated; defensive

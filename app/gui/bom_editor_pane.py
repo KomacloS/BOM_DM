@@ -39,23 +39,32 @@ from PyQt6.QtWidgets import (
     QWidget, QTableView, QVBoxLayout, QLineEdit, QPushButton, QToolBar, QMenu,
     QToolButton, QStyle, QApplication,
     QStyledItemDelegate, QHeaderView, QAbstractItemView, QStyleOptionViewItem,
-    QLabel, QMessageBox, QSpinBox, QComboBox, QFileDialog, QStyleOptionButton
+    QLabel, QMessageBox, QSpinBox, QComboBox, QFileDialog, QInputDialog, QStyleOptionButton,
+    QSplitter
 )
 from PyQt6.QtGui import QPainter, QBrush, QColor, QDesktopServices, QGuiApplication, QTextDocument, QTextOption
 import logging
 from .. import services
 from ..services.datasheets import get_local_open_path
-from ..config import PDF_VIEWER, PDF_VIEWER_PATH, PDF_OPEN_DEBUG
+from ..config import PDF_VIEWER, PDF_VIEWER_PATH, PDF_OPEN_DEBUG, get_complex_editor_settings
 import subprocess, shutil, time, os
 from datetime import datetime
 from ..logic.autofill_rules import infer_from_pn_and_desc
 from ..logic.prefix_macros import load_prefix_macros, reload_prefix_macros
 from . import state as app_state
+from .widgets.complex_panel import ComplexPanel
 
 
 PartIdRole = Qt.ItemDataRole.UserRole + 1
 ModeRole = Qt.ItemDataRole.UserRole + 2  # stores 'active'/'passive'/None in AP column for delegate
 DatasheetRole = Qt.ItemDataRole.UserRole + 3
+"""
+Additional per-cell data roles
+- BOMItemIdRole: primary key of BOMItem in by_ref view for per-row actions.
+- LinkUrlRole: stores the actual product link while display text stays empty.
+"""
+BOMItemIdRole = Qt.ItemDataRole.UserRole + 4
+LinkUrlRole = Qt.ItemDataRole.UserRole + 5
 
 
 # Helpers ---------------------------------------------------------------
@@ -204,7 +213,7 @@ class CycleToggleDelegate(QStyledItemDelegate):
         else:
             bg = pal.window().color().lighter(110)
             fg = pal.mid().color()
-            text = "â€”"
+            text = "—"
 
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -262,11 +271,8 @@ class TestMethodDelegate(QStyledItemDelegate):
         part_id = index.data(PartIdRole)
         self.methodChanged.emit(part_id, text)
 
+    # Do not force editor on single click; rely on double-click/Edit key
     def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
-        if event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-            if option.widget:
-                option.widget.openPersistentEditor(index)
-            return True
         return False
 
     def _commit_close(self, editor):  # pragma: no cover - Qt glue
@@ -294,7 +300,7 @@ class TestDetailDelegate(QStyledItemDelegate):
             painter.fillRect(opt.rect, opt.palette.base().color())
 
         text = index.data() or ""
-        enabled = text != "â€”"
+        enabled = text != "—"
         btn = QStyleOptionButton()
         btn.rect = opt.rect.adjusted(4, 4, -4, -4)
         btn.text = text
@@ -306,7 +312,7 @@ class TestDetailDelegate(QStyledItemDelegate):
 
     def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
         if event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-            if (index.data() or "") == "â€”":
+            if (index.data() or "") == "—":
                 return False
             part_id = index.data(PartIdRole)
             self.detailClicked.emit(part_id)
@@ -346,49 +352,14 @@ class TestDetailDelegate(QStyledItemDelegate):
             return ""
 
     def paint(self, painter: QPainter, option, index):  # pragma: no cover - UI glue
+        # Render as a normal text cell; editor appears on double-click
         opt = QStyleOptionViewItem(option)
-        opt.state &= ~QStyle.StateFlag.State_HasFocus
-
-        # Fill the background based on state so it matches QSS selection/hover
-        if opt.state & QStyle.StateFlag.State_Selected:
-            painter.fillRect(opt.rect, QColor("#DCEBFF"))
-        elif opt.state & QStyle.StateFlag.State_MouseOver:
-            painter.fillRect(opt.rect, QColor("#F3F4F6"))
-        else:
-            painter.fillRect(opt.rect, opt.palette.base().color())
-
-        method = (self._method_for_index(index) or "")
-        if method == "Macro":
-            # Leave space for editor; draw base item look
-            self.initStyleOption(opt, index)
-            style = opt.widget.style() if opt.widget else QApplication.style()
-            style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
-            return
-        # Default: button-like area
-        text = index.data() or ""
-        enabled = bool(text)
-        btn = QStyleOptionButton()
-        btn.rect = opt.rect.adjusted(4, 4, -4, -4)
-        btn.text = text
-        btn.state = QStyle.StateFlag.State_Raised
-        if enabled:
-            btn.state |= QStyle.StateFlag.State_Enabled
+        self.initStyleOption(opt, index)
         style = opt.widget.style() if opt.widget else QApplication.style()
-        style.drawControl(QStyle.ControlElement.CE_PushButton, btn, painter)
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
 
     def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
-        if event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-            method = (self._method_for_index(index) or "")
-            if method == "Macro":
-                if option.widget:
-                    option.widget.openPersistentEditor(index)
-                return True
-            # disabled placeholder check
-            if not (index.data() or ""):
-                return False
-            part_id = index.data(PartIdRole)
-            self.detailClicked.emit(part_id)
-            return True
+        # No single-click editor; selection remains easy via drag
         return False
 
     def createEditor(self, parent, option, index):  # pragma: no cover - Qt glue
@@ -437,9 +408,25 @@ class BOMEditorPane(QWidget):
         self._tolerances: dict[int, tuple[Optional[str], Optional[str]]] = {}
         self._dirty_tolerances: dict[int, tuple[Optional[str], Optional[str]]] = {}
         self._dirty_tests: set[int] = set()
+        # Track manual edits to the Link column before Save
+        self._dirty_links: Dict[int, Optional[str]] = {}
+        # New staged edit trackers
+        self._dirty_desc: Dict[int, Optional[str]] = {}
+        self._dirty_mfg: Dict[int, Optional[str]] = {}
         self._locked_parts: set[int] = set()
         self._part_product_links: Dict[int, Optional[str]] = {}
+        self._dirty_datasheets: Dict[int, Optional[str]] = {}
+        # Staged datasheet add/remove when Apply is off
+        self._dirty_datasheets: Dict[int, Optional[str]] = {}
         # View mode: 'by_pn' or 'by_ref'
+        self._part_numbers: Dict[int, str] = {}
+        self._complex_settings = get_complex_editor_settings()
+        bridge_cfg = self._complex_settings.get('bridge', {}) if isinstance(self._complex_settings, dict) else {}
+        bridge_enabled = bool(bridge_cfg.get('enabled')) if isinstance(bridge_cfg, dict) else False
+        ui_enabled = bool(self._complex_settings.get('ui_enabled')) if isinstance(self._complex_settings, dict) else False
+        self._complex_ui_enabled = ui_enabled and bridge_enabled
+        self._complex_splitter: Optional[QSplitter] = None
+        self._complex_panel: Optional[ComplexPanel] = None
         self._view_mode = self._settings.value("view_mode", "by_pn")
         self._col_indices = {  # will be updated on model rebuild
             "pn": 0,
@@ -457,13 +444,13 @@ class BOMEditorPane(QWidget):
         }
 
         layout = QVBoxLayout(self)
-        self.setWindowTitle(f"BOM Editor â€” Assembly {assembly_id}")
+        self.setWindowTitle(f"BOM Editor — Assembly {assembly_id}")
         self.toolbar = QToolBar()
         layout.addWidget(self.toolbar)
 
         # Filter
         self.filter_edit = QLineEdit()
-        self.filter_edit.setPlaceholderText("Filterâ€¦")
+        self.filter_edit.setPlaceholderText("Filter…")
 
         # View mode toggle
         self.view_by_pn_act = QAction("By PN", self)
@@ -516,7 +503,6 @@ class BOMEditorPane(QWidget):
 
         # Table
         self.table = QTableView()
-        layout.addWidget(self.table)
 
         # Enable per-cell hover
         self.table.setMouseTracking(True)
@@ -579,7 +565,7 @@ QTableView::item:selected:hover {
         self.wrap_delegate.set_line_count(self.lines_spin.value())
         self.method_delegate = TestMethodDelegate(self.table)
         self.method_delegate.methodChanged.connect(self._on_method_changed)
-        # Function options loaded for test detail delegate
+        # Function options loaded for test detail delegate (with sensible fallback)
         self._function_options = self._load_function_options()
         # Map for case-insensitive validation and canonicalization
         self._function_options_canon = {opt.upper(): opt for opt in (self._function_options or [])}
@@ -606,6 +592,12 @@ QTableView::item:selected:hover {
         self.paste_act.setShortcut(QKeySequence.StandardKey.Paste)
         self.paste_act.triggered.connect(self._paste_selection)
         self.table.addAction(self.paste_act)
+        # Delete selected rows
+        self.delete_act = QAction("Delete Selected", self)
+        self.delete_act.setShortcut(QKeySequence.StandardKey.Delete)
+        # Delete key: clear selected cells unless entire rows are selected
+        self.delete_act.triggered.connect(self._delete_or_clear_selection)
+        self.table.addAction(self.delete_act)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
         # Link context actions
         self.open_link_act = QAction("Open Link", self)
@@ -619,6 +611,23 @@ QTableView::item:selected:hover {
         self.remove_ds_act = QAction("Remove Datasheet", self)
         self.remove_ds_act.triggered.connect(self._remove_selected_datasheets)
         self.table.addAction(self.remove_ds_act)
+
+        if self._complex_ui_enabled:
+            self._complex_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+            self._complex_splitter.addWidget(self.table)
+            self._complex_panel = ComplexPanel(self)
+            self._complex_panel.linkUpdated.connect(self._on_complex_link_updated)
+            self._complex_panel.hide()
+            self._complex_splitter.addWidget(self._complex_panel)
+            self._complex_splitter.setStretchFactor(0, 3)
+            self._complex_splitter.setStretchFactor(1, 2)
+            try:
+                self._complex_splitter.setCollapsible(1, True)
+            except Exception:
+                pass
+            layout.addWidget(self._complex_splitter)
+        else:
+            layout.addWidget(self.table)
 
         # Undo/Redo support via QUndoStack
         self.undo_act = QAction("Undo", self, shortcut=QKeySequence.StandardKey.Undo)
@@ -641,6 +650,7 @@ QTableView::item:selected:hover {
         self.menu_edit.addAction(self.redo_act)
         self.menu_edit.addAction(self.copy_act)
         self.menu_edit.addAction(self.paste_act)
+        self.menu_edit.addAction(self.delete_act)
         self.btn_edit.setMenu(self.menu_edit)
         self.toolbar.addWidget(self.btn_edit)
 
@@ -671,6 +681,10 @@ QTableView::item:selected:hover {
         self.menu_tools.addAction(self.reload_prefix_map_act)
         self.menu_tools.addAction(self.auto_ds_act)
         self.menu_tools.addAction(self.export_viva_act)
+        # Export to Excel
+        self.export_xlsx_act = QAction("Export to Excel", self)
+        self.export_xlsx_act.triggered.connect(self._export_excel)
+        self.menu_tools.addAction(self.export_xlsx_act)
         self.btn_tools.setMenu(self.menu_tools)
         self.toolbar.addWidget(self.btn_tools)
 
@@ -687,8 +701,8 @@ QTableView::item:selected:hover {
         self._rebuild_model()
         self._on_lines_changed(self.lines_spin.value())
         if self.table.selectionModel():
-            self.table.selectionModel().selectionChanged.connect(lambda *_: self._update_auto_ds_act())
-        self._update_auto_ds_act()
+            self.table.selectionModel().selectionChanged.connect(self._on_table_selection_changed)
+        self._on_table_selection_changed()
 
     # ------------------------------------------------------------------
     def _setup_columns_menu(self) -> None:
@@ -753,6 +767,21 @@ QTableView::item:selected:hover {
         # Keep delegate up to date on column positions and options
         self.detail_delegate.set_test_method_col(tm_col)
         self.table.setItemDelegateForColumn(td_col, self.detail_delegate)
+        # Make icon-only columns compact while keeping icons prominent
+        try:
+            from PyQt6.QtWidgets import QHeaderView as _QHV
+            hdr = self.table.horizontalHeader()
+            ds_col = self._col_indices.get("ds")
+            link_col = self._col_indices.get("link")
+            icon_col_width = 36
+            if ds_col is not None:
+                hdr.setSectionResizeMode(ds_col, _QHV.ResizeMode.Fixed)
+                self.table.setColumnWidth(ds_col, icon_col_width)
+            if link_col is not None:
+                hdr.setSectionResizeMode(link_col, _QHV.ResizeMode.Fixed)
+                self.table.setColumnWidth(link_col, icon_col_width)
+        except Exception:
+            pass
         # Ensure combo is visible for 'Macro' rows
         self._sync_detail_editors()
         # Set reference column for natural sorting and skip AP from filter
@@ -767,15 +796,20 @@ QTableView::item:selected:hover {
         self._parts_state.clear()
         self._part_datasheets.clear()
         self._part_packages.clear()
+        self._part_numbers.clear()
         self._part_values.clear()
         self._tolerances.clear()
+        self._dirty_datasheets.clear()
         for r in self._rows_raw:
             # Use DB-provided value; may be None in future schema
             self._parts_state[r.part_id] = getattr(r, "active_passive", None)
             self._part_datasheets[r.part_id] = getattr(r, "datasheet_url", None)
             self._part_packages[r.part_id] = getattr(r, "package", None)
+            self._part_numbers[r.part_id] = getattr(r, "part_number", "")
             self._part_values[r.part_id] = getattr(r, "value", None)
             self._tolerances[r.part_id] = (getattr(r, "tol_p", None), getattr(r, "tol_n", None))
+            # Seed product link if available so the Link column shows after reload
+            self._part_product_links[r.part_id] = getattr(r, "product_url", None)
         # Overlay any saved test assignments from settings for visible parts
         self._load_test_assignments_from_settings()
 
@@ -835,6 +869,8 @@ QTableView::item:selected:hover {
         QTimer.singleShot(0, self._autosize_window_to_columns)
         QTimer.singleShot(0, self._install_datasheet_widgets)
         QTimer.singleShot(0, self._sync_detail_editors)
+        if self._complex_panel:
+            QTimer.singleShot(0, self._update_complex_panel_context)
 
     def _build_by_pn(self) -> None:
         from collections import defaultdict
@@ -876,6 +912,8 @@ QTableView::item:selected:hover {
                 editable = {
                     self._col_indices["test_method"],
                     self._col_indices["test_detail"],
+                    self._col_indices["desc"],
+                    self._col_indices["mfg"],
                     self._col_indices["package"],
                     self._col_indices["value"],
                     self._col_indices["tol_p"],
@@ -889,6 +927,8 @@ QTableView::item:selected:hover {
                     it.setData(mode_val, ModeRole)
                 if i == self._col_indices["ds"]:
                     it.setData(self._part_datasheets.get(part_id), DatasheetRole)
+                if i == self._col_indices["link"]:
+                    it.setData(self._part_product_links.get(part_id) or "", LinkUrlRole)
             self.model.appendRow(row_items)
 
     def _build_by_ref(self) -> None:
@@ -919,6 +959,8 @@ QTableView::item:selected:hover {
                 editable = {
                     self._col_indices["test_method"],
                     self._col_indices["test_detail"],
+                    self._col_indices["desc"],
+                    self._col_indices["mfg"],
                     self._col_indices["package"],
                     self._col_indices["value"],
                     self._col_indices["tol_p"],
@@ -928,10 +970,13 @@ QTableView::item:selected:hover {
                     flags &= ~Qt.ItemFlag.ItemIsEditable
                 it.setFlags(flags)
                 it.setData(r.part_id, PartIdRole)
+                it.setData(getattr(r, "bom_item_id", None), BOMItemIdRole)
                 if i == self._col_indices["ap"]:
                     it.setData(mode_val, ModeRole)
                 if i == self._col_indices["ds"]:
                     it.setData(self._part_datasheets.get(r.part_id), DatasheetRole)
+                if i == self._col_indices["link"]:
+                    it.setData(self._part_product_links.get(r.part_id) or "", LinkUrlRole)
             self.model.appendRow(items)
     def _detail_label_for(self, ta: dict) -> str:
         # Delegate to unified builder
@@ -958,6 +1003,10 @@ QTableView::item:selected:hover {
         if new_method != "Quick test (QT)":
             ta["qt_path"] = None
         self._refresh_rows_for_part(part_id)
+        if new_method == "Complex":
+            self._ensure_complex_panel_visible_for_part(part_id)
+        else:
+            self._update_complex_panel_context()
         # Ensure editors reflect Macro selection state
         self._sync_detail_editors()
         # Persist/stage according to Apply toggle
@@ -975,9 +1024,12 @@ QTableView::item:selected:hover {
                 "This would open the Macro selector (closed list) and save the chosen Macro for this PN. (Not implemented yet)."
             )
         elif method == "Complex":
-            self._show_stub_dialog(
-                "This would open the Complex linker (select complex from MDB) and link it to this PN. (Not implemented yet)."
-            )
+            if self._complex_panel:
+                self._ensure_complex_panel_visible_for_part(part_id)
+            else:
+                self._show_stub_dialog(
+                    "Complex Editor integration is disabled. Enable it in settings to link complexes."
+                )
         elif method == "Quick test (QT)":
             path, _ = QFileDialog.getOpenFileName(self, "Select Quick Test XML", "", "Quick Test XML (*.xml)")
             if path:
@@ -1004,7 +1056,7 @@ QTableView::item:selected:hover {
             self.save_act.setEnabled(True)
 
     def _sync_detail_editors(self) -> None:
-        # Open persistent combobox editor for rows where method == 'Macro'
+        # Do not auto-open editors; keep cells passive until user double-clicks
         model = self.table.model()  # proxy
         if model is None:
             return
@@ -1017,10 +1069,8 @@ QTableView::item:selected:hover {
             tm_idx = model.index(r, tm_col)
             method = model.data(tm_idx) or ""
             td_idx = model.index(r, td_col)
-            if method == "Macro":
-                self.table.openPersistentEditor(td_idx)
-            else:
-                self.table.closePersistentEditor(td_idx)
+            # Always keep closed; opening is controlled by QAbstractItemView triggers
+            self.table.closePersistentEditor(td_idx)
 
     # ------------------------------------------------------------------
     # Test assignment persistence using QSettings
@@ -1173,6 +1223,37 @@ QTableView::item:selected:hover {
             self._dirty_values[part_id] = value or None
             self.save_act.setEnabled(True)
 
+    def _persist_or_stage_description(self, part_id: int, value: Optional[str]) -> None:
+        if self.apply_act.isChecked():
+            try:
+                with app_state.get_session() as session:
+                    services.update_part_description(session, part_id, value or "")
+            except Exception as exc:
+                QMessageBox.warning(self, "Update failed", str(exc))
+                # Revert in UI from DB snapshot
+                self._fanout_part_field(part_id, "desc", None)
+                return
+            self._dirty_desc.pop(part_id, None)
+        else:
+            self._dirty_desc[part_id] = value or None
+            self.save_act.setEnabled(True)
+
+    def _persist_or_stage_manufacturer(self, part_id: int, value: Optional[str]) -> None:
+        if self.apply_act.isChecked():
+            try:
+                with app_state.get_session() as session:
+                    services.update_manufacturer_for_part_in_assembly(
+                        session, self._assembly_id, part_id, value or ""
+                    )
+            except Exception as exc:
+                QMessageBox.warning(self, "Update failed", str(exc))
+                # No reliable previous value to restore; leave UI as-is
+                return
+            self._dirty_mfg.pop(part_id, None)
+        else:
+            self._dirty_mfg[part_id] = value or None
+            self.save_act.setEnabled(True)
+
     def _persist_or_stage_tolerances(
         self, part_id: int, tol_p: Optional[str], tol_n: Optional[str]
     ) -> None:
@@ -1209,6 +1290,12 @@ QTableView::item:selected:hover {
             self._part_values[part_id] = text
             self._fanout_part_field(part_id, "value", text)
             self._persist_or_stage_value(part_id, text)
+        elif col == self._col_indices.get("desc"):
+            self._fanout_part_field(part_id, "desc", text)
+            self._persist_or_stage_description(part_id, text)
+        elif col == self._col_indices.get("mfg"):
+            self._fanout_part_field(part_id, "mfg", text)
+            self._persist_or_stage_manufacturer(part_id, text)
         elif col == self._col_indices.get("tol_p"):
             cur = self._tolerances.get(part_id, (None, None))
             new_pair = (text, cur[1])
@@ -1341,6 +1428,8 @@ QTableView::item:selected:hover {
                 if p:
                     self._part_datasheets[w.part_id] = p.datasheet_url
                     self._part_product_links[w.part_id] = getattr(p, "product_url", None)
+                    # Update description live if inferred/filled during auto-datasheet
+                    self._fanout_part_field(w.part_id, "desc", getattr(p, "description", None))
         # Clear loading state and refresh icons
         self._datasheet_loading -= {w.part_id for w in work}
         QTimer.singleShot(0, self._install_datasheet_widgets)
@@ -1352,9 +1441,67 @@ QTableView::item:selected:hover {
             self._locked_parts -= set(parts)
         self._rebuild_model()
 
+    def _on_table_selection_changed(self, *_args) -> None:
+        self._update_auto_ds_act()
+        self._update_complex_panel_context()
+
     def _update_auto_ds_act(self) -> None:
         sel = self.table.selectionModel()
         self.auto_ds_act.setEnabled(bool(sel and sel.selectedIndexes()))
+
+    def _selected_part_id(self) -> Optional[int]:
+        sel = self.table.selectionModel()
+        if not sel:
+            return None
+        for idx in sel.selectedIndexes():
+            part_id = idx.data(PartIdRole)
+            if isinstance(part_id, int):
+                return part_id
+        return None
+
+    def _part_number_for_part(self, part_id: int) -> str:
+        pn = self._part_numbers.get(part_id) or ""
+        if pn:
+            return pn
+        for row in self._rows_raw:
+            if getattr(row, 'part_id', None) == part_id:
+                pn = getattr(row, 'part_number', '') or ''
+                if pn:
+                    self._part_numbers[part_id] = pn
+                return pn
+        return ''
+
+    def _ensure_complex_panel_visible_for_part(self, part_id: int) -> None:
+        if not self._complex_panel:
+            return
+        pn = self._part_number_for_part(part_id)
+        self._complex_panel.set_context(part_id, pn)
+        self._complex_panel.setVisible(True)
+        if self._complex_splitter:
+            sizes = self._complex_splitter.sizes()
+            if len(sizes) == 2 and sizes[1] == 0:
+                total = sum(sizes) or self.width() or 1
+                self._complex_splitter.setSizes([max(total - 360, 320), 360])
+        self._complex_panel.search_edit.setFocus()
+
+    def _update_complex_panel_context(self) -> None:
+        if not self._complex_panel:
+            return
+        part_id = self._selected_part_id()
+        if part_id is None:
+            self._complex_panel.set_context(None, None)
+            self._complex_panel.hide()
+            return
+        method = self._test_assignments.get(part_id, {}).get('method', '')
+        if method != 'Complex':
+            self._complex_panel.set_context(None, None)
+            self._complex_panel.hide()
+            return
+        self._ensure_complex_panel_visible_for_part(part_id)
+
+    def _on_complex_link_updated(self, part_id: int) -> None:
+        self._refresh_rows_for_part(part_id)
+        self._ensure_complex_panel_visible_for_part(part_id)
 
     def _on_apply_toggled(self, checked: bool) -> None:
         if checked and (
@@ -1362,6 +1509,7 @@ QTableView::item:selected:hover {
             or self._dirty_packages
             or self._dirty_values
             or self._dirty_tolerances
+            or self._dirty_datasheets
         ):
             self._save_changes()
 
@@ -1378,6 +1526,10 @@ QTableView::item:selected:hover {
             and not self._dirty_values
             and not self._dirty_tests
             and not self._dirty_tolerances
+            and not getattr(self, "_dirty_desc", {})
+            and not getattr(self, "_dirty_mfg", {})
+            and not getattr(self, "_dirty_links", {})
+            and not getattr(self, "_dirty_datasheets", {})
         ):
             return
         failures = []
@@ -1430,6 +1582,24 @@ QTableView::item:selected:hover {
             else:
                 self._tolerances[part_id] = (tp, tn)
                 del self._dirty_tolerances[part_id]
+        # Persist edited descriptions
+        for part_id, desc in list(getattr(self, "_dirty_desc", {}).items()):
+            try:
+                with app_state.get_session() as session:
+                    services.update_part_description(session, part_id, desc or "")
+            except Exception as exc:
+                failures.append(str(exc))
+            else:
+                del self._dirty_desc[part_id]
+        # Persist edited manufacturers (apply to all BOM items for this part in this assembly)
+        for part_id, mfg in list(getattr(self, "_dirty_mfg", {}).items()):
+            try:
+                with app_state.get_session() as session:
+                    services.update_manufacturer_for_part_in_assembly(session, self._assembly_id, part_id, mfg or "")
+            except Exception as exc:
+                failures.append(str(exc))
+            else:
+                del self._dirty_mfg[part_id]
         # Persist test assignments via settings
         for part_id in list(self._dirty_tests):
             try:
@@ -1448,6 +1618,19 @@ QTableView::item:selected:hover {
             else:
                 self._part_product_links[part_id] = link
                 del self._dirty_links[part_id]
+        # Persist datasheet add/removes
+        for part_id, ds in list(self._dirty_datasheets.items()):
+            try:
+                with app_state.get_session() as session:
+                    if ds:
+                        services.update_part_datasheet_url(session, part_id, ds)
+                    else:
+                        services.remove_part_datasheet(session, part_id, delete_file=True)
+            except Exception as exc:
+                failures.append(str(exc))
+            else:
+                self._part_datasheets[part_id] = ds or None
+                del self._dirty_datasheets[part_id]
         if failures:
             QMessageBox.warning(self, "Save failed", "; ".join(failures))
         else:
@@ -1458,7 +1641,10 @@ QTableView::item:selected:hover {
             or bool(self._dirty_values)
             or bool(self._dirty_tolerances)
             or bool(self._dirty_tests)
-            or bool(self._dirty_links)
+            or bool(getattr(self, "_dirty_desc", {}))
+            or bool(getattr(self, "_dirty_mfg", {}))
+            or bool(getattr(self, "_dirty_links", {}))
+            or bool(getattr(self, "_dirty_datasheets", {}))
         )
 
     def _on_view_mode_changed(self, mode: str, checked: bool) -> None:
@@ -1532,10 +1718,13 @@ QTableView::item:selected:hover {
             except ValueError as exc:
                 QMessageBox.warning(self, "Cannot export", str(exc))
                 return
+        # Build default filename with Customer and Project
+        base = self._default_export_basename()
+        default_name = f"{base} - BOM to VIVA.txt" if base else f"BOM_to_VIVA_{self._assembly_id}.txt"
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Save BOM to VIVA",
-            f"BOM_to_VIVA_{self._assembly_id}.txt",
+            default_name,
             "Text files (*.txt)",
         )
         if not path:
@@ -1547,6 +1736,86 @@ QTableView::item:selected:hover {
             "Export complete",
             f"Exported {len(rows)} groups / {total_refs} references to {path}",
         )
+
+    def _export_excel(self) -> None:  # pragma: no cover - UI glue
+        # Save visible table to an .xlsx, preserving 'Link' hyperlinks; skip 'Datasheet' column
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+
+        base = self._default_export_basename()
+        default_name = f"{base} - BOM.xlsx" if base else f"BOM_{self._assembly_id}.xlsx"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export BOM to Excel", default_name, "Excel Files (*.xlsx)"
+        )
+        if not path:
+            return
+        proxy = self.table.model()
+        if proxy is None:
+            return
+        ds_col = self._col_indices.get("ds")
+        link_col = self._col_indices.get("link")
+        # Build list of visible columns (skip 'Datasheet')
+        export_cols: list[int] = []
+        headers: list[str] = []
+        for c in range(self.model.columnCount()):
+            if self.table.isColumnHidden(c):
+                continue
+            if ds_col is not None and c == ds_col:
+                continue
+            export_cols.append(c)
+            hi = self.model.horizontalHeaderItem(c)
+            headers.append(hi.text() if hi else str(c))
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "BOM"
+        ws.append(headers)
+        # Export visible rows in proxy order
+        rows = proxy.rowCount()
+        for r in range(rows):
+            # First append values to keep shapes; then add hyperlinks for link column
+            values = []
+            for c in export_cols:
+                idx = proxy.index(r, c)
+                if link_col is not None and c == link_col:
+                    link_val = proxy.data(idx, LinkUrlRole)
+                    values.append(str(link_val or ""))
+                else:
+                    values.append(str(proxy.data(idx) or ""))
+            ws.append(values)
+            # Set hyperlink if link column included
+            if link_col is not None and link_col in export_cols:
+                idx = export_cols.index(link_col)
+                url = values[idx]
+                if isinstance(url, str) and url.lower().startswith(("http://", "https://")):
+                    cell = ws.cell(row=ws.max_row, column=idx + 1)
+                    cell.hyperlink = url
+                    cell.font = Font(color="0563C1", underline="single")
+        try:
+            wb.save(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+        QMessageBox.information(self, "Export", f"Saved Excel to {path}")
+
+    def _default_export_basename(self) -> str:
+        """Return 'Customer - Project' for current assembly, sanitized for filenames."""
+        import re
+        try:
+            from ..models import Assembly, Project, Customer
+            with app_state.get_session() as session:
+                asm = session.get(Assembly, self._assembly_id)
+                if not asm:
+                    return ""
+                proj = session.get(Project, asm.project_id) if getattr(asm, "project_id", None) else None
+                cust = session.get(Customer, proj.customer_id) if proj and getattr(proj, "customer_id", None) else None
+                cust_name = (cust.name if cust else "").strip()
+                proj_title = (proj.title if proj else "").strip() or (getattr(proj, "name", "") or "").strip()
+                base = " - ".join([p for p in (cust_name, proj_title) if p])
+                # sanitize for filenames
+                base = re.sub(r"[\\/:*?\"<>|]+", "_", base)[:120]
+                return base
+        except Exception:
+            return ""
 
     def closeEvent(self, event) -> None:  # pragma: no cover - UI glue
         # Persist column settings per mode
@@ -1606,6 +1875,17 @@ QTableView::item:selected:hover {
         elif col == self._col_indices.get("test_detail"):
             if value and value not in self._function_options:
                 return
+            # Ensure Test Method is 'Macro' when pasting a Macro kind
+            tm_col = self._col_indices.get("test_method")
+            if tm_col is not None:
+                for idx in idxs:
+                    part_id = model.data(idx, PartIdRole)
+                    if part_id is None:
+                        continue
+                    cur_method = str(model.data(model.index(idx.row(), tm_col)) or "")
+                    if cur_method != "Macro":
+                        model.setData(model.index(idx.row(), tm_col), "Macro")
+                        self._on_method_changed(part_id, "Macro")
         elif col == self._col_indices.get("ap"):
             allowed = {"", "active", "passive"}
             if value not in allowed:
@@ -1617,6 +1897,8 @@ QTableView::item:selected:hover {
                 self._on_method_changed(part_id, value)
             elif col == self._col_indices.get("test_detail") and part_id is not None:
                 self._on_detail_changed(part_id, value or None)
+            elif col == self._col_indices.get("ap") and part_id is not None:
+                self._on_value_changed(part_id, (value or None) if value in ("active", "passive") else None)
 
     def _on_model_changed(self, index: QModelIndex, old, new) -> None:
         if self._updating:
@@ -1649,6 +1931,7 @@ QTableView::item:selected:hover {
                     else:
                         self._dirty_links[part_id] = url or None
                         self.save_act.setEnabled(True)
+                    QTimer.singleShot(0, self._install_datasheet_widgets)
         except Exception:
             pass
 
@@ -1692,6 +1975,132 @@ QTableView::item:selected:hover {
             except Exception:
                 pass
 
+    def _delete_selected_rows(self) -> None:  # pragma: no cover - UI glue
+        proxy = self.table.model()
+        sel = self.table.selectionModel()
+        if proxy is None or sel is None or not sel.selectedIndexes():
+            return
+        rows = sorted({i.row() for i in sel.selectedIndexes()})
+        bom_ids: set[int] = set()
+        part_ids: set[int] = set()
+        for r in rows:
+            # Try to find a BOM item id on any column in this row
+            bid = None
+            pid = None
+            for c in range(proxy.columnCount()):
+                idx = proxy.index(r, c)
+                if bid is None:
+                    b = proxy.data(idx, BOMItemIdRole)
+                    if isinstance(b, int):
+                        bid = b
+                if pid is None:
+                    p = proxy.data(idx, PartIdRole)
+                    if isinstance(p, int):
+                        pid = p
+                if bid is not None and pid is not None:
+                    break
+            if bid is not None:
+                bom_ids.add(int(bid))
+            elif pid is not None:
+                part_ids.add(int(pid))
+        if not bom_ids and not part_ids:
+            return
+        # Confirm
+        total = len(bom_ids) + len(part_ids)
+        msg = (
+            f"Delete {total} row(s)?\n\n"
+            + ("Grouped rows (by PN) will remove all references for that part in this assembly." if part_ids else "")
+        )
+        res = QMessageBox.question(self, "Delete", msg)
+        if res != QMessageBox.StandardButton.Yes:
+            return
+        # Perform deletion
+        try:
+            with app_state.get_session() as session:
+                if bom_ids:
+                    services.delete_bom_items(session, list(bom_ids))
+                for pid in part_ids:
+                    services.delete_bom_items_for_part(session, self._assembly_id, pid)
+        except Exception as exc:
+            QMessageBox.warning(self, "Delete failed", str(exc))
+            return
+        # Reload data and model
+        self._load_data()
+        self._rebuild_model()
+
+    def _visible_columns(self) -> list[int]:
+        model = self.table.model()
+        if model is None:
+            return []
+        cols = []
+        for c in range(model.columnCount()):
+            try:
+                if not self.table.isColumnHidden(c):
+                    cols.append(c)
+            except Exception:
+                cols.append(c)
+        return cols
+
+    def _is_full_row_selection(self) -> bool:
+        proxy = self.table.model()
+        sel = self.table.selectionModel()
+        if proxy is None or sel is None:
+            return False
+        idxs = sel.selectedIndexes()
+        if not idxs:
+            return False
+        vis_cols = set(self._visible_columns())
+        # Map row -> set of selected visible columns
+        rows = sorted({i.row() for i in idxs})
+        for r in rows:
+            cols_sel = {i.column() for i in idxs if i.row() == r and i.column() in vis_cols}
+            if cols_sel != vis_cols:
+                return False
+        return True
+
+    def _clear_selected_cells(self) -> None:
+        proxy = self.table.model()
+        sel = self.table.selectionModel()
+        if proxy is None or sel is None:
+            return
+        idxs = sel.selectedIndexes()
+        if not idxs:
+            cur = self.table.currentIndex()
+            if cur.isValid():
+                idxs = [cur]
+        if not idxs:
+            return
+        tm_col = self._col_indices.get("test_method")
+        td_col = self._col_indices.get("test_detail")
+        ap_col = self._col_indices.get("ap")
+        for idx in idxs:
+            try:
+                # Only clear editable cells
+                if not (proxy.flags(idx) & Qt.ItemFlag.ItemIsEditable):
+                    continue
+            except Exception:
+                pass
+            col = idx.column()
+            part_id = proxy.data(idx, PartIdRole)
+            # Apply column-specific hooks for consistency with paste handler
+            proxy.setData(idx, "")
+            if part_id is None:
+                continue
+            if tm_col is not None and col == tm_col:
+                self._on_method_changed(part_id, "")
+            elif td_col is not None and col == td_col:
+                self._on_detail_changed(part_id, None)
+            elif ap_col is not None and col == ap_col:
+                self._on_value_changed(part_id, None)
+
+    def _delete_or_clear_selection(self) -> None:
+        # If the user has selected entire rows (all visible columns), confirm row delete;
+        # otherwise treat Delete as clearing the selected cell values only.
+        if self._is_full_row_selection():
+            self._delete_selected_rows()
+        else:
+            self._clear_selected_cells()
+
     # ------------------------------------------------------------------
     def _load_function_options(self) -> list[str]:
         """Load function options from data/function_list.txt.
@@ -1711,194 +2120,173 @@ QTableView::item:selected:hover {
                 if p.exists():
                     lines = p.read_text(encoding="utf-8").splitlines()
                     items = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
-                    return items
+                    if items:
+                        return items
             except Exception:
                 continue
-        return []
+        # Fallback: derive options from prefix_macros (unique macro names)
+        try:
+            from ..logic.prefix_macros import load_prefix_macros as _lpm
+            macros = sorted({macro for _pref, macro in (_lpm() or [])})
+            return macros
+        except Exception:
+            return []
 
     # ------------------------------------------------------------------
-    def _icon_for_pdf(self) -> QIcon:
-        # Try bundled icons
-        try:
-            from pathlib import Path
-            p = Path(__file__).resolve().parent / "icons" / "pdf.png"
-            if p.exists():
-                return QIcon(str(p))
-        except Exception:
-            pass
-        # Fallback to a generic file icon
-        return self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+    @staticmethod
+    def _configure_icon_button(button: QToolButton, color: str, enabled: bool, disabled_color: str | None = None) -> None:
+        """Apply consistent styling to inline icon buttons."""
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setEnabled(enabled)
+        disabled_color = disabled_color or color
+        button.setStyleSheet(
+            "QToolButton { color: %s; padding: 0px; border: none; } "
+            "QToolButton:disabled { color: %s; opacity: 0.6; }" % (color, disabled_color)
+        )
 
-    def _icon_for_plus(self) -> QIcon:
+    @staticmethod
+    def _configure_icon_button(button: QToolButton, color: str, enabled: bool) -> None:
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ArrowCursor)
+        button.setEnabled(enabled)
+        button.setStyleSheet(
+            "QToolButton { color: %s; padding: 0px; border: none; }"
+            " QToolButton:disabled { color: %s; opacity: 0.5; }" % (color, color)
+        )
+
+    def _load_icon(self, name: str, fallback: QStyle.StandardPixmap) -> QIcon:
         try:
-            from pathlib import Path
-            p = Path(__file__).resolve().parent / "icons" / "plus.png"
+            p = Path(__file__).resolve().parent / "icons" / name
             if p.exists():
-                return QIcon(str(p))
+                icon = QIcon(str(p))
+                if not icon.isNull():
+                    return icon
         except Exception:
             pass
-        return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
+        return self.style().standardIcon(fallback)
+
+    def _icon_pdf_open(self) -> QIcon:
+        return self._load_icon("pdf_green.svg", QStyle.StandardPixmap.SP_FileIcon)
+
+    def _icon_pdf_add(self) -> QIcon:
+        return self._load_icon("pdf_plus.svg", QStyle.StandardPixmap.SP_DialogOpenButton)
+
+    def _icon_pdf_error(self) -> QIcon:
+        return self._load_icon("pdf_x.svg", QStyle.StandardPixmap.SP_MessageBoxCritical)
 
     def _icon_for_loading(self) -> QIcon:
-        try:
-            from pathlib import Path
-            p = Path(__file__).resolve().parent / "icons" / "loading.png"
-            if p.exists():
-                return QIcon(str(p))
-        except Exception:
-            pass
-        return self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        return self._load_icon("pdf_loading.svg", QStyle.StandardPixmap.SP_BrowserReload)
 
-    def _icon_for_attached(self) -> QIcon:
-        try:
-            from pathlib import Path
-            p = Path(__file__).resolve().parent / "icons" / "check_green.png"
-            if p.exists():
-                return QIcon(str(p))
-        except Exception:
-            pass
-        return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+    def _icon_link_open(self) -> QIcon:
+        return self._load_icon("link_green.svg", QStyle.StandardPixmap.SP_DialogOpenButton)
 
-    def _icon_for_notfound(self) -> QIcon:
-        return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogCancelButton)
-
-    def _icon_for_link(self) -> QIcon:
-        # Prefer a generic 'open' icon
-        return self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton)
+    def _icon_link_add(self) -> QIcon:
+        return self._load_icon("link_plus.svg", QStyle.StandardPixmap.SP_DialogOpenButton)
 
     def _install_datasheet_widgets(self) -> None:
-        # Rebuild buttons for Datasheet column
+        # Rebuild buttons for Datasheet and Link columns without showing raw text
         ds_col = self._col_indices.get("ds")
         link_col = self._col_indices.get("link")
         if ds_col is None and link_col is None:
             return
-        for r in range(self.model.rowCount()):
-            if ds_col is not None:
-                src_idx = self.model.index(r, ds_col)
-            # find part_id on this row
-            part_id = None
-            for c in range(self.model.columnCount()):
-                pid = self.model.data(self.model.index(r, c), PartIdRole)
-                if pid is not None:
-                    part_id = pid
-                    break
-            if part_id is None:
-                continue
-            path = self._part_datasheets.get(part_id)
-            btn = QToolButton(self.table)
-            if part_id in self._datasheet_loading:
-                btn.setIcon(self._icon_for_loading())
-                btn.setEnabled(False)
-                btn.setToolTip("Searching datasheet...")
-            elif path and Path(path).exists():
-                btn.setIcon(self._icon_for_attached())
-                btn.setToolTip("Open datasheet")
-                def _open_pdf(_checked: bool = False, p: str = path):
-                    t0 = time.perf_counter()
-                    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                    try:
-                        size = Path(p).stat().st_size if Path(p).exists() else -1
-                    except Exception:
-                        size = -1
-                    if PDF_OPEN_DEBUG:
-                        logging.info(
-                            "Open-PDF[%s]: start part_path=%s size=%s bytes viewer=%s",
-                            ts,
-                            p,
-                            size,
-                            PDF_VIEWER,
-                        )
-                    # Resolve a fast local path (may copy once into cache)
-                    t1 = time.perf_counter()
-                    try:
-                        local_path = str(get_local_open_path(Path(p)))
-                    except Exception:
-                        local_path = p
-                    t2 = time.perf_counter()
-                    if PDF_OPEN_DEBUG:
-                        logging.info(
-                            "Open-PDF: resolved local path in %.1f ms -> %s",
-                            (t2 - t1) * 1000.0,
-                            local_path,
-                        )
+        self._updating = True
+        try:
+            for r in range(self.model.rowCount()):
+                ds_idx = self.model.index(r, ds_col) if ds_col is not None else None
+                link_idx = self.model.index(r, link_col) if link_col is not None else None
+                if ds_idx is not None:
+                    self.model.setData(ds_idx, "", Qt.ItemDataRole.DisplayRole)
+                if link_idx is not None:
+                    self.model.setData(link_idx, "", Qt.ItemDataRole.DisplayRole)
 
-                    # Choose open strategy
-                    opened = False
-                    open_err = None
-                    t3 = time.perf_counter()
-                    try:
-                        if PDF_VIEWER == "chrome":
-                            exe = (
-                                PDF_VIEWER_PATH
-                                or shutil.which("chrome")
-                                or shutil.which("chrome.exe")
-                                or r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
-                            )
-                            if exe and os.path.exists(exe):
-                                # Use file:// URL form for Chrome
-                                url = QUrl.fromLocalFile(local_path).toString()
-                                subprocess.Popen([exe, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                opened = True
-                            else:
-                                open_err = f"Chrome not found (PDF_VIEWER_PATH={PDF_VIEWER_PATH})"
-                        elif PDF_VIEWER == "edge":
-                            exe = (
-                                PDF_VIEWER_PATH
-                                or shutil.which("msedge")
-                                or shutil.which("msedge.exe")
-                                or r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
-                            )
-                            if exe and os.path.exists(exe):
-                                url = QUrl.fromLocalFile(local_path).toString()
-                                subprocess.Popen([exe, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                opened = True
-                            else:
-                                open_err = f"Edge not found (PDF_VIEWER_PATH={PDF_VIEWER_PATH})"
-                        else:
-                            # system default
-                            QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
-                            opened = True
-                    except Exception as e:
-                        open_err = str(e)
-                    t4 = time.perf_counter()
-                    if PDF_OPEN_DEBUG:
-                        logging.info(
-                            "Open-PDF: open call returned in %.1f ms (ok=%s)%s",
-                            (t4 - t3) * 1000.0,
-                            opened,
-                            f" err={open_err}" if open_err else "",
-                        )
-                        logging.info("Open-PDF: total time %.1f ms", (t4 - t0) * 1000.0)
-                btn.clicked.connect(_open_pdf)
-            else:
-                # No PDF attached: show attach button (or not-found icon if search already failed)
-                if part_id in self._datasheet_failed:
-                    btn.setToolTip("Search attempted; no datasheet found")
-                    btn.setIcon(self._icon_for_notfound())
+                part_id = None
+                for c in range(self.model.columnCount()):
+                    pid = self.model.data(self.model.index(r, c), PartIdRole)
+                    if pid is not None:
+                        part_id = pid
+                        break
+                if part_id is None:
+                    continue
+
+                path = self._part_datasheets.get(part_id)
+                path_value = path or ""
+                path_exists = bool(path_value) and Path(path_value).exists()
+                btn = QToolButton(self.table)
+                try:
+                    from PyQt6.QtCore import QSize as _QSize
+                    btn.setAutoRaise(True)
+                    btn.setIconSize(_QSize(24, 24))
+                    btn.setFixedSize(30, 30)
+                except Exception:
+                    pass
+
+                staged_flag = part_id in self._dirty_datasheets
+                staged_value = self._dirty_datasheets.get(part_id)
+                if part_id in self._datasheet_loading:
+                    btn.setIcon(self._icon_for_loading())
+                    self._configure_icon_button(btn, "#1F6FEB", False)
+                    btn.setToolTip("Searching datasheet...")
+                elif staged_flag and staged_value is None:
+                    btn.setIcon(self._icon_pdf_add())
+                    self._configure_icon_button(btn, "#1F6FEB", True)
+                    btn.setToolTip("Datasheet will be removed on Save. Click to attach a replacement.")
+                    btn.clicked.connect(lambda _=False, pid=part_id: self._open_attach_dialog(pid))
                 else:
-                    if path and not Path(path).exists():
-                        btn.setToolTip("Stored path not found. Re-attach?")
+                    effective_path = path if path_exists else (staged_value if staged_flag else path)
+                    if effective_path and Path(effective_path).exists():
+                        btn.setIcon(self._icon_pdf_open())
+                        self._configure_icon_button(btn, "#28A745", True)
+                        tip = "Open datasheet"
+                        if staged_flag and staged_value:
+                            tip += " (pending save)"
+                        btn.setToolTip(tip)
+                        btn.clicked.connect(lambda _=False, p=effective_path: self._open_pdf_path(p))
                     else:
-                        btn.setToolTip("Attach datasheet")
-                    btn.setIcon(self._icon_for_plus())
-                btn.clicked.connect(lambda _=False, pid=part_id: self._open_attach_dialog(pid))
-            if ds_col is not None:
-                proxy_idx = self.proxy.mapFromSource(self.model.index(r, ds_col))
-                self.table.setIndexWidget(proxy_idx, btn)
+                        if path_value.strip() and not path_exists:
+                            btn.setIcon(self._icon_pdf_error())
+                            self._configure_icon_button(btn, "#DC2626", True)
+                            btn.setToolTip("Stored path not found. Click to attach a new datasheet.")
+                        elif part_id in self._datasheet_failed:
+                            btn.setIcon(self._icon_pdf_error())
+                            self._configure_icon_button(btn, "#DC2626", True)
+                            btn.setToolTip("Search attempted; no datasheet found. Click to attach manually.")
+                        else:
+                            btn.setIcon(self._icon_pdf_add())
+                            self._configure_icon_button(btn, "#1F6FEB", True)
+                            btn.setToolTip("Attach datasheet")
+                        btn.clicked.connect(lambda _=False, pid=part_id: self._open_attach_dialog(pid))
 
-            # Install product link button if column exists
-            if link_col is not None:
-                link_btn = QToolButton(self.table)
-                link = self._part_product_links.get(part_id)
-                if link:
-                    link_btn.setIcon(self._icon_for_link())
-                    link_btn.setToolTip("Open product page")
-                    link_btn.clicked.connect(lambda _=False, u=link: QDesktopServices.openUrl(QUrl.fromUserInput(u)))
-                else:
-                    link_btn.setEnabled(False)
-                    link_btn.setToolTip("No product link")
-                proxy_link_idx = self.proxy.mapFromSource(self.model.index(r, link_col))
-                self.table.setIndexWidget(proxy_link_idx, link_btn)
+                if ds_idx is not None:
+                    self.model.setData(ds_idx, self._part_datasheets.get(part_id), DatasheetRole)
+                    proxy_idx = self.proxy.mapFromSource(ds_idx)
+                    self.table.setIndexWidget(proxy_idx, btn)
+
+                if link_idx is not None:
+                    link_btn = QToolButton(self.table)
+                    try:
+                        from PyQt6.QtCore import QSize as _QSize
+                        link_btn.setAutoRaise(True)
+                        link_btn.setIconSize(_QSize(24, 24))
+                        link_btn.setFixedSize(30, 30)
+                    except Exception:
+                        pass
+                    link = self._dirty_links.get(part_id, self._part_product_links.get(part_id))
+                    link_effective = link or ""
+                    self.model.setData(link_idx, link_effective, LinkUrlRole)
+                    if link:
+                        link_btn.setIcon(self._icon_link_open())
+                        self._configure_icon_button(link_btn, "#28A745", True)
+                        link_btn.setToolTip("Open product link")
+                        link_btn.clicked.connect(lambda _=False, u=link_effective: QDesktopServices.openUrl(QUrl.fromUserInput(u)))
+                    else:
+                        link_btn.setIcon(self._icon_link_add())
+                        self._configure_icon_button(link_btn, "#1F6FEB", True)
+                        link_btn.setToolTip("Set product link")
+                        link_btn.clicked.connect(lambda _=False, pid=part_id: self._prompt_link_entry(pid))
+                    proxy_link_idx = self.proxy.mapFromSource(link_idx)
+                    self.table.setIndexWidget(proxy_link_idx, link_btn)
+        finally:
+            self._updating = False
 
     def _open_attach_dialog(self, part_id: int) -> None:
         from .datasheet_attach_dialog import DatasheetAttachDialog
@@ -1907,22 +2295,31 @@ QTableView::item:selected:hover {
         dlg.exec()
 
     def _on_datasheet_attached(self, part_id: int, canonical: str) -> None:
-        # Update mapping and refresh buttons for affected rows
-        self._part_datasheets[part_id] = canonical
+        # Respect Apply toggle: stage or persist
         self._datasheet_failed.discard(part_id)
-        self._part_manual_links.pop(part_id, None)
-        ds_col = self._col_indices.get("ds")
-        link_col = self._col_indices.get("link")
-        if ds_col is not None:
-            for r in range(self.model.rowCount()):
-                for c in range(self.model.columnCount()):
-                    if self.model.data(self.model.index(r, c), PartIdRole) == part_id:
-                        self.model.setData(self.model.index(r, ds_col), canonical)
-                        if link_col is not None:
-                            link = self._part_product_links.get(part_id)
-                            if link:
-                                self.model.setData(self.model.index(r, link_col), link)
-                        break
+        if self.apply_act.isChecked():
+            try:
+                with app_state.get_session() as session:
+                    services.update_part_datasheet_url(session, part_id, canonical)
+            except Exception as exc:
+                QMessageBox.warning(self, "Attach failed", str(exc))
+                return
+            self._part_datasheets[part_id] = canonical
+            self._dirty_datasheets.pop(part_id, None)
+        else:
+            self._part_datasheets[part_id] = canonical
+            self._dirty_datasheets[part_id] = canonical
+            self.save_act.setEnabled(True)
+        # Update UI labels and link column from DB snapshot (best-effort)
+        try:
+            from ..models import Part
+            with app_state.get_session() as session:
+                p = session.get(Part, part_id)
+                if p:
+                    self._fanout_part_field(part_id, "desc", getattr(p, "description", None))
+                    self._part_product_links[part_id] = getattr(p, "product_url", None)
+        except Exception:
+            pass
         self._install_datasheet_widgets()
 
     def _on_datasheet_failed(self, part_id: int) -> None:
@@ -1948,6 +2345,96 @@ QTableView::item:selected:hover {
                         self.model.setData(self.model.index(r, link_col), url)
                         break
         self._install_datasheet_widgets()
+
+    def _open_pdf_path(self, path: str) -> None:
+        """Open a datasheet path using the configured viewer."""
+        t0 = time.perf_counter()
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        try:
+            size = Path(path).stat().st_size if Path(path).exists() else -1
+        except Exception:
+            size = -1
+        if PDF_OPEN_DEBUG:
+            logging.info(
+                "Open-PDF[%s]: start part_path=%s size=%s bytes viewer=%s",
+                ts,
+                path,
+                size,
+                PDF_VIEWER,
+            )
+        t1 = time.perf_counter()
+        try:
+            local_path = str(get_local_open_path(Path(path)))
+        except Exception:
+            local_path = path
+        t2 = time.perf_counter()
+        if PDF_OPEN_DEBUG:
+            logging.info(
+                "Open-PDF: resolved local path in %.1f ms -> %s",
+                (t2 - t1) * 1000.0,
+                local_path,
+            )
+
+        opened = False
+        open_err: str | None = None
+        t3 = time.perf_counter()
+        try:
+            if PDF_VIEWER == "chrome":
+                exe = (
+                    PDF_VIEWER_PATH
+                    or shutil.which("chrome")
+                    or shutil.which("chrome.exe")
+                    or r"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+                )
+                if exe and os.path.exists(exe):
+                    url = QUrl.fromLocalFile(local_path).toString()
+                    subprocess.Popen([exe, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    opened = True
+                else:
+                    open_err = f"Chrome not found (PDF_VIEWER_PATH={PDF_VIEWER_PATH})"
+            elif PDF_VIEWER == "edge":
+                exe = (
+                    PDF_VIEWER_PATH
+                    or shutil.which("msedge")
+                    or shutil.which("msedge.exe")
+                    or r"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+                )
+                if exe and os.path.exists(exe):
+                    url = QUrl.fromLocalFile(local_path).toString()
+                    subprocess.Popen([exe, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    opened = True
+                else:
+                    open_err = f"Edge not found (PDF_VIEWER_PATH={PDF_VIEWER_PATH})"
+            else:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(local_path))
+                opened = True
+        except Exception as e:  # pragma: no cover - environment dependent
+            open_err = str(e)
+        t4 = time.perf_counter()
+        if PDF_OPEN_DEBUG:
+            logging.info(
+                "Open-PDF: open call returned in %.1f ms (ok=%s)%s",
+                (t4 - t3) * 1000.0,
+                opened,
+                f" err={open_err}" if open_err else "",
+            )
+            logging.info("Open-PDF: total time %.1f ms", (t4 - t0) * 1000.0)
+
+    def _prompt_link_entry(self, part_id: int) -> None:
+        current = self._part_product_links.get(part_id) or ""
+        text, ok = QInputDialog.getText(self, "Set Product Link", "Enter product URL:", text=current)
+        if not ok:
+            return
+        text = (text or "").strip()
+        link_col = self._col_indices.get("link")
+        if link_col is None:
+            return
+        for row in range(self.model.rowCount()):
+            idx = self.model.index(row, link_col)
+            if self.model.data(idx, PartIdRole) == part_id:
+                self.model.setData(idx, text)
+                break
+        QTimer.singleShot(0, self._install_datasheet_widgets)
 
     def _remove_selected_datasheets(self) -> None:
         proxy = self.table.model()
@@ -1981,19 +2468,25 @@ QTableView::item:selected:hover {
         res = QMessageBox.question(self, "Remove Datasheet", msg)
         if res != QMessageBox.StandardButton.Yes:
             return
-        # Perform removal
-        from . import state as app_state
-        removed_any = False
-        with app_state.get_session() as session:
+        if self.apply_act.isChecked():
+            removed_any = False
+            with app_state.get_session() as session:
+                for pid in target_pids:
+                    try:
+                        services.remove_part_datasheet(session, pid, delete_file=True)
+                        self._part_datasheets[pid] = None
+                        self._dirty_datasheets.pop(pid, None)
+                        removed_any = True
+                    except Exception as exc:
+                        QMessageBox.warning(self, "Remove failed", str(exc))
+            if removed_any:
+                self._install_datasheet_widgets()
+        else:
+            # Stage removal
             for pid in target_pids:
-                try:
-                    services.remove_part_datasheet(session, pid, delete_file=True)
-                    self._part_datasheets[pid] = None
-                    removed_any = True
-                except Exception as exc:
-                    QMessageBox.warning(self, "Remove failed", str(exc))
-        if removed_any:
-            # Refresh buttons for affected rows
+                self._dirty_datasheets[pid] = None
+                self._part_datasheets[pid] = None
+            self.save_act.setEnabled(True)
             self._install_datasheet_widgets()
 
 

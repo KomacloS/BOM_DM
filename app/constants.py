@@ -1,10 +1,11 @@
 BOM_TEMPLATE_HEADERS = [
     "PN",
     "Reference",
-    "Qty",
+    "Description",
     "Manufacturer",
     "Active/Passive",
     "Function",
+    "Value",
     "Tolerance P",
     "Tolerance N",
     "Price",

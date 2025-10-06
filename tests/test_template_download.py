@@ -26,6 +26,6 @@ def test_bom_template_download():
         r = client.get('/bom/template')
         assert r.status_code == 200
         header = r.text.splitlines()[0]
-        assert header == 'PN,Reference,Qty,Manufacturer,Active/Passive,Function,Tolerance P,Tolerance N,Price,Currency,Datasheet,Notes'
+        assert header == 'PN,Reference,Description,Manufacturer,Active/Passive,Function,Value,Tolerance P,Tolerance N,Price,Currency,Datasheet,Notes'
 
 

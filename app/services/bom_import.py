@@ -6,6 +6,7 @@ import csv
 import io
 import re
 import shutil
+import logging
 from decimal import Decimal
 from pathlib import Path
 from typing import List
@@ -15,6 +16,13 @@ from sqlmodel import Session, select
 from sqlalchemy.exc import IntegrityError
 
 from ..models import Assembly, BOMItem, Part, PartType
+from ..config import get_complex_editor_settings
+from ..domain.complex_linker import auto_link_by_pn
+from ..integration.ce_bridge_client import CENetworkError
+from ..integration.ce_bridge_manager import CEBridgeError, ensure_ce_bridge_ready
+
+
+logger = logging.getLogger(__name__)
 
 
 class ImportReport(BaseModel):
@@ -207,6 +215,16 @@ def _cache_datasheet_for_pn(pn: str, url_or_path: str) -> str | None:
 
 def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
     errors: List[str] = []
+    ce_settings = get_complex_editor_settings()
+    bridge_cfg = ce_settings.get('bridge', {}) if isinstance(ce_settings, dict) else {}
+    auto_link_enabled = bool(bridge_cfg.get('enabled')) if isinstance(bridge_cfg, dict) else False
+    if auto_link_enabled:
+        try:
+            ensure_ce_bridge_ready()
+        except CEBridgeError as exc:
+            logger.debug('Complex Editor bridge unavailable before import auto-link: %s', exc)
+            auto_link_enabled = False
+    attempted_links: set[int] = set()
     try:
         headers, raw_rows = _iter_rows(data)
         col_map = validate_headers(headers)
@@ -271,6 +289,14 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
                 errors.append(f"Row {i}: duplicate part_number {pn}")
                 continue
         session.refresh(part)
+
+        if auto_link_enabled and part.id is not None and part.id not in attempted_links:
+            try:
+                auto_link_by_pn(part.id, part.part_number)
+            except CENetworkError:
+                logger.debug("Complex Editor bridge unavailable during import auto-link for %s", part.part_number)
+            finally:
+                attempted_links.add(part.id)
 
         refs = _expand_references(bom_row.reference)
         if len(refs) > 1:

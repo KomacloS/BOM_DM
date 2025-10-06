@@ -118,21 +118,8 @@ class DatasheetAttachDialog(QDialog):
         if error:
             QMessageBox.warning(self, "Attach failed", error)
             return
-        link = True
-        if existed:
-            res = QMessageBox.question(
-                self,
-                "Datasheet exists",
-                "An identical datasheet already exists. Link the existing file to this PN?",
-            )
-            link = (res == QMessageBox.StandardButton.Yes)
-        if link:
-            try:
-                with app_state.get_session() as session:
-                    services.update_part_datasheet_url(session, self._part_id, canonical)
-            except Exception as e:
-                QMessageBox.warning(self, "Update failed", str(e))
-                return
-            self.attached.emit(canonical)
+        # Inform parent to persist or stage the change. We no longer update DB here,
+        # so the caller can respect the Apply/Save behavior.
+        # If a duplicate existed, we still emitted the canonical existing path.
+        self.attached.emit(canonical)
         self.accept()
-

@@ -38,6 +38,45 @@ def update_part_datasheet_url(session: Session, part_id: int, url_or_path: str) 
     return part
 
 
+def update_part_description_if_empty(session: Session, part_id: int, description: str | None) -> Part:
+    """Set part description only if currently empty.
+
+    Treats ``None`` or empty/whitespace-only as empty. Normalizes input and
+    writes only when the part has no description yet.
+    """
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    new_desc = (description or "").strip()
+    # Nothing useful to set
+    if not new_desc:
+        return part
+    current = (part.description or "").strip()
+    if current:
+        # Already has a description; do not overwrite
+        return part
+    part.description = new_desc
+    session.add(part)
+    session.commit()
+    session.refresh(part)
+    return part
+
+
+def update_part_description(session: Session, part_id: int, description: str | None) -> Part:
+    """Update a part's description unconditionally.
+
+    Normalizes empty/whitespace-only input to an empty string.
+    """
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    part.description = (description or "").strip()
+    session.add(part)
+    session.commit()
+    session.refresh(part)
+    return part
+
+
 def update_part_product_url(session: Session, part_id: int, url: str | None) -> Part:
     """Update a part's product (device) page URL."""
     part = session.get(Part, part_id)
