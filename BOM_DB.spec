@@ -8,11 +8,8 @@ tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 hiddenimports += ["sqlmodel"]
 
-# sqlmodel is a runtime dependency that PyInstaller fails to detect because it
-# is mostly used via SQLAlchemy style imports.  Explicitly collect it so the
-# frozen executable ships with the bundled package.
-tmp_ret = collect_all('sqlmodel')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+block_cipher = None
 
 
 a = Analysis(
@@ -25,10 +22,12 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
     noarchive=False,
-    optimize=0,
 )
-pyz = PYZ(a.pure)
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
@@ -51,6 +50,7 @@ exe = EXE(
 coll = COLLECT(
     exe,
     a.binaries,
+    a.zipfiles,
     a.datas,
     strip=False,
     upx=True,
