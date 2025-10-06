@@ -2,6 +2,7 @@
 import subprocess
 import time
 
+import os
 import pytest
 import requests
 
@@ -73,6 +74,8 @@ class DummyProcess:
 def test_ensure_spawns_when_unhealthy(monkeypatch, tmp_path):
     exe = tmp_path / "complex_editor.exe"
     exe.write_text("echo")
+    if os.name != "nt":
+        exe.chmod(0o755)
 
     settings = {
         "ui_enabled": True,
@@ -127,3 +130,31 @@ def test_stop_bridge_closes_process(monkeypatch):
 
     ce_bridge_manager.stop_ce_bridge_if_started()
     assert proc.terminated is True
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not use POSIX execute bit checks")
+def test_ensure_rejects_non_executable(monkeypatch, tmp_path):
+    exe = tmp_path / "complex_editor"
+    exe.write_text("echo")
+    if os.name != "nt":
+        exe.chmod(0o644)
+
+    settings = {
+        "ui_enabled": True,
+        "auto_start_bridge": True,
+        "auto_stop_bridge_on_exit": False,
+        "exe_path": str(exe),
+        "config_path": "",
+        "bridge": {
+            "enabled": True,
+            "base_url": "http://127.0.0.1:9100",
+            "auth_token": "token",
+            "request_timeout_seconds": 3,
+        },
+    }
+
+    monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: types.SimpleNamespace(ok=False))
+
+    with pytest.raises(ce_bridge_manager.CEBridgeError):
+        ce_bridge_manager.ensure_ce_bridge_ready()
