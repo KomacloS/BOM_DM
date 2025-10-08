@@ -1,14 +1,41 @@
-# root: .gitignore
-# Virtual-envs, Python cache, editor files
-.venv/
+# --- Python bytecode & caches ---
 __pycache__/
 *.py[cod]
-*.sqlite
-*.db
-.env
+*.pyo
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Build/packaging outputs ---
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# --- PyInstaller ---
+# keep BOM_DB.spec if you want a pinned recipe; otherwise ignore it.
+# *.spec
+
+# --- Test & tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Editors/OS noise ---
 .vscode/
 .idea/
-datasheets/
-assets/
-agents.local.toml
-CON
+.DS_Store
+Thumbs.db
+
+# --- Logs & misc ---
+*.log
+
+# --- Optional binaries/compressed files ---
+*.exe
+*.zip
