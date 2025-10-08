@@ -30,6 +30,10 @@ class CEUserCancelled(Exception):
     """Raised when the user cancels an action via the Complex Editor UI."""
 
 
+class CEWizardUnavailable(Exception):
+    """Raised when the Complex Editor wizard UI is not available via the bridge."""
+
+
 def _normalize_timeout(raw: Any, default: float = 10.0) -> float:
     try:
         if raw is None:
@@ -39,8 +43,14 @@ def _normalize_timeout(raw: Any, default: float = 10.0) -> float:
         return float(default)
 
 
-def _request(method: str, endpoint: str, *, params: Optional[Dict[str, Any]] = None,
-             json_body: Optional[Dict[str, Any]] = None) -> Response:
+def _request(
+    method: str,
+    endpoint: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    json_body: Optional[Dict[str, Any]] = None,
+    allow_conflict: bool = False,
+) -> Response:
     try:
         ensure_ce_bridge_ready()
     except CEBridgeError as exc:
@@ -85,12 +95,20 @@ def _request(method: str, endpoint: str, *, params: Optional[Dict[str, Any]] = N
             payload = {}
         if isinstance(payload, dict) and payload.get("reason") == "cancelled":
             raise CEUserCancelled("Complex Editor action was cancelled")
+        if allow_conflict and isinstance(payload, dict):
+            detail = str(payload.get("detail") or payload.get("reason") or "").strip().lower()
+            if detail == "wizard handler unavailable":
+                return response
+        if allow_conflict:
+            return response
 
     if not response.ok:
         try:
             response.raise_for_status()
         except req_exc.HTTPError as exc:
-            raise CENetworkError(f"Complex Editor bridge returned HTTP {response.status_code}") from exc
+            raise CENetworkError(
+                f"Complex Editor bridge returned HTTP {response.status_code}"
+            ) from exc
     return response
 
 
@@ -139,8 +157,19 @@ def create_complex(pn: str, aliases: Optional[List[str]] = None) -> Dict[str, An
     body: Dict[str, Any] = {"pn": pn}
     if aliases:
         body["aliases"] = aliases
-    response = _request("POST", "/complexes", json_body=body)
-    payload = _json_from_response(response)
+    response = _request("POST", "/complexes", json_body=body, allow_conflict=True)
+    payload = _json_from_response(response) if response.content else {}
+    if response.status_code == 409:
+        if isinstance(payload, dict):
+            detail = str(payload.get("detail") or payload.get("reason") or "").strip()
+            if detail.lower() == "wizard handler unavailable":
+                raise CEWizardUnavailable(
+                    detail or "Complex Editor wizard handler unavailable"
+                )
+            message = detail or "Complex Editor reported a conflict creating the complex."
+        else:  # pragma: no cover - defensive
+            message = "Complex Editor reported a conflict creating the complex."
+        raise CENetworkError(message)
     if not isinstance(payload, dict):  # pragma: no cover - defensive
         raise CENetworkError("Unexpected payload from create_complex")
     return payload

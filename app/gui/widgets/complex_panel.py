@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import closing
 from typing import Any, Dict, Iterable, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication,
     QGridLayout,
@@ -24,12 +25,7 @@ from sqlmodel import select
 from app.domain import complex_linker
 from app.domain.complex_linker import ComplexLink
 from app.integration import ce_bridge_client
-from app.integration.ce_bridge_client import (
-    CEAuthError,
-    CENetworkError,
-    CENotFound,
-    CEUserCancelled,
-)
+from app.integration.ce_bridge_client import CEAuthError, CENetworkError, CENotFound
 from app.gui import state as app_state
 from app.config import get_complex_editor_settings
 
@@ -48,6 +44,8 @@ class ComplexPanel(QWidget):
         self._current_link: Optional[Dict[str, Any]] = None
         self._busy = False
         self._ce_settings = get_complex_editor_settings()
+        self._creation_poll_timer: Optional[QTimer] = None
+        self._creation_poll_deadline: float = 0.0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -137,12 +135,76 @@ class ComplexPanel(QWidget):
 
         self.setEnabled(False)
 
+    def _creation_timeout_seconds(self) -> float:
+        if isinstance(self._ce_settings, dict):
+            raw = self._ce_settings.get("create_wait_timeout_seconds")
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = None
+            if value and value > 0:
+                return value
+        return 240.0
+
+    def _stop_creation_poll(self) -> None:
+        if self._creation_poll_timer is not None:
+            self._creation_poll_timer.stop()
+            self._creation_poll_timer.deleteLater()
+            self._creation_poll_timer = None
+        self._creation_poll_deadline = 0.0
+        self.progress.setVisible(False)
+
+    def _start_creation_poll(self) -> None:
+        self._stop_creation_poll()
+        timeout = max(1.0, self._creation_timeout_seconds())
+        self._creation_poll_deadline = time.monotonic() + timeout
+        self._creation_poll_timer = QTimer(self)
+        self._creation_poll_timer.setInterval(5_000)
+        self._creation_poll_timer.timeout.connect(self._poll_for_created_complex)
+        self._creation_poll_timer.start()
+        # Kick off an immediate poll so the user gets quick feedback
+        self._poll_for_created_complex()
+
+    def _poll_for_created_complex(self) -> None:
+        if self._part_id is None or not self._part_number:
+            self._stop_creation_poll()
+            return
+        if self._creation_poll_deadline and time.monotonic() > self._creation_poll_deadline:
+            self._stop_creation_poll()
+            self.status_label.setText(
+                "Still open in Complex Editor—click Refresh after saving."
+            )
+            return
+        try:
+            attached = complex_linker.auto_link_by_pn(
+                self._part_id, self._part_number, limit=3
+            )
+        except CEAuthError as exc:
+            self._stop_creation_poll()
+            self._show_error("Authentication", str(exc))
+            return
+        except CENetworkError as exc:
+            self._stop_creation_poll()
+            self._show_error("Network", str(exc))
+            return
+        if attached and self._part_id is not None:
+            self._stop_creation_poll()
+            self._current_link = self._load_link_snapshot(self._part_id)
+            self._update_link_display()
+            self.linkUpdated.emit(self._part_id)
+            ce_id = self._current_link.get("ce_complex_id") if self._current_link else ""
+            self.status_label.setText(
+                f"Complex saved in Complex Editor and attached (ID: {ce_id})."
+            )
+
+
     # ------------------------------------------------------------------
     def set_context(self, part_id: Optional[int], pn: Optional[str]) -> None:
         if part_id is None:
             self.setEnabled(False)
             self._part_id = None
             self._part_number = ""
+            self._stop_creation_poll()
             self._pn_label.setText("Current PN: -")
             self._current_link = None
             self._update_link_display()
@@ -160,6 +222,7 @@ class ComplexPanel(QWidget):
         self.setEnabled(True)
         self._part_id = part_id
         self._part_number = pn or ""
+        self._stop_creation_poll()
         self._pn_label.setText(f"Current PN: {self._part_number or '-'}")
         self.search_edit.setText(self._part_number)
         self.results_list.clear()
@@ -178,7 +241,9 @@ class ComplexPanel(QWidget):
         self.linked_id_value.setText(str(ce_id))
         self.db_path_value.setText(str(db_path))
         self.synced_value.setText(str(synced))
-        self.refresh_button.setEnabled(self._part_id is not None and ce_id not in ("", "-"))
+        self.refresh_button.setEnabled(
+            self._part_id is not None and bool(self._part_number)
+        )
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -298,10 +363,11 @@ class ComplexPanel(QWidget):
         if text and text != self._part_number:
             aliases = [text]
         self._set_busy(True)
+        outcome: Optional[complex_linker.CreateComplexOutcome] = None
         try:
-            complex_linker.create_and_attach_complex(self._part_id, self._part_number, aliases)
-        except CEUserCancelled as exc:
-            self.status_label.setText(str(exc))
+            outcome = complex_linker.create_and_attach_complex(
+                self._part_id, self._part_number, aliases
+            )
         except CEAuthError as exc:
             self._show_error("Authentication", str(exc))
         except CENetworkError as exc:
@@ -309,33 +375,51 @@ class ComplexPanel(QWidget):
         except Exception as exc:  # pragma: no cover - defensive
             self._show_error("Create failed", str(exc))
         else:
-            self.status_label.setText(f"Created new Complex for part {self._part_number}.")
-            if self._part_id is not None:
-                self._current_link = self._load_link_snapshot(self._part_id)
-                self._update_link_display()
-                self.linkUpdated.emit(self._part_id)
+            if outcome is None:
+                self.status_label.setText("Complex Editor did not return a result.")
+            elif outcome.status == "attached":
+                self.status_label.setText(outcome.message)
+                if self._part_id is not None:
+                    self._current_link = self._load_link_snapshot(self._part_id)
+                    self._update_link_display()
+                    self.linkUpdated.emit(self._part_id)
+            elif outcome.status == "wizard":
+                self.status_label.setText(outcome.message)
+                self.progress.setVisible(True)
+                self.progress.setRange(0, 0)
+                self._start_creation_poll()
+            elif outcome.status == "cancelled":
+                self.status_label.setText(outcome.message)
         finally:
             self._set_busy(False)
+            if outcome and outcome.status == "wizard":
+                self.progress.setVisible(True)
 
     def _on_refresh_clicked(self) -> None:
-        if self._part_id is None or not self._current_link:
-            return
-        ce_id = self._current_link.get("ce_complex_id")
-        if not ce_id:
-            self._show_error("Refresh", "No linked Complex to refresh.")
+        if self._part_id is None or not self._part_number:
+            self._show_error("Refresh", "Part number is required to refresh.")
             return
         self._set_busy(True)
         try:
-            complex_linker.attach_existing_complex(self._part_id, str(ce_id))
+            attached = complex_linker.auto_link_by_pn(
+                self._part_id, self._part_number, limit=3
+            )
         except (CEAuthError, CENetworkError, CENotFound) as exc:
             self._show_error("Refresh failed", str(exc))
         except Exception as exc:  # pragma: no cover - defensive
             self._show_error("Refresh failed", str(exc))
         else:
-            self.status_label.setText("Snapshot refreshed from Complex Editor.")
-            self._current_link = self._load_link_snapshot(self._part_id)
-            self._update_link_display()
-            self.linkUpdated.emit(self._part_id)
+            if attached and self._part_id is not None:
+                self.status_label.setText(
+                    "Complex saved in Complex Editor and attached."
+                )
+                self._current_link = self._load_link_snapshot(self._part_id)
+                self._update_link_display()
+                self.linkUpdated.emit(self._part_id)
+            else:
+                self.status_label.setText(
+                    "Still open in Complex Editor—click Refresh after saving."
+                )
         finally:
             self._set_busy(False)
 

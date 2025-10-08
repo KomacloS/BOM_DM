@@ -4,7 +4,11 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.domain import complex_linker
 from app.domain.complex_linker import ComplexLink
-from app.integration.ce_bridge_client import CENetworkError
+from app.integration.ce_bridge_client import (
+    CENetworkError,
+    CEUserCancelled,
+    CEWizardUnavailable,
+)
 
 
 @pytest.fixture
@@ -86,13 +90,47 @@ def test_create_and_attach_complex(monkeypatch, sqlite_engine):
     monkeypatch.setattr(complex_linker.ce_bridge_client, "get_complex", lambda _id: detail)
     monkeypatch.setattr(complex_linker, "_utc_iso", lambda: "2024-03-01T12:00:00")
 
-    complex_linker.create_and_attach_complex(7, "PN-777")
+    outcome = complex_linker.create_and_attach_complex(7, "PN-777")
+    assert outcome.status == "attached"
+    assert outcome.created_id == "ce-99"
 
     with Session(sqlite_engine) as session:
         link = session.exec(select(ComplexLink).where(ComplexLink.part_id == 7)).one()
         assert link.ce_complex_id == "ce-99"
         assert link.ce_db_uri == "D:/complex99.mdb"
         assert link.synced_at == "2024-03-01T12:00:00"
+
+
+def test_create_and_attach_complex_wizard(monkeypatch, sqlite_engine):
+    def raise_wizard(_pn, _aliases=None):
+        raise CEWizardUnavailable("wizard handler unavailable")
+
+    monkeypatch.setattr(
+        complex_linker.ce_bridge_client, "create_complex", raise_wizard
+    )
+
+    launched: list[tuple[str, list[str]]] = []
+
+    def fake_launch(pn: str, aliases):
+        launched.append((pn, list(aliases)))
+
+    monkeypatch.setattr(complex_linker, "launch_ce_wizard", fake_launch)
+
+    outcome = complex_linker.create_and_attach_complex(3, "PN-300", ["ALT"])
+    assert outcome.status == "wizard"
+    assert launched == [("PN-300", ["ALT"])]
+
+
+def test_create_and_attach_complex_cancelled(monkeypatch, sqlite_engine):
+    def raise_cancel(_pn, _aliases=None):
+        raise CEUserCancelled("cancelled")
+
+    monkeypatch.setattr(
+        complex_linker.ce_bridge_client, "create_complex", raise_cancel
+    )
+
+    outcome = complex_linker.create_and_attach_complex(4, "PN-400")
+    assert outcome.status == "cancelled"
 
 
 def test_auto_link_by_pn_success_and_network(monkeypatch):

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import os
 import subprocess
@@ -11,6 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 from typing import List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
 
@@ -471,21 +473,136 @@ def ensure_ce_bridge_ready(timeout_seconds: float = 4.0) -> None:
             diagnostics.ts_end = datetime.now(timezone.utc)
 
 
-def stop_ce_bridge_if_started() -> None:
+def _clear_bridge_tracking_if_stopped() -> None:
     global _BRIDGE_PROCESS, _BRIDGE_AUTO_STOP
-    if _BRIDGE_PROCESS is None:
-        return
-    if not _BRIDGE_AUTO_STOP:
-        return
-    proc = _BRIDGE_PROCESS
-    if proc.poll() is None:
+    if _BRIDGE_PROCESS is not None and _BRIDGE_PROCESS.poll() is not None:
+        _BRIDGE_PROCESS = None
+        _BRIDGE_AUTO_STOP = False
+
+
+def _terminate_spawned_bridge(proc: subprocess.Popen) -> None:
+    global _BRIDGE_PROCESS, _BRIDGE_AUTO_STOP
+    try:
+        proc.terminate()
         try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        except Exception:  # pragma: no cover - best effort
-            pass
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    except Exception:  # pragma: no cover - best effort cleanup
+        pass
     _BRIDGE_PROCESS = None
     _BRIDGE_AUTO_STOP = False
+
+
+def _bridge_request_without_ensure(
+    method: str,
+    endpoint: str,
+    *,
+    timeout: float = 5.0,
+) -> requests.Response | None:
+    settings = config.get_complex_editor_settings()
+    if not isinstance(settings, dict):
+        return None
+    bridge_cfg = settings.get("bridge", {})
+    if not isinstance(bridge_cfg, dict) or not bridge_cfg.get("enabled", True):
+        return None
+    base_url = str(bridge_cfg.get("base_url") or "http://127.0.0.1:8765").strip()
+    token = str(bridge_cfg.get("auth_token") or "").strip()
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
+    try:
+        return requests.request(method, url, headers=headers, timeout=timeout)
+    except req_exc.RequestException:
+        return None
+
+
+def launch_ce_wizard(pn: str, aliases: Sequence[str] | None = None) -> None:
+    """Launch the Complex Editor GUI wizard with the provided PN prefilled."""
+
+    settings = config.get_complex_editor_settings()
+    if not isinstance(settings, dict):
+        raise CEBridgeError("Complex Editor settings not available")
+
+    exe_path = str(settings.get("exe_path") or "").strip()
+    if not exe_path:
+        raise CEBridgeError("Complex Editor executable path is not configured")
+
+    exe = Path(exe_path).expanduser().resolve()
+    if not exe.exists():
+        raise CEBridgeError(f"Complex Editor executable not found: {exe}")
+    if exe.is_dir():
+        raise CEBridgeError(f"Complex Editor executable path is a directory: {exe}")
+    if os.name != "nt" and not os.access(exe, os.X_OK):
+        raise CEBridgeError(f"Complex Editor executable is not executable: {exe}")
+
+    payload: dict[str, object] = {"pn": pn}
+    alias_list = [a.strip() for a in (aliases or []) if isinstance(a, str) and a.strip()]
+    if alias_list:
+        payload["aliases"] = alias_list
+
+    try:
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            buffer_path = handle.name
+    except OSError as exc:  # pragma: no cover - filesystem failure
+        raise CEBridgeError(f"Failed to prepare Complex Editor wizard buffer: {exc}") from exc
+
+    cmd = [str(exe), "--load-buffer", buffer_path]
+    config_path = str(settings.get("config_path") or "").strip()
+    if config_path:
+        cmd.extend(["--config", config_path])
+
+    creationflags = 0
+    startupinfo = None
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 0)
+
+    logger.info("Launching Complex Editor GUI wizard for part %s", pn)
+    try:
+        subprocess.Popen(
+            cmd,
+            creationflags=creationflags,
+            close_fds=os.name != "nt",
+            startupinfo=startupinfo,
+        )
+    except Exception as exc:
+        raise CEBridgeError(f"Failed to launch Complex Editor wizard: {exc}") from exc
+
+def stop_ce_bridge_if_started() -> None:
+    global _BRIDGE_PROCESS, _BRIDGE_AUTO_STOP
+    _clear_bridge_tracking_if_stopped()
+    if _BRIDGE_PROCESS is None or not _BRIDGE_AUTO_STOP:
+        return
+
+    proc = _BRIDGE_PROCESS
+    state_resp = _bridge_request_without_ensure("GET", "/state", timeout=3.0)
+    if state_resp is not None and state_resp.ok:
+        try:
+            payload = state_resp.json()
+        except ValueError:
+            payload = {}
+        if isinstance(payload, dict) and payload.get("unsaved_changes"):
+            logger.info(
+                "Complex Editor reports unsaved changes; skipping bridge shutdown."
+            )
+            return
+
+    shutdown_resp = _bridge_request_without_ensure("POST", "/admin/shutdown", timeout=3.0)
+    if shutdown_resp is not None:
+        if shutdown_resp.status_code == 404:
+            logger.debug("Bridge /admin/shutdown unavailable; terminating spawned process.")
+            _terminate_spawned_bridge(proc)
+            return
+        try:
+            proc.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            logger.debug("Bridge shutdown request sent; process still running.")
+            return
+        _clear_bridge_tracking_if_stopped()
+        return
+
+    logger.debug("Bridge shutdown request failed; leaving process running for safety.")
