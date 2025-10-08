@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app import config
+
 from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
 
 from ..api_client import BaseClient
@@ -54,6 +56,14 @@ class QuickActions(QWidget):
     # ------------------------------------------------------------------
     def seed_sample(self) -> None:
         tpl = Path("bom_template.csv")
+        for candidate in (
+            config.APP_STORAGE_ROOT / "bom_template.csv",
+            config.DATA_ROOT / "bom_template.csv",
+        ):
+            if tpl.exists():
+                break
+            if candidate.exists():
+                tpl = candidate
         if not tpl.exists():
             resp = self._client.get("/bom/template")
             if resp.status_code == 200:
