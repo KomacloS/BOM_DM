@@ -33,6 +33,7 @@ tests/test_bom_items_has_part_number.py
 tests/test_bom_list_with_part_number.py
 tests/test_bom_read_models.py
 tests/test_ce_bridge_client.py
+tests/test_ce_bridge_manager.py
 tests/test_complex_linker.py
 tests/test_complex_panel.py
 tests/test_datasheets.py
