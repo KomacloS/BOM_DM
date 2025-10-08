@@ -242,6 +242,7 @@ _COMPLEX_EDITOR_DEFAULTS: Dict[str, Any] = {
     "config_path": "",
     "auto_start_bridge": True,
     "auto_stop_bridge_on_exit": False,
+    "create_wait_timeout_seconds": 240,
     "bridge": {
         "enabled": True,
         "base_url": "http://127.0.0.1:8765",
@@ -477,6 +478,13 @@ def get_complex_editor_settings() -> Dict[str, Any]:
                 timeout_val = None
             if timeout_val and timeout_val > 0:
                 target_bridge["request_timeout_seconds"] = timeout_val
+        wait_timeout = data.get("create_wait_timeout_seconds")
+        try:
+            wait_timeout_val = int(wait_timeout)
+        except (TypeError, ValueError):
+            wait_timeout_val = None
+        if wait_timeout_val and wait_timeout_val > 0:
+            settings["create_wait_timeout_seconds"] = wait_timeout_val
     return settings
 def save_complex_editor_settings(
     *,
@@ -488,6 +496,7 @@ def save_complex_editor_settings(
     bridge_base_url: Optional[str] = None,
     bridge_auth_token: Optional[str] = None,
     bridge_request_timeout_seconds: Optional[int] = None,
+    create_wait_timeout_seconds: Optional[int] = None,
     note_or_link: Optional[str] = None,
     ui_enabled: Optional[bool] = None,
 ) -> None:
@@ -511,6 +520,14 @@ def save_complex_editor_settings(
         ce_cfg["auto_start_bridge"] = bool(auto_start_bridge)
     if auto_stop_bridge_on_exit is not None:
         ce_cfg["auto_stop_bridge_on_exit"] = bool(auto_stop_bridge_on_exit)
+    if create_wait_timeout_seconds is not None:
+        try:
+            wait_val = int(create_wait_timeout_seconds)
+        except (TypeError, ValueError):
+            wait_val = None
+        else:
+            if wait_val > 0:
+                ce_cfg["create_wait_timeout_seconds"] = wait_val
     if note_or_link is not None:
         ce_cfg["note_or_link"] = str(note_or_link).strip()
     bridge_cfg = dict(ce_cfg.get("bridge", {}))

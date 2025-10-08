@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Literal, Optional
 
 from sqlmodel import Field, SQLModel, Session, select
 
 from app import database
 from app.integration import ce_bridge_client
-from app.integration.ce_bridge_client import CENetworkError
+from app.integration.ce_bridge_client import (
+    CENetworkError,
+    CEUserCancelled,
+    CEWizardUnavailable,
+)
+from app.integration.ce_bridge_manager import CEBridgeError, launch_ce_wizard
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +91,42 @@ def attach_existing_complex(part_id: int, ce_id: str) -> None:
         session.close()
 
 
-def create_and_attach_complex(part_id: int, pn: str, aliases: list[str] | None = None) -> None:
-    created = ce_bridge_client.create_complex(pn, aliases)
-    attach_existing_complex(part_id, created.get("id") or created.get("ce_id"))
-    logger.info("Created Complex %s for part %s", created.get("id"), part_id)
+@dataclass
+class CreateComplexOutcome:
+    status: Literal["attached", "wizard", "cancelled"]
+    message: str
+    created_id: Optional[str] = None
+
+
+def create_and_attach_complex(
+    part_id: int, pn: str, aliases: list[str] | None = None
+) -> CreateComplexOutcome:
+    try:
+        created = ce_bridge_client.create_complex(pn, aliases)
+    except CEWizardUnavailable:
+        alias_list = aliases or []
+        try:
+            launch_ce_wizard(pn, alias_list)
+        except CEBridgeError as exc:
+            raise CENetworkError(str(exc)) from exc
+        message = "Opened Complex Editor wizard—finish and we’ll attach automatically…"
+        logger.info("Launched Complex Editor wizard for part %s", pn)
+        return CreateComplexOutcome(status="wizard", message=message)
+    except CEUserCancelled:
+        return CreateComplexOutcome(
+            status="cancelled", message="Creation cancelled in Complex Editor."
+        )
+
+    ce_id = str(created.get("id") or created.get("ce_id") or "").strip()
+    if not ce_id:
+        raise CENetworkError("Complex Editor bridge returned an incomplete create response.")
+    attach_existing_complex(part_id, ce_id)
+    logger.info("Created Complex %s for part %s", ce_id, part_id)
+    return CreateComplexOutcome(
+        status="attached",
+        message=f"Created new Complex for part {pn}.",
+        created_id=ce_id,
+    )
 
 
 def _match_aliases(target: str, aliases: Iterable[Any]) -> bool:
@@ -98,13 +136,13 @@ def _match_aliases(target: str, aliases: Iterable[Any]) -> bool:
     return False
 
 
-def auto_link_by_pn(part_id: int, pn: str) -> bool:
+def auto_link_by_pn(part_id: int, pn: str, limit: int = 10) -> bool:
     """If exactly one exact match by PN or alias from CE, attach and return True; else False."""
     target = (pn or "").strip().lower()
     if not target:
         return False
     try:
-        matches = ce_bridge_client.search_complexes(pn, limit=10)
+        matches = ce_bridge_client.search_complexes(pn, limit=limit)
     except CENetworkError:
         logger.info("Complex Editor bridge unavailable during auto-link for part %s", part_id)
         return False

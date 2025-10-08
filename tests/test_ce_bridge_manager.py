@@ -148,8 +148,37 @@ def test_stop_bridge_closes_process(monkeypatch):
     ce_bridge_manager._BRIDGE_PROCESS = proc
     ce_bridge_manager._BRIDGE_AUTO_STOP = True
 
+    def fake_request(method, endpoint, timeout=5.0):
+        if endpoint == "/state":
+            return types.SimpleNamespace(ok=True, json=lambda: {"unsaved_changes": False})
+        return types.SimpleNamespace(status_code=404, ok=False)
+
+    monkeypatch.setattr(
+        ce_bridge_manager, "_bridge_request_without_ensure", fake_request
+    )
+
     ce_bridge_manager.stop_ce_bridge_if_started()
     assert proc.terminated is True
+    assert ce_bridge_manager._BRIDGE_PROCESS is None
+
+
+def test_stop_bridge_skips_when_unsaved(monkeypatch):
+    proc = DummyProcess()
+    ce_bridge_manager._BRIDGE_PROCESS = proc
+    ce_bridge_manager._BRIDGE_AUTO_STOP = True
+
+    def fake_request(method, endpoint, timeout=5.0):
+        if endpoint == "/state":
+            return types.SimpleNamespace(ok=True, json=lambda: {"unsaved_changes": True})
+        return types.SimpleNamespace(status_code=204, ok=True)
+
+    monkeypatch.setattr(
+        ce_bridge_manager, "_bridge_request_without_ensure", fake_request
+    )
+
+    ce_bridge_manager.stop_ce_bridge_if_started()
+    assert proc.terminated is False
+    assert ce_bridge_manager._BRIDGE_PROCESS is proc
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not use POSIX execute bit checks")
