@@ -14,6 +14,8 @@ Environment variables (quick overrides):
   - BOM_MAX_DS_MB: max datasheet size (MB)
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 import os
 import sys
@@ -38,6 +40,9 @@ except Exception:  # pragma: no cover - environment-dependent
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
 
+PORTABLE_INTERNAL_DIRNAME = "internal"
+
+
 def _runtime_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
@@ -58,8 +63,17 @@ def _is_dir_writable(path: Path) -> bool:
         with suppress(Exception):
             test_file.unlink()
 
+def _portable_internal_root() -> Path:
+    """Return the folder that should contain portable runtime assets."""
+
+    return RUNTIME_ROOT / PORTABLE_INTERNAL_DIRNAME
+
+
 def _resolve_writable_runtime_root() -> Path:
     if getattr(sys, 'frozen', False):
+        internal_root = _portable_internal_root()
+        if _is_dir_writable(internal_root):
+            return internal_root
         runtime_root = RUNTIME_ROOT
         if _is_dir_writable(runtime_root):
             return runtime_root
@@ -319,7 +333,7 @@ def _compute_paths() -> dict[str, Path]:
         _value_from_env_or_settings("BOM_TRACEBACK_LOG", "paths", "traceback_log", traceback_default)
     ).expanduser().resolve()
     agents_default = str(
-        (RUNTIME_ROOT / "agents.local.toml") if getattr(sys, "frozen", False) else (REPO_ROOT / "agents.local.toml")
+        (APP_STORAGE_ROOT / "agents.local.toml") if getattr(sys, "frozen", False) else (REPO_ROOT / "agents.local.toml")
     )
     agents_file = Path(
         _value_from_env_or_settings("BOM_AGENTS_FILE", "paths", "agents_file", agents_default)
@@ -340,6 +354,8 @@ LOG_DIR: Path = _paths["log_dir"]
 AI_LOG_PATH: Path = _paths["ai_log"]
 TRACEBACK_LOG_PATH: Path = _paths["trace_log"]
 AGENTS_FILE_PATH: Path = _paths["agents_file"]
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+DATASHEETS_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def refresh_paths() -> None:
@@ -351,6 +367,8 @@ def refresh_paths() -> None:
     AI_LOG_PATH = paths["ai_log"]
     TRACEBACK_LOG_PATH = paths["trace_log"]
     AGENTS_FILE_PATH = paths["agents_file"]
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
+    DATASHEETS_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def get_agents_file_path() -> Path:

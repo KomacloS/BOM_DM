@@ -16,7 +16,7 @@ from sqlmodel import Session, select
 from sqlalchemy.exc import IntegrityError
 
 from ..models import Assembly, BOMItem, Part, PartType
-from ..config import get_complex_editor_settings
+from ..config import DATASHEETS_DIR, get_complex_editor_settings
 from ..domain.complex_linker import auto_link_by_pn
 from ..integration.ce_bridge_client import CENetworkError
 from ..integration.ce_bridge_manager import CEBridgeError, ensure_ce_bridge_ready
@@ -170,13 +170,11 @@ def _iter_rows(data: bytes) -> tuple[list[str], list[list[str]]]:
         headers = rows[0] if rows else []
         return headers, rows[1:]
 
-
 # ---------------------------------------------------------------------------
 # Datasheet caching
 
 
-DATASHEETS_DIR = Path("datasheets")
-DATASHEETS_DIR.mkdir(exist_ok=True)
+DATASHEETS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _safe_pn(pn: str) -> str:

@@ -46,7 +46,7 @@ from PyQt6.QtGui import QPainter, QBrush, QColor, QDesktopServices, QGuiApplicat
 import logging
 from .. import services
 from ..services.datasheets import get_local_open_path
-from ..config import PDF_VIEWER, PDF_VIEWER_PATH, PDF_OPEN_DEBUG, get_complex_editor_settings
+from ..config import DATA_ROOT, PDF_VIEWER, PDF_VIEWER_PATH, PDF_OPEN_DEBUG, get_complex_editor_settings
 import subprocess, shutil, time, os
 from datetime import datetime
 from ..logic.autofill_rules import infer_from_pn_and_desc
@@ -2115,6 +2115,7 @@ QTableView::item:selected:hover {
             candidates.append(Path.cwd() / "data" / "function_list.txt")
         except Exception:
             candidates.append(Path.cwd() / "data" / "function_list.txt")
+        candidates.append(DATA_ROOT / "function_list.txt")
         for p in candidates:
             try:
                 if p.exists():
