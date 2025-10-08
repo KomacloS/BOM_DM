@@ -21,3 +21,4 @@ toml
 reportlab
 PySide6
 PyQt6
+typing-extensions

@@ -10,8 +10,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
-from typing import Dict, Optional, TypedDict
+from typing import Dict, Optional
 import logging
+
+try:  # Python 3.8+
+    from typing import TypedDict
+except ImportError:  # pragma: no cover - Python 3.7 fallback
+    from typing_extensions import TypedDict
 
 from .config import get_agents_file_path
 
