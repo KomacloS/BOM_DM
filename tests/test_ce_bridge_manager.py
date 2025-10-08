@@ -1,8 +1,9 @@
-﻿import types
+import datetime
+import os
 import subprocess
 import time
+import types
 
-import os
 import pytest
 import requests
 
@@ -34,8 +35,14 @@ def test_ensure_skips_when_bridge_running(monkeypatch):
     }
 
     monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
-    response = types.SimpleNamespace(ok=True)
-    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: response)
+
+    response = types.SimpleNamespace(ok=True, status_code=200)
+
+    def fake_get(url, headers=None, timeout=None):
+        return response
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
     popen_called = False
 
     def fake_popen(*_args, **_kwargs):
@@ -47,6 +54,11 @@ def test_ensure_skips_when_bridge_running(monkeypatch):
 
     ce_bridge_manager.ensure_ce_bridge_ready()
     assert popen_called is False
+
+    diagnostics = ce_bridge_manager._LAST_DIAGNOSTICS
+    assert diagnostics is not None
+    assert diagnostics.outcome == "success"
+    assert diagnostics.pre_probe_status == "running"
 
 
 class DummyProcess:
@@ -91,7 +103,7 @@ def test_ensure_spawns_when_unhealthy(monkeypatch, tmp_path):
         },
     }
 
-    saved_tokens = {}
+    saved_tokens: dict[str, str] = {}
     monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
     monkeypatch.setattr(
         ce_bridge_manager.config,
@@ -99,20 +111,19 @@ def test_ensure_spawns_when_unhealthy(monkeypatch, tmp_path):
         lambda **kwargs: saved_tokens.update(kwargs),
     )
 
-    calls = []
+    calls: list[tuple[str, dict | None]] = []
 
     def fake_get(url, headers=None, timeout=None):
         calls.append((url, headers))
         if len(calls) == 1:
             raise requests.exceptions.ConnectionError()
-        return types.SimpleNamespace(ok=True)
+        return types.SimpleNamespace(ok=True, status_code=200)
 
     monkeypatch.setattr(requests, "get", fake_get)
 
     dummy_proc = DummyProcess()
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: dummy_proc)
 
-    # speed up wait loop
     monkeypatch.setattr(time, "sleep", lambda _s: None)
 
     ce_bridge_manager.ensure_ce_bridge_ready()
@@ -121,6 +132,15 @@ def test_ensure_spawns_when_unhealthy(monkeypatch, tmp_path):
     assert "bridge_auth_token" in saved_tokens
     assert saved_tokens["bridge_auth_token"]
     assert dummy_proc.terminated is False
+
+    diagnostics = ce_bridge_manager._LAST_DIAGNOSTICS
+    assert diagnostics is not None
+    assert diagnostics.outcome == "success"
+    assert diagnostics.spawn_attempted is True
+    assert diagnostics.spawn_cmd_preview
+    assert saved_tokens["bridge_auth_token"] not in diagnostics.spawn_cmd_preview
+    assert diagnostics.spawn_pid == dummy_proc.pid
+    assert diagnostics.health_polls
 
 
 def test_stop_bridge_closes_process(monkeypatch):
@@ -154,7 +174,85 @@ def test_ensure_rejects_non_executable(monkeypatch, tmp_path):
     }
 
     monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
-    monkeypatch.setattr(requests, "get", lambda *a, **kw: types.SimpleNamespace(ok=False))
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *a, **kw: types.SimpleNamespace(ok=False, status_code=503),
+    )
 
-    with pytest.raises(ce_bridge_manager.CEBridgeError):
+    with pytest.raises(ce_bridge_manager.CEBridgeError) as excinfo:
         ce_bridge_manager.ensure_ce_bridge_ready()
+
+    diagnostics = excinfo.value.diagnostics
+    assert diagnostics is not None
+    assert diagnostics.outcome == "error"
+    assert "not executable" in diagnostics.reason
+
+
+def test_timeout_records_diagnostics(monkeypatch, tmp_path):
+    exe = tmp_path / "complex_editor.exe"
+    exe.write_text("echo")
+    if os.name != "nt":
+        exe.chmod(0o755)
+
+    settings = {
+        "ui_enabled": True,
+        "auto_start_bridge": True,
+        "auto_stop_bridge_on_exit": False,
+        "exe_path": str(exe),
+        "config_path": "",
+        "bridge": {
+            "enabled": True,
+            "base_url": "http://127.0.0.1:9500",
+            "auth_token": "token",
+            "request_timeout_seconds": 1,
+        },
+    }
+
+    monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
+
+    def failing_get(*_args, **_kwargs):
+        raise requests.exceptions.ConnectionError()
+
+    monkeypatch.setattr(requests, "get", failing_get)
+
+    dummy_proc = DummyProcess()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: dummy_proc)
+    monkeypatch.setattr(ce_bridge_manager.time, "sleep", lambda _s: None)
+
+    def fake_monotonic():
+        fake_monotonic.value += 0.4
+        return fake_monotonic.value
+
+    fake_monotonic.value = 0.0
+    monkeypatch.setattr(ce_bridge_manager.time, "monotonic", fake_monotonic)
+
+    with pytest.raises(ce_bridge_manager.CEBridgeError) as excinfo:
+        ce_bridge_manager.ensure_ce_bridge_ready(timeout_seconds=1.0)
+
+    diagnostics = excinfo.value.diagnostics
+    assert diagnostics is not None
+    assert diagnostics.outcome == "timeout"
+    assert "Timed out" in diagnostics.reason
+    assert diagnostics.traceback
+
+
+def test_diagnostics_to_text_contains_summary():
+    diagnostics = ce_bridge_manager.CEBridgeDiagnostics()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    diagnostics.ts_start = now
+    diagnostics.ts_end = now
+    diagnostics.outcome = "timeout"
+    diagnostics.reason = "Timed out waiting for Complex Editor bridge to start"
+    diagnostics.base_url = "http://127.0.0.1:8765"
+    diagnostics.spawn_attempted = True
+    diagnostics.spawn_cmd_preview = ["complex_editor", "--token", "abc…123"]
+    diagnostics.health_polls.append(
+        {"t": "t+0.3s", "status": "not_running", "detail": "ConnectionRefusedError"}
+    )
+    diagnostics.traceback = "Traceback (most recent call last):\n..."
+
+    text = diagnostics.to_text()
+    assert "Outcome: timeout" in text
+    assert "Base URL: http://127.0.0.1:8765" in text
+    assert "Command (masked):" in text

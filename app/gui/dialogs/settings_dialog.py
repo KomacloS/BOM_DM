@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
+import datetime
 import shutil
 import sys
+import tempfile
+import traceback
+from pathlib import Path
 
+from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -15,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -292,10 +297,44 @@ class SettingsDialog(QDialog):
             ensure_ce_bridge_ready()
             payload = ce_bridge_client.healthcheck()
         except Exception as exc:
-            QMessageBox.warning(self, "Complex Editor", f"Bridge test failed: {exc}")
+            diagnostics_text = self._diagnostics_text_from_exception(exc)
+            message = QMessageBox(
+                QMessageBox.Icon.Warning,
+                "Complex Editor",
+                f"Bridge test failed: {exc}",
+                parent=self,
+            )
+            details_button = None
+            if diagnostics_text:
+                details_button = message.addButton("Show Details…", QMessageBox.ButtonRole.ActionRole)
+            message.addButton(QMessageBox.StandardButton.Ok)
+            message.exec()
+            if details_button and message.clickedButton() is details_button:
+                dialog = BridgeDiagnosticsDialog(self, diagnostics_text)
+                dialog.exec()
             return
         status = payload.get("status") if isinstance(payload, dict) else payload
         QMessageBox.information(self, "Complex Editor", f"Bridge OK: {status}")
+
+    def _diagnostics_text_from_exception(self, exc: Exception) -> str:
+        diagnostics = getattr(exc, "diagnostics", None)
+        if diagnostics is not None and hasattr(diagnostics, "to_text"):
+            try:
+                return diagnostics.to_text()
+            except Exception:  # pragma: no cover - defensive
+                pass
+        timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        tb = traceback.format_exc()
+        lines = [
+            "BOM_DB ↔ Complex Editor Bridge Diagnostics",
+            f"Timestamp: {timestamp}",
+            "Outcome: error",
+            f"Reason: {exc}",
+            "",
+            "[Traceback]",
+            tb.strip() or "<none>",
+        ]
+        return "\n".join(lines)
 
     def _apply_portable_defaults(self) -> None:
         data_root = Path(self.data_root_edit.text().strip() or str(config.DATA_ROOT)).expanduser().resolve()
@@ -400,3 +439,49 @@ class SettingsDialog(QDialog):
         if "://" in text:
             return text
         return self._sqlite_url_from_path(Path(text).expanduser())
+
+
+class BridgeDiagnosticsDialog(QDialog):
+    def __init__(self, parent: QDialog | None, diagnostics_text: str) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Bridge Diagnostics")
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        self._text = QPlainTextEdit(self)
+        self._text.setReadOnly(True)
+        self._text.setPlainText(diagnostics_text)
+        layout.addWidget(self._text)
+
+        button_row = QHBoxLayout()
+
+        copy_button = QPushButton("Copy to Clipboard")
+        copy_button.clicked.connect(self._copy_to_clipboard)
+        button_row.addWidget(copy_button)
+
+        save_button = QPushButton("Save Report…")
+        save_button.clicked.connect(self._save_report)
+        button_row.addWidget(save_button)
+
+        button_row.addStretch(1)
+
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        button_row.addWidget(close_button)
+
+        layout.addLayout(button_row)
+
+    def _copy_to_clipboard(self) -> None:
+        clipboard = QGuiApplication.clipboard()
+        clipboard.setText(self._text.toPlainText())
+
+    def _save_report(self) -> None:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"BOM_DB_CE_Diagnostics_{timestamp}.txt"
+        destination = Path(tempfile.gettempdir()) / filename
+        try:
+            destination.write_text(self._text.toPlainText(), encoding="utf-8")
+        except OSError as exc:  # pragma: no cover - filesystem error
+            QMessageBox.critical(self, "Bridge Diagnostics", f"Failed to save report: {exc}")
+            return
+        QMessageBox.information(self, "Bridge Diagnostics", f"Report saved to: {destination}")
