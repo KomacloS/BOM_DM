@@ -1,126 +1,92 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTHONUTF8=1
 
-# Build a Windows GUI executable (one-folder) with PyInstaller
-# - Uses icon.ico as the app icon
-# - Keeps config and database files editable by placing them next to the .exe
+# Foldered build for BOM_DB: libs unpacked, assets beside the EXE, console hidden.
 
-# Change these if you want a different name or entry
-APP_NAME="BOM_DB"
-ENTRY="app/gui/__main__.py"
-ICON="icon.ico"
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
-
-echo "[build] Root: $ROOT_DIR"
-echo "[build] Entry: $ENTRY"
-echo "[build] Icon : $ICON"
-
-# Ensure PyInstaller is available
-if ! command -v pyinstaller >/dev/null 2>&1; then
-  echo "[build] PyInstaller not found; installing..."
-  python -m pip install --upgrade pip >/dev/null
-  python -m pip install pyinstaller >/dev/null
-fi
-
-# Install project dependencies if a requirements file exists
-if [[ -f "requirements.txt" ]]; then
-  echo "[build] Installing dependencies from requirements.txt..."
-  python -m pip install --upgrade pip >/dev/null
-  if ! python -m pip install -r requirements.txt; then
-    echo "[build] requirements install failed; continuing with existing environment."
-    echo "[build] Ensuring sqlmodel is available via direct install..."
-    if ! python -m pip install sqlmodel; then
-      echo "[build] Fallback sqlmodel install failed."
-      exit 1
+# ---- pick Python ≥3.10 (set PYTHON_EXE=... to force a path) ----
+pick_python_array() {
+  if [[ -n "${PYTHON_EXE:-}" ]]; then
+    if "$PYTHON_EXE" -c 'import sys; exit(0 if sys.version_info>=(3,10) else 1)' 2>/dev/null; then
+      printf '%s\0' "$PYTHON_EXE"; return 0
+    else
+      echo "ERROR: PYTHON_EXE is not Python ≥3.10" >&2; return 1
     fi
   fi
-else
-  echo "[build] requirements.txt not found; attempting editable install with extras..."
-  python -m pip install --upgrade pip >/dev/null
-  python -m pip install ".[full]" >/dev/null || true
-fi
+  if command -v py >/dev/null 2>&1; then
+    for v in 3.12 3.11 3.10; do
+      if py -$v -c 'import sys; exit(0 if sys.version_info>=(3,10) else 1)' >/dev/null 2>&1; then
+        printf '%s\0%s\0' "py" "-$v"; return 0
+      fi
+    done
+  fi
+  for exe in python3.12 python3.11 python3.10 python; do
+    if command -v "$exe" >/dev/null 2>&1 && "$exe" -c 'import sys; exit(0 if sys.version_info>=(3,10) else 1)'; then
+      printf '%s\0' "$exe"; return 0
+    fi
+  done
+  return 1
+}
+mapfile -d '' -t PYBIN < <(pick_python_array) || { echo "ERROR: Need Python ≥3.10"; exit 1; }
+echo "Using interpreter: $("${PYBIN[@]}" -c 'import sys; print(sys.executable)')"
+"${PYBIN[@]}" -c 'import sys; print("Python version:", sys.version)'
 
-python - <<'PY'
-import sys
-try:
-    import sqlmodel
-    print("[build] sqlmodel import OK")
-except Exception as e:
-    print("[build] sqlmodel import FAILED:", e)
-    sys.exit(1)
+# ---- venv ----
+"${PYBIN[@]}" -m venv .venv
+# shellcheck disable=SC1091
+source .venv/Scripts/activate
+
+# ---- clean ----
+rm -rf build dist .pytest_cache || true
+rm -f ./*.spec || true
+
+# ---- tools ----
+python -m pip install -U pip wheel setuptools
+python -m pip install -U "pyinstaller>=6.6"
+
+# ---- deps (ensure 'requests' is installed) ----
+if [[ -f requirements.txt ]]; then
+  python -m pip install -r requirements.txt
+else
+  python -m pip install -e .
+fi
+python - <<'PY' || python -m pip install requests
+import importlib; importlib.import_module("requests")
 PY
 
-# Clean previous build artifacts
-rm -rf build "dist/${APP_NAME}" "${APP_NAME}.spec" || true
-
-# Platform-specific separator for --add-data
-if [[ "${OS:-}" == "Windows_NT" ]]; then
-  DATA_SEP=';'
-else
-  DATA_SEP=':'
-fi
-
-echo "[build] Running PyInstaller..."
-pyinstaller \
-  --name "$APP_NAME" \
-  --icon "$ICON" \
-  --noconfirm \
-  --clean \
-  --windowed \
-  --collect-all PyQt6 \
-  --hidden-import sqlmodel \
-  --add-data "app/gui/icons${DATA_SEP}app/gui/icons" \
-  "$ENTRY"
-
-DIST_DIR="dist/${APP_NAME}"
-echo "[build] Dist dir: ${DIST_DIR}"
-
-# Copy editable config/database files next to the exe (if they exist)
-copy_if_exists() {
-  local src="$1"
-  local dst_dir="$2"
-  if [[ -f "$src" ]]; then
-    echo "[build] Copying $src -> $dst_dir/"
-    cp -f "$src" "$dst_dir/"
-  fi
+# ---- collect external data next to the EXE (adjust these as needed) ----
+shopt -s nullglob
+declare -a ADD_DATA_ARGS=()
+add_data_dir_if_exists() {
+  local d="$1"
+  [[ -d "$d" ]] && ADD_DATA_ARGS+=( "--add-data" "$d;$d" )
 }
+# Common folders to keep outside the EXE:
+add_data_dir_if_exists "data"
+add_data_dir_if_exists "static"
+add_data_dir_if_exists "app/gui/icons"
+add_data_dir_if_exists "migrations"
 
-# Agents configuration (project-local)
-copy_if_exists "agents.local.toml" "$DIST_DIR"
-copy_if_exists "agents.example.toml" "$DIST_DIR"
+# ---- build (array avoids quoting bugs) ----
+args=(
+  -n BOM_DB
+  --onedir
+  --noconsole        # hide terminal window
+  --debug noarchive  # keep pure-Python modules unpacked
+  --clean
+  --paths .
+  --collect-all PyQt6
+  --collect-submodules requests
+  --collect-submodules sqlmodel
+  app/gui/__main__.py
+)
+# optional icon:
+[[ -f icon.ico ]] && args+=( --icon icon.ico )
+args+=( "${ADD_DATA_ARGS[@]}" )
 
-# Optional database artifacts (if you keep one in the repo)
-copy_if_exists "app.db" "$DIST_DIR"
-copy_if_exists "app/bom_dev.db" "$DIST_DIR"
+echo "== pyinstaller ${args[*]}"
+pyinstaller "${args[@]}"
 
-# Helpful templates/assets (optional but handy)
-copy_if_exists "bom_template.csv" "$DIST_DIR"
-
-# Add a short README with runtime config guidance
-cat >"${DIST_DIR}/README_DIST.txt" <<'EOF'
-BOM_DB packaged application
-===========================
-
-Editable configuration:
- - Project-local agents file: agents.local.toml (next to the EXE)
-   Copy/rename agents.example.toml -> agents.local.toml and edit values.
-
-Database configuration:
- - Settings & the default SQLite path live beside the EXE when that folder is writable.
-   If Windows blocks writes (e.g. Program Files), we fall back to %USERPROFILE%\.bom_platform\settings.toml.
-   Edit that file or set the DATABASE_URL environment variable to override.
- - If app.db or bom_dev.db is present next to the EXE, you can point to it with:
-     set DATABASE_URL=sqlite:///app.db
-   (On PowerShell: $env:DATABASE_URL = 'sqlite:///app.db')
-
-Paths and logs:
- - Data root and logs default under the same writable location chosen for settings.
- - Logs are written under the configured LOG_DIR.
-
-Run:
- - Launch BOM_DB.exe inside this folder.
-EOF
-
-echo "[build] Done. Launch: ${DIST_DIR}/${APP_NAME}.exe"
+echo
+echo "Build complete → ./dist/BOM_DB/"
+echo "Verify data folders exist under dist/BOM_DB/ (e.g., data/, static/, app/gui/icons/, migrations/)."
