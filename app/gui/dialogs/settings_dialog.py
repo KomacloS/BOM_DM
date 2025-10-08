@@ -3,11 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 import sys
-import tempfile
-import traceback
-from datetime import datetime, timezone
 
-from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -19,7 +15,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -291,52 +286,16 @@ class SettingsDialog(QDialog):
             QMessageBox.critical(self, "Complex Editor", f"Failed to save settings: {exc}")
             return
         try:
-            from ...integration.ce_bridge_manager import CEBridgeError, ensure_ce_bridge_ready
+            from ...integration.ce_bridge_manager import ensure_ce_bridge_ready
             from ...integration import ce_bridge_client
 
             ensure_ce_bridge_ready()
             payload = ce_bridge_client.healthcheck()
-        except CEBridgeError as exc:
-            report = self._build_ce_diagnostics_report(exc)
-            self._show_bridge_failure(str(exc), report)
-            return
         except Exception as exc:
-            report = self._build_ce_diagnostics_report(exc)
-            self._show_bridge_failure(str(exc), report)
+            QMessageBox.warning(self, "Complex Editor", f"Bridge test failed: {exc}")
             return
         status = payload.get("status") if isinstance(payload, dict) else payload
         QMessageBox.information(self, "Complex Editor", f"Bridge OK: {status}")
-
-    def _build_ce_diagnostics_report(self, exc: Exception) -> str:
-        diagnostics = getattr(exc, "diagnostics", None)
-        if diagnostics is not None:
-            try:
-                return diagnostics.to_text()
-            except Exception:
-                pass
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        trace = traceback.format_exc().rstrip()
-        lines = [
-            "BOM_DB ↔ Complex Editor Bridge Diagnostics",
-            f"Timestamp: {timestamp}",
-            "Outcome: error",
-            f"Reason: {exc}",
-        ]
-        if trace:
-            lines.extend(["", "[Traceback]", trace])
-        return "\n".join(lines)
-
-    def _show_bridge_failure(self, message: str, report: str) -> None:
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("Complex Editor")
-        box.setText(f"Bridge test failed: {message}")
-        details_button = box.addButton("Show Details…", QMessageBox.ButtonRole.ActionRole)
-        box.addButton(QMessageBox.StandardButton.Ok)
-        box.exec()
-        if box.clickedButton() == details_button:
-            dialog = BridgeDiagnosticsDialog(report, self)
-            dialog.exec()
 
     def _apply_portable_defaults(self) -> None:
         data_root = Path(self.data_root_edit.text().strip() or str(config.DATA_ROOT)).expanduser().resolve()
@@ -441,46 +400,3 @@ class SettingsDialog(QDialog):
         if "://" in text:
             return text
         return self._sqlite_url_from_path(Path(text).expanduser())
-
-
-class BridgeDiagnosticsDialog(QDialog):
-    def __init__(self, report: str, parent=None) -> None:
-        super().__init__(parent)
-        self._report = report
-        self.setWindowTitle("Bridge Diagnostics")
-        self.setModal(True)
-
-        layout = QVBoxLayout(self)
-        intro = QLabel("Detailed diagnostics for the Complex Editor bridge.")
-        intro.setWordWrap(True)
-        layout.addWidget(intro)
-
-        self._text = QPlainTextEdit(self)
-        self._text.setReadOnly(True)
-        self._text.setPlainText(report)
-        self._text.setMinimumWidth(640)
-        self._text.setMinimumHeight(400)
-        layout.addWidget(self._text)
-
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        copy_button = button_box.addButton("Copy to Clipboard", QDialogButtonBox.ButtonRole.ActionRole)
-        save_button = button_box.addButton("Save Report…", QDialogButtonBox.ButtonRole.ActionRole)
-        button_box.rejected.connect(self.reject)
-        layout.addWidget(button_box)
-
-        copy_button.clicked.connect(self._copy_to_clipboard)
-        save_button.clicked.connect(self._save_report)
-
-    def _copy_to_clipboard(self) -> None:
-        QGuiApplication.clipboard().setText(self._report)
-
-    def _save_report(self) -> None:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        filename = f"BOM_DB_CE_Diagnostics_{timestamp}.txt"
-        path = Path(tempfile.gettempdir()) / filename
-        try:
-            path.write_text(self._report, encoding="utf-8")
-        except OSError as exc:
-            QMessageBox.critical(self, "Bridge Diagnostics", f"Failed to save report: {exc}")
-            return
-        QMessageBox.information(self, "Bridge Diagnostics", f"Report saved to: {path}")
