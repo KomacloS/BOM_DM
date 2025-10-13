@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from contextlib import closing
 from typing import Any, Dict, Iterable, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -195,7 +194,7 @@ class ComplexPanel(QWidget):
 
     def _load_link_snapshot(self, part_id: int) -> Optional[Dict[str, Any]]:
         try:
-            with closing(app_state.get_session()) as session:
+            with app_state.get_session() as session:
                 result = session.exec(
                     select(ComplexLink).where(ComplexLink.part_id == part_id)
                 ).first()

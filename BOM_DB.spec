@@ -4,9 +4,10 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('data', 'data'), ('static', 'static'), ('app/gui/icons', 'app/gui/icons'), ('migrations', 'migrations')]
 binaries = []
-hiddenimports = []
+hiddenimports = ['app.integration.ce_bridge_manager']
 hiddenimports += collect_submodules('requests')
 hiddenimports += collect_submodules('sqlmodel')
+hiddenimports += collect_submodules('app.integration')
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 

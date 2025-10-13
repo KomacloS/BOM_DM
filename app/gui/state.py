@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Optional
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
 from sqlmodel import Session
@@ -14,10 +15,15 @@ from .. import services
 ensure_schema()
 
 
-def get_session() -> Session:
-    """Return a new database session bound to the configured engine."""
+@contextmanager
+def get_session() -> Iterator[Session]:
+    """Provide a database session that is reliably closed."""
 
-    return new_session()
+    session = new_session()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 class _Worker(QThread):
@@ -26,15 +32,13 @@ class _Worker(QThread):
 
     finished = pyqtSignal(object)
 
-    def __init__(self, fn: Callable, *args, **kwargs) -> None:
+    def __init__(self, fn: Callable[[], Any]) -> None:
         super().__init__()
         self._fn = fn
-        self._args = args
-        self._kwargs = kwargs
 
     def run(self) -> None:  # pragma: no cover - Qt thread
         try:
-            result = self._fn(*self._args, **self._kwargs)
+            result = self._fn()
         except Exception as e:
             result = e
         self.finished.emit(result)
@@ -54,40 +58,49 @@ class AppState(QObject):
         super().__init__()
         self._workers: list[_Worker] = []
 
-    def _run(self, fn: Callable, signal: pyqtSignal, *args) -> None:
-        worker = _Worker(fn, *args)
+    def _run(self, fn: Callable[[], Any], signal: pyqtSignal) -> None:
+        worker = _Worker(fn)
         worker.finished.connect(signal.emit)
         worker.finished.connect(lambda _res, w=worker: self._workers.remove(w))
         self._workers.append(worker)
         worker.start()
 
+    def _run_with_session(self, fn: Callable[[Session], Any], signal: pyqtSignal) -> None:
+        def call() -> Any:
+            with get_session() as session:
+                return fn(session)
+
+        self._run(call, signal)
+
     # ------------------------------------------------------------------
     def refresh_customers(self, q: Optional[str] = None) -> None:
-        self._run(lambda: services.list_customers(q, get_session()), self.customersChanged)
+        self._run_with_session(
+            lambda session: services.list_customers(q, session), self.customersChanged
+        )
 
     def refresh_projects(self, customer_id: int) -> None:
-        self._run(
-            lambda: services.list_projects(customer_id, get_session()), self.projectsChanged
+        self._run_with_session(
+            lambda session: services.list_projects(customer_id, session), self.projectsChanged
         )
 
     def refresh_assemblies(self, project_id: int) -> None:
-        self._run(
-            lambda: services.list_assemblies(project_id, get_session()), self.assembliesChanged
+        self._run_with_session(
+            lambda session: services.list_assemblies(project_id, session), self.assembliesChanged
         )
 
     def refresh_bom_items(self, assembly_id: int) -> None:
-        self._run(
-            lambda: services.list_bom_items(assembly_id, get_session()),
+        self._run_with_session(
+            lambda session: services.list_bom_items(assembly_id, session),
             self.bomItemsChanged,
         )
 
     def refresh_tasks(self, project_id: int, status: Optional[str] = None) -> None:
-        self._run(
-            lambda: services.list_tasks(project_id, status, get_session()), self.tasksChanged
+        self._run_with_session(
+            lambda session: services.list_tasks(project_id, status, session), self.tasksChanged
         )
 
     def import_bom(self, assembly_id: int, data: bytes) -> None:
-        self._run(
-            lambda: services.import_bom(assembly_id, data, get_session()), self.bomImported
+        self._run_with_session(
+            lambda session: services.import_bom(assembly_id, data, session), self.bomImported
         )
 

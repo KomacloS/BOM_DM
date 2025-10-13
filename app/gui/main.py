@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import atexit
 import asyncio
 import os
 import logging
@@ -32,6 +33,9 @@ from .state import AppState
 from .dialogs.settings_dialog import SettingsDialog
 from .widgets import AssembliesPane, CustomersPane, ProjectsPane
 from .bom_editor_pane import BOMEditorPane
+
+# Ensure the Complex Editor bridge is stopped if the application exits unexpectedly.
+atexit.register(stop_ce_bridge_if_started)
 
 
 class MainWindow(QMainWindow):

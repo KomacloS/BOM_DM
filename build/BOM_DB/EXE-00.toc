@@ -73,7 +73,7 @@
  [],
  False,
  False,
- 1759914960,
+ 1760019907,
  [('runw.exe',
    'C:\\Users\\Michael\\Documents\\Python\\BOM_DB_project\\BOM_DB\\.venv\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\runw.exe',
    'EXECUTABLE')],

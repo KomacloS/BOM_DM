@@ -27,6 +27,8 @@ from .ce_bridge_diagnostics import (
 logger = logging.getLogger(__name__)
 
 _BRIDGE_PROCESS: Optional[subprocess.Popen] = None
+_BRIDGE_PID: Optional[int] = None
+_BRIDGE_EXE_PATH: Optional[Path] = None
 _BRIDGE_AUTO_STOP = False
 _LAST_DIAGNOSTICS: Optional[CEBridgeDiagnostics] = None
 
@@ -69,7 +71,7 @@ def _launch_bridge(
     auto_stop: bool,
     diagnostics: CEBridgeDiagnostics,
 ) -> None:
-    global _BRIDGE_PROCESS, _BRIDGE_AUTO_STOP
+    global _BRIDGE_PROCESS, _BRIDGE_PID, _BRIDGE_EXE_PATH, _BRIDGE_AUTO_STOP
     if _BRIDGE_PROCESS is not None and _BRIDGE_PROCESS.poll() is None:
         diagnostics.spawn_attempted = False
         logger.debug("Complex Editor bridge process already running (pid=%s)", _BRIDGE_PROCESS.pid)
@@ -98,6 +100,8 @@ def _launch_bridge(
         diagnostics.spawn_error = short_exc(exc)
         raise CEBridgeError(f"Failed to launch Complex Editor bridge: {exc}") from exc
     _BRIDGE_PROCESS = proc
+    _BRIDGE_PID = proc.pid
+    _BRIDGE_EXE_PATH = exe
     _BRIDGE_AUTO_STOP = auto_stop
     diagnostics.spawn_pid = proc.pid
     logger.info("Started Complex Editor bridge (pid=%s)", proc.pid)
@@ -237,13 +241,14 @@ def ensure_ce_bridge_ready(timeout_seconds: float = 4.0) -> None:
 
 
 def stop_ce_bridge_if_started() -> None:
-    global _BRIDGE_PROCESS, _BRIDGE_AUTO_STOP
-    if _BRIDGE_PROCESS is None:
+    global _BRIDGE_PROCESS, _BRIDGE_PID, _BRIDGE_EXE_PATH, _BRIDGE_AUTO_STOP
+    if _BRIDGE_PROCESS is None and _BRIDGE_PID is None and _BRIDGE_EXE_PATH is None:
         return
     if not _BRIDGE_AUTO_STOP:
         return
     proc = _BRIDGE_PROCESS
-    if proc.poll() is None:
+    pid = _BRIDGE_PID if _BRIDGE_PID is not None else (proc.pid if proc is not None else None)
+    if proc is not None and proc.poll() is None:
         try:
             proc.terminate()
             try:
@@ -252,5 +257,38 @@ def stop_ce_bridge_if_started() -> None:
                 proc.kill()
         except Exception:  # pragma: no cover - best effort
             pass
+    if os.name == "nt" and pid is not None:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:  # pragma: no cover - best effort
+            pass
+    exe_path = _BRIDGE_EXE_PATH
+    if os.name == "nt" and exe_path is not None:
+        try:
+            escaped_exe_path = str(exe_path).replace("'", "''")
+            subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        "Get-Process | Where-Object { $_.Path -eq "
+                        f"'{escaped_exe_path}' }} | "
+                        "Stop-Process -Force"
+                    ),
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:  # pragma: no cover - best effort
+            pass
     _BRIDGE_PROCESS = None
+    _BRIDGE_PID = None
+    _BRIDGE_EXE_PATH = None
     _BRIDGE_AUTO_STOP = False

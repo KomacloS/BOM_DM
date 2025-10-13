@@ -16,6 +16,7 @@ Environment variables (quick overrides):
 
 from __future__ import annotations
 
+import atexit
 from pathlib import Path
 import os
 import sys
@@ -272,6 +273,18 @@ def load_settings() -> str:
 
 DATABASE_URL = load_settings()
 _ENGINE: Engine = create_engine(DATABASE_URL, echo=False)
+
+
+def dispose_engine() -> None:
+    """Dispose the global engine, releasing any pooled connections."""
+    global _ENGINE
+    try:
+        _ENGINE.dispose()
+    except Exception:
+        pass
+
+
+atexit.register(dispose_engine)
 
 def get_engine(url: Optional[str] = None) -> Engine:
     """Return engine, recreating if the URL changed."""
