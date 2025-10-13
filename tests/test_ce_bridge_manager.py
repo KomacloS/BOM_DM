@@ -1,6 +1,7 @@
 import datetime
 import os
 import subprocess
+import json
 import time
 import types
 
@@ -217,6 +218,70 @@ def test_stop_bridge_skips_when_unsaved(monkeypatch):
     ce_bridge_manager.stop_ce_bridge_if_started()
     assert proc.terminated is False
     assert ce_bridge_manager._BRIDGE_PROCESS is proc
+
+
+def test_launch_ce_wizard_includes_config(monkeypatch, tmp_path):
+    exe = tmp_path / "complex_editor.exe"
+    exe.write_text("echo")
+    exe.chmod(0o755)
+    config_path = tmp_path / "ce.yml"
+    config_path.write_text("config: true")
+
+    monkeypatch.setattr(
+        ce_bridge_manager.config,
+        "get_complex_editor_settings",
+        lambda: {"exe_path": str(exe), "config_path": str(config_path)},
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return DummyProcess()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    buffer_path = ce_bridge_manager.launch_ce_wizard("PN-123", ["ALT"])
+    assert buffer_path.exists()
+    payload = json.loads(buffer_path.read_text("utf-8"))
+    assert payload == {"pn": "PN-123", "aliases": ["ALT"]}
+
+    cmd = captured.get("cmd")
+    assert isinstance(cmd, list)
+    assert cmd[0] == str(exe)
+    assert cmd[1] == "--load-buffer"
+    assert cmd[2] == str(buffer_path)
+    assert cmd[3:5] == ["--config", str(config_path)]
+
+
+def test_launch_ce_wizard_without_config(monkeypatch, tmp_path):
+    exe = tmp_path / "complex_editor.exe"
+    exe.write_text("echo")
+    exe.chmod(0o755)
+
+    monkeypatch.setattr(
+        ce_bridge_manager.config,
+        "get_complex_editor_settings",
+        lambda: {"exe_path": str(exe), "config_path": ""},
+    )
+
+    captured: dict[str, object] = {}
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return DummyProcess()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    buffer_path = ce_bridge_manager.launch_ce_wizard("PN-123", None)
+    assert buffer_path.exists()
+    payload = json.loads(buffer_path.read_text("utf-8"))
+    assert payload == {"pn": "PN-123"}
+
+    cmd = captured.get("cmd")
+    assert isinstance(cmd, list)
+    assert "--config" not in cmd
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows does not use POSIX execute bit checks")

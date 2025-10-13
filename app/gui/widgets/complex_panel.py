@@ -22,12 +22,12 @@ from PyQt6.QtWidgets import (
 )
 from sqlmodel import select
 
-from app.domain import complex_linker
-from app.domain.complex_linker import ComplexLink
+from app.config import get_complex_editor_settings
+from app.domain import complex_creation, complex_linker
+from app.domain.complex_linker import CEWizardLaunchError, ComplexLink
 from app.integration import ce_bridge_client
 from app.integration.ce_bridge_client import CEAuthError, CENetworkError, CENotFound
 from app.gui import state as app_state
-from app.config import get_complex_editor_settings
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,8 @@ class ComplexPanel(QWidget):
         self._ce_settings = get_complex_editor_settings()
         self._creation_poll_timer: Optional[QTimer] = None
         self._creation_poll_deadline: float = 0.0
+        self._creation_poller: Optional[complex_creation.WizardPoller] = None
+        self._wizard_buffer_path: Optional[str] = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -146,22 +148,37 @@ class ComplexPanel(QWidget):
                 return value
         return 240.0
 
-    def _stop_creation_poll(self) -> None:
+    def _stop_creation_poll(self, *, keep_retry: bool = False) -> None:
         if self._creation_poll_timer is not None:
             self._creation_poll_timer.stop()
             self._creation_poll_timer.deleteLater()
             self._creation_poll_timer = None
         self._creation_poll_deadline = 0.0
+        self._creation_poller = None
         self.progress.setVisible(False)
+        self._set_refresh_label(keep_retry)
 
-    def _start_creation_poll(self) -> None:
+    def _start_creation_poll(self, outcome: complex_linker.CreateComplexOutcome) -> None:
         self._stop_creation_poll()
+        if not outcome.polling_enabled or self._part_id is None or not self._part_number:
+            self.progress.setVisible(False)
+            self._set_refresh_label(True)
+            return
+
+        self._set_refresh_label(True)
+        self._creation_poller = complex_creation.WizardPoller(
+            self._part_id,
+            self._part_number,
+            limit=5,
+            attach=complex_linker.attach_existing_complex,
+        )
         timeout = max(1.0, self._creation_timeout_seconds())
         self._creation_poll_deadline = time.monotonic() + timeout
         self._creation_poll_timer = QTimer(self)
-        self._creation_poll_timer.setInterval(5_000)
+        self._creation_poll_timer.setInterval(1_000)
         self._creation_poll_timer.timeout.connect(self._poll_for_created_complex)
         self._creation_poll_timer.start()
+        self.progress.setVisible(True)
         # Kick off an immediate poll so the user gets quick feedback
         self._poll_for_created_complex()
 
@@ -170,29 +187,33 @@ class ComplexPanel(QWidget):
             self._stop_creation_poll()
             return
         if self._creation_poll_deadline and time.monotonic() > self._creation_poll_deadline:
+            self._stop_creation_poll(keep_retry=True)
+            self.status_label.setText("Still waiting for save in CE…")
+            return
+        poller = self._creation_poller
+        if poller is None:
             self._stop_creation_poll()
-            self.status_label.setText(
-                "Still open in Complex Editor—click Refresh after saving."
-            )
             return
         try:
-            attached = complex_linker.auto_link_by_pn(
-                self._part_id, self._part_number, limit=3
-            )
+            result = poller.poll_once()
         except CEAuthError as exc:
-            self._stop_creation_poll()
-            self._show_error("Authentication", str(exc))
+            logger.info("Complex Editor polling auth failure: %s", exc)
+            self._stop_creation_poll(keep_retry=True)
+            self.status_label.setText("Still waiting for save in CE…")
             return
         except CENetworkError as exc:
-            self._stop_creation_poll()
-            self._show_error("Network", str(exc))
+            logger.info("Complex Editor polling network failure: %s", exc)
+            self._stop_creation_poll(keep_retry=True)
+            self.status_label.setText("Still waiting for save in CE…")
             return
-        if attached and self._part_id is not None:
+        if result.attached and self._part_id is not None:
             self._stop_creation_poll()
             self._current_link = self._load_link_snapshot(self._part_id)
             self._update_link_display()
             self.linkUpdated.emit(self._part_id)
             ce_id = self._current_link.get("ce_complex_id") if self._current_link else ""
+            complex_creation.cleanup_buffer(self._wizard_buffer_path)
+            self._wizard_buffer_path = None
             self.status_label.setText(
                 f"Complex saved in Complex Editor and attached (ID: {ce_id})."
             )
@@ -205,6 +226,7 @@ class ComplexPanel(QWidget):
             self._part_id = None
             self._part_number = ""
             self._stop_creation_poll()
+            self._set_refresh_label(False)
             self._pn_label.setText("Current PN: -")
             self._current_link = None
             self._update_link_display()
@@ -223,6 +245,7 @@ class ComplexPanel(QWidget):
         self._part_id = part_id
         self._part_number = pn or ""
         self._stop_creation_poll()
+        self._set_refresh_label(False)
         self._pn_label.setText(f"Current PN: {self._part_number or '-'}")
         self.search_edit.setText(self._part_number)
         self.results_list.clear()
@@ -261,9 +284,35 @@ class ComplexPanel(QWidget):
             self._update_buttons_state()
         QApplication.processEvents()
 
+    def _set_refresh_label(self, waiting: bool) -> None:
+        text = "Retry" if waiting else "Refresh"
+        if self.refresh_button.text() != text:
+            self.refresh_button.setText(text)
+
     def _show_error(self, title: str, message: str) -> None:
         QMessageBox.warning(self, title, message)
         self.status_label.setText(message)
+
+    def _show_launch_error(self, exc: CEWizardLaunchError) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Complex Editor")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(str(exc))
+        fix_button = None
+        if exc.fix_in_settings:
+            fix_button = box.addButton("Fix in Settings", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        self.status_label.setText(str(exc))
+        if fix_button is not None and box.clickedButton() == fix_button:
+            self._open_settings_dialog()
+
+    def _open_settings_dialog(self) -> None:
+        from app.gui.dialogs.settings_dialog import SettingsDialog
+
+        dialog = SettingsDialog(self)
+        dialog.exec()
+        self._ce_settings = get_complex_editor_settings()
 
     def _load_link_snapshot(self, part_id: int) -> Optional[Dict[str, Any]]:
         try:
@@ -364,6 +413,11 @@ class ComplexPanel(QWidget):
     def _on_create_clicked(self) -> None:
         if self._part_id is None:
             return
+        if self._creation_poll_timer is not None:
+            self.status_label.setText(
+                "Wizard already open / polling in progress."
+            )
+            return
         if not self._part_number:
             self._show_error("Create", "Part number is required to create a complex.")
             return
@@ -378,8 +432,10 @@ class ComplexPanel(QWidget):
             outcome = complex_linker.create_and_attach_complex(
                 self._part_id, self._part_number, aliases
             )
-        except CEAuthError as exc:
-            self._show_error("Authentication", str(exc))
+        except CEWizardLaunchError as exc:
+            self._set_busy(False)
+            self._show_launch_error(exc)
+            return
         except CENetworkError as exc:
             self._show_error("Network", str(exc))
         except Exception as exc:  # pragma: no cover - defensive
@@ -394,16 +450,19 @@ class ComplexPanel(QWidget):
                     self._update_link_display()
                     self.linkUpdated.emit(self._part_id)
             elif outcome.status == "wizard":
+                self._wizard_buffer_path = outcome.buffer_path
                 self.status_label.setText(outcome.message)
                 self.progress.setVisible(True)
                 self.progress.setRange(0, 0)
-                self._start_creation_poll()
+                self._start_creation_poll(outcome)
             elif outcome.status == "cancelled":
                 self.status_label.setText(outcome.message)
         finally:
             self._set_busy(False)
             if outcome and outcome.status == "wizard":
-                self.progress.setVisible(True)
+                if not outcome.polling_enabled:
+                    self.progress.setVisible(False)
+                    self._set_refresh_label(True)
 
     def _on_refresh_clicked(self) -> None:
         if self._part_id is None or not self._part_number:
@@ -427,10 +486,12 @@ class ComplexPanel(QWidget):
                 self._current_link = self._load_link_snapshot(self._part_id)
                 self._update_link_display()
                 self.linkUpdated.emit(self._part_id)
+                self._set_refresh_label(False)
+                complex_creation.cleanup_buffer(self._wizard_buffer_path)
+                self._wizard_buffer_path = None
             else:
-                self.status_label.setText(
-                    "Still open in Complex Editor—click Refresh after saving."
-                )
+                self.status_label.setText("Still waiting for save in CE…")
+                self._set_refresh_label(True)
         finally:
             self._set_busy(False)
 
