@@ -5,18 +5,50 @@ import time
 import types
 
 import pytest
-import requests
+from requests import exceptions as req_exc
 
-from app.integration import ce_bridge_manager
+from app.integration import ce_bridge_manager, ce_bridge_transport
+
+
+class DummySession:
+    def __init__(self):
+        self.get_handler = lambda url, headers=None, timeout=None: types.SimpleNamespace(
+            ok=True, status_code=200
+        )
+        self.request_handler = (
+            lambda method, url, headers=None, timeout=None, **kwargs: types.SimpleNamespace(
+                ok=True,
+                status_code=200,
+                json=lambda: {},
+            )
+        )
+        self.post_handler = lambda url, headers=None, timeout=None, **kwargs: types.SimpleNamespace(
+            status_code=200,
+            json=lambda: {"ok": True},
+        )
+        self.trust_env = False
+
+    def get(self, url, headers=None, timeout=None):
+        return self.get_handler(url, headers=headers, timeout=timeout)
+
+    def request(self, method, url, headers=None, timeout=None, **kwargs):
+        return self.request_handler(
+            method, url, headers=headers, timeout=timeout, **kwargs
+        )
+
+    def post(self, url, headers=None, timeout=None, **kwargs):
+        return self.post_handler(url, headers=headers, timeout=timeout, **kwargs)
 
 
 @pytest.fixture(autouse=True)
 def _reset_bridge_state():
     ce_bridge_manager._BRIDGE_PROCESS = None
     ce_bridge_manager._BRIDGE_AUTO_STOP = False
+    ce_bridge_transport.reset_transport_state()
     yield
     ce_bridge_manager._BRIDGE_PROCESS = None
     ce_bridge_manager._BRIDGE_AUTO_STOP = False
+    ce_bridge_transport.reset_transport_state()
 
 
 def test_ensure_skips_when_bridge_running(monkeypatch):
@@ -37,11 +69,12 @@ def test_ensure_skips_when_bridge_running(monkeypatch):
     monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
 
     response = types.SimpleNamespace(ok=True, status_code=200)
-
-    def fake_get(url, headers=None, timeout=None):
-        return response
-
-    monkeypatch.setattr(requests, "get", fake_get)
+    session = DummySession()
+    session.get_handler = lambda *_args, **_kwargs: response
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda: session)
+    monkeypatch.setattr(
+        ce_bridge_transport, "preflight_ready", lambda *a, **kw: {"ready": True}
+    )
 
     popen_called = False
 
@@ -112,14 +145,19 @@ def test_ensure_spawns_when_unhealthy(monkeypatch, tmp_path):
     )
 
     calls: list[tuple[str, dict | None]] = []
+    session = DummySession()
 
     def fake_get(url, headers=None, timeout=None):
         calls.append((url, headers))
         if len(calls) == 1:
-            raise requests.exceptions.ConnectionError()
+            raise req_exc.ConnectionError()
         return types.SimpleNamespace(ok=True, status_code=200)
 
-    monkeypatch.setattr(requests, "get", fake_get)
+    session.get_handler = fake_get
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda: session)
+    monkeypatch.setattr(
+        ce_bridge_transport, "preflight_ready", lambda *a, **kw: {"ready": True}
+    )
 
     dummy_proc = DummyProcess()
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: dummy_proc)
@@ -203,10 +241,11 @@ def test_ensure_rejects_non_executable(monkeypatch, tmp_path):
     }
 
     monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
+    session = DummySession()
+    session.get_handler = lambda *a, **kw: types.SimpleNamespace(ok=False, status_code=503)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda: session)
     monkeypatch.setattr(
-        requests,
-        "get",
-        lambda *a, **kw: types.SimpleNamespace(ok=False, status_code=503),
+        ce_bridge_transport, "preflight_ready", lambda *a, **kw: {"ready": True}
     )
 
     with pytest.raises(ce_bridge_manager.CEBridgeError) as excinfo:
@@ -240,10 +279,16 @@ def test_timeout_records_diagnostics(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
 
-    def failing_get(*_args, **_kwargs):
-        raise requests.exceptions.ConnectionError()
+    session = DummySession()
 
-    monkeypatch.setattr(requests, "get", failing_get)
+    def failing_get(*_args, **_kwargs):
+        raise req_exc.ConnectionError()
+
+    session.get_handler = failing_get
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda: session)
+    monkeypatch.setattr(
+        ce_bridge_transport, "preflight_ready", lambda *a, **kw: {"ready": True}
+    )
 
     dummy_proc = DummyProcess()
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: dummy_proc)
