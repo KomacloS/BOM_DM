@@ -1,14 +1,15 @@
 import pytest
+from pathlib import Path
+
+import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.domain import complex_linker
-from app.domain.complex_linker import ComplexLink
-from app.integration.ce_bridge_client import (
-    CENetworkError,
-    CEUserCancelled,
-    CEWizardUnavailable,
-)
+from app.domain.complex_creation import WizardLaunchResult
+from app.domain.complex_linker import CEWizardLaunchError, ComplexLink
+from app.integration.ce_bridge_client import CENetworkError
+from app.integration.ce_bridge_manager import CEBridgeError
 
 
 @pytest.fixture
@@ -76,61 +77,74 @@ def test_attach_existing_complex_inserts_and_updates(monkeypatch, sqlite_engine)
         assert link.synced_at == "2024-01-02T00:00:00"
 
 
-def test_create_and_attach_complex(monkeypatch, sqlite_engine):
-    created = {"id": "ce-99"}
-    detail = {
-        "id": "ce-99",
-        "db_path": "D:/complex99.mdb",
-        "aliases": [],
-        "pin_map": {},
-        "macro_ids": [],
-        "source_hash": None,
-    }
-    monkeypatch.setattr(complex_linker.ce_bridge_client, "create_complex", lambda pn, aliases=None: created)
-    monkeypatch.setattr(complex_linker.ce_bridge_client, "get_complex", lambda _id: detail)
-    monkeypatch.setattr(complex_linker, "_utc_iso", lambda: "2024-03-01T12:00:00")
-
-    outcome = complex_linker.create_and_attach_complex(7, "PN-777")
-    assert outcome.status == "attached"
-    assert outcome.created_id == "ce-99"
-
-    with Session(sqlite_engine) as session:
-        link = session.exec(select(ComplexLink).where(ComplexLink.part_id == 7)).one()
-        assert link.ce_complex_id == "ce-99"
-        assert link.ce_db_uri == "D:/complex99.mdb"
-        assert link.synced_at == "2024-03-01T12:00:00"
-
-
-def test_create_and_attach_complex_wizard(monkeypatch, sqlite_engine):
-    def raise_wizard(_pn, _aliases=None):
-        raise CEWizardUnavailable("wizard handler unavailable")
-
-    monkeypatch.setattr(
-        complex_linker.ce_bridge_client, "create_complex", raise_wizard
+def test_create_complex_launches_gui(monkeypatch):
+    captured: list[tuple[str, list[str]]] = []
+    buffer_path = Path("/tmp/ce-buffer.json")
+    launch_result = WizardLaunchResult(
+        pn="PN-777",
+        aliases=["ALT"],
+        buffer_path=buffer_path,
     )
 
-    launched: list[tuple[str, list[str]]] = []
+    monkeypatch.setattr(
+        complex_linker.config,
+        "get_complex_editor_settings",
+        lambda: {"bridge": {"enabled": True}},
+    )
 
     def fake_launch(pn: str, aliases):
-        launched.append((pn, list(aliases)))
+        cleaned = [a.strip() for a in aliases if isinstance(a, str) and a.strip()]
+        captured.append((pn, cleaned))
+        return launch_result
 
-    monkeypatch.setattr(complex_linker, "launch_ce_wizard", fake_launch)
+    monkeypatch.setattr(complex_linker.complex_creation, "launch_wizard", fake_launch)
 
-    outcome = complex_linker.create_and_attach_complex(3, "PN-300", ["ALT"])
+    outcome = complex_linker.create_and_attach_complex(7, "PN-777", ["ALT", " "])
     assert outcome.status == "wizard"
-    assert launched == [("PN-300", ["ALT"])]
+    assert outcome.pn == "PN-777"
+    assert outcome.aliases == ["ALT"]
+    assert outcome.buffer_path == str(buffer_path)
+    assert outcome.polling_enabled is True
+    assert captured == [("PN-777", ["ALT"])]
 
 
-def test_create_and_attach_complex_cancelled(monkeypatch, sqlite_engine):
-    def raise_cancel(_pn, _aliases=None):
-        raise CEUserCancelled("cancelled")
-
-    monkeypatch.setattr(
-        complex_linker.ce_bridge_client, "create_complex", raise_cancel
+def test_create_complex_launch_disabled_poll(monkeypatch):
+    launch_result = WizardLaunchResult(
+        pn="PN-200",
+        aliases=[],
+        buffer_path=Path("/tmp/buf.json"),
     )
 
-    outcome = complex_linker.create_and_attach_complex(4, "PN-400")
-    assert outcome.status == "cancelled"
+    monkeypatch.setattr(
+        complex_linker.config,
+        "get_complex_editor_settings",
+        lambda: {"bridge": {"enabled": False}},
+    )
+    monkeypatch.setattr(
+        complex_linker.complex_creation, "launch_wizard", lambda pn, aliases: launch_result
+    )
+
+    outcome = complex_linker.create_and_attach_complex(2, "PN-200")
+    assert outcome.status == "wizard"
+    assert outcome.polling_enabled is False
+
+
+def test_create_complex_launch_error_flags_fix(monkeypatch):
+    monkeypatch.setattr(
+        complex_linker.config,
+        "get_complex_editor_settings",
+        lambda: {},
+    )
+
+    def fake_launch(_pn: str, _aliases: list[str]):
+        raise CEBridgeError("Complex Editor executable not found: C:/missing.exe")
+
+    monkeypatch.setattr(complex_linker.complex_creation, "launch_wizard", fake_launch)
+
+    with pytest.raises(CEWizardLaunchError) as excinfo:
+        complex_linker.create_and_attach_complex(1, "PN-100")
+
+    assert excinfo.value.fix_in_settings is True
 
 
 def test_auto_link_by_pn_success_and_network(monkeypatch):

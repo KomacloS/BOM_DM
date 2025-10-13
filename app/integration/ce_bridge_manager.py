@@ -11,6 +11,7 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import contextlib
 from pathlib import Path
 import tempfile
 from typing import List, Optional, Sequence, Tuple
@@ -20,7 +21,6 @@ from requests import Response
 from requests import exceptions as req_exc
 
 from app import config
-from app.integration import ce_bridge_transport
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +176,9 @@ class CEBridgeDiagnostics:
         if len(text) > 200_000:
             return text[:199_000] + "\n<trimmed>"
         return text
+
+
+from app.integration import ce_bridge_transport
 
 
 def _mask_token(token: str) -> str:
@@ -553,8 +556,13 @@ def _bridge_request_without_ensure(
         return None
 
 
-def launch_ce_wizard(pn: str, aliases: Sequence[str] | None = None) -> None:
-    """Launch the Complex Editor GUI wizard with the provided PN prefilled."""
+def launch_ce_wizard(pn: str, aliases: Sequence[str] | None = None) -> Path:
+    """Launch the Complex Editor GUI wizard with the provided PN prefilled.
+
+    The function returns the path to the temporary buffer JSON that was
+    provided to the Complex Editor process. Callers are responsible for
+    deleting the file once it is no longer needed.
+    """
 
     settings = config.get_complex_editor_settings()
     if not isinstance(settings, dict):
@@ -578,13 +586,17 @@ def launch_ce_wizard(pn: str, aliases: Sequence[str] | None = None) -> None:
         payload["aliases"] = alias_list
 
     try:
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json", encoding="utf-8") as handle:
+        with tempfile.NamedTemporaryFile(
+            "w", delete=False, suffix=".json", encoding="utf-8"
+        ) as handle:
             json.dump(payload, handle)
-            buffer_path = handle.name
+            buffer_path = Path(handle.name)
     except OSError as exc:  # pragma: no cover - filesystem failure
-        raise CEBridgeError(f"Failed to prepare Complex Editor wizard buffer: {exc}") from exc
+        raise CEBridgeError(
+            f"Failed to prepare Complex Editor wizard buffer: {exc}"
+        ) from exc
 
-    cmd = [str(exe), "--load-buffer", buffer_path]
+    cmd = [str(exe), "--load-buffer", str(buffer_path)]
     config_path = str(settings.get("config_path") or "").strip()
     if config_path:
         cmd.extend(["--config", config_path])
@@ -605,7 +617,11 @@ def launch_ce_wizard(pn: str, aliases: Sequence[str] | None = None) -> None:
             startupinfo=startupinfo,
         )
     except Exception as exc:
+        with contextlib.suppress(Exception):
+            buffer_path.unlink(missing_ok=True)
         raise CEBridgeError(f"Failed to launch Complex Editor wizard: {exc}") from exc
+
+    return buffer_path
 
 def stop_ce_bridge_if_started() -> None:
     global _BRIDGE_PROCESS, _BRIDGE_AUTO_STOP

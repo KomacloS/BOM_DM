@@ -1,7 +1,11 @@
 import os
 
 import pytest
-from PyQt6.QtWidgets import QApplication
+
+try:
+    from PyQt6.QtWidgets import QApplication
+except ImportError:
+    pytest.skip("PyQt6 not available", allow_module_level=True)
 
 from app.gui.widgets.complex_panel import ComplexPanel
 

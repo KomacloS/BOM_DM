@@ -4,18 +4,15 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Literal, Optional
 
 from sqlmodel import Field, SQLModel, Session, select
 
-from app import database
+from app import config, database
+from app.domain import complex_creation
 from app.integration import ce_bridge_client
-from app.integration.ce_bridge_client import (
-    CENetworkError,
-    CEUserCancelled,
-    CEWizardUnavailable,
-)
-from app.integration.ce_bridge_manager import CEBridgeError, launch_ce_wizard
+from app.integration.ce_bridge_client import CENetworkError
+from app.integration.ce_bridge_manager import CEBridgeError
 
 logger = logging.getLogger(__name__)
 
@@ -96,49 +93,58 @@ class CreateComplexOutcome:
     status: Literal["attached", "wizard", "cancelled"]
     message: str
     created_id: Optional[str] = None
+    buffer_path: Optional[str] = None
+    pn: Optional[str] = None
+    aliases: Optional[list[str]] = None
+    polling_enabled: bool = False
+
+
+class CEWizardLaunchError(CENetworkError):
+    """Raised when the Complex Editor GUI wizard cannot be launched."""
+
+    def __init__(self, message: str, *, fix_in_settings: bool = False) -> None:
+        super().__init__(message)
+        self.fix_in_settings = fix_in_settings
+
+
+def _bridge_polling_enabled(settings: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(settings, dict):
+        return False
+    bridge_cfg = settings.get("bridge", {})
+    if not isinstance(bridge_cfg, dict):
+        return False
+    return bool(bridge_cfg.get("enabled", True))
+
+
+def _needs_settings_fix(error: CEBridgeError) -> bool:
+    message = str(error).lower()
+    return "complex editor executable" in message or "config" in message
 
 
 def create_and_attach_complex(
     part_id: int, pn: str, aliases: list[str] | None = None
 ) -> CreateComplexOutcome:
     try:
-        created = ce_bridge_client.create_complex(pn, aliases)
-    except CEWizardUnavailable:
-        alias_list = aliases or []
-        try:
-            launch_ce_wizard(pn, alias_list)
-        except CEBridgeError as exc:
-            raise CENetworkError(str(exc)) from exc
-        message = "Opened Complex Editor wizard—finish and we’ll attach automatically…"
-        logger.info("Launched Complex Editor wizard for part %s", pn)
-        return CreateComplexOutcome(status="wizard", message=message)
-    except CEUserCancelled:
-        return CreateComplexOutcome(
-            status="cancelled", message="Creation cancelled in Complex Editor."
-        )
+        launch = complex_creation.launch_wizard(pn, aliases or [])
+    except CEBridgeError as exc:
+        raise CEWizardLaunchError(str(exc), fix_in_settings=_needs_settings_fix(exc)) from exc
 
-    ce_id = str(created.get("id") or created.get("ce_id") or "").strip()
-    if not ce_id:
-        raise CENetworkError("Complex Editor bridge returned an incomplete create response.")
-    attach_existing_complex(part_id, ce_id)
-    logger.info("Created Complex %s for part %s", ce_id, part_id)
+    message = f"Opened Complex Editor wizard for {pn}. Save in CE to complete."
+    settings = config.get_complex_editor_settings()
+    logger.info("Launched Complex Editor wizard for part %s", pn)
     return CreateComplexOutcome(
-        status="attached",
-        message=f"Created new Complex for part {pn}.",
-        created_id=ce_id,
+        status="wizard",
+        message=message,
+        buffer_path=str(launch.buffer_path),
+        pn=launch.pn,
+        aliases=launch.aliases,
+        polling_enabled=_bridge_polling_enabled(settings),
     )
-
-
-def _match_aliases(target: str, aliases: Iterable[Any]) -> bool:
-    for alias in aliases:
-        if isinstance(alias, str) and alias.strip().lower() == target:
-            return True
-    return False
 
 
 def auto_link_by_pn(part_id: int, pn: str, limit: int = 10) -> bool:
     """If exactly one exact match by PN or alias from CE, attach and return True; else False."""
-    target = (pn or "").strip().lower()
+    target = (pn or "").strip()
     if not target:
         return False
     try:
@@ -146,20 +152,9 @@ def auto_link_by_pn(part_id: int, pn: str, limit: int = 10) -> bool:
     except CENetworkError:
         logger.info("Complex Editor bridge unavailable during auto-link for part %s", part_id)
         return False
-    if not matches:
+    chosen = complex_creation.select_exact_match(pn, matches)
+    if not chosen:
         return False
-
-    exact_matches = []
-    for item in matches:
-        if not isinstance(item, dict):
-            continue
-        item_pn = str(item.get("pn") or item.get("part_number") or "").strip().lower()
-        aliases = item.get("aliases") or []
-        if item_pn == target or _match_aliases(target, aliases):
-            exact_matches.append(item)
-    if len(exact_matches) != 1:
-        return False
-    chosen = exact_matches[0]
     ce_id = chosen.get("id") or chosen.get("ce_id")
     if not ce_id:
         return False
