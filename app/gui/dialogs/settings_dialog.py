@@ -292,9 +292,27 @@ class SettingsDialog(QDialog):
             return
         try:
             from ...integration.ce_bridge_manager import ensure_ce_bridge_ready
-            from ...integration import ce_bridge_client
+            from ...integration import ce_bridge_client, ce_bridge_transport
 
             ensure_ce_bridge_ready()
+            settings = config.get_complex_editor_settings()
+            bridge_cfg = settings.get("bridge", {}) if isinstance(settings, dict) else {}
+            base_url = str(
+                bridge_cfg.get("base_url") or ce_values["bridge_base_url"]
+            )
+            token = str(
+                bridge_cfg.get("auth_token") or ce_values["bridge_auth_token"]
+            )
+            timeout = float(
+                bridge_cfg.get("request_timeout_seconds")
+                or ce_values["bridge_request_timeout_seconds"]
+                or 10
+            )
+            ce_bridge_transport.preflight_ready(
+                base_url,
+                token,
+                request_timeout_s=timeout,
+            )
             payload = ce_bridge_client.healthcheck()
         except Exception as exc:
             diagnostics_text = self._diagnostics_text_from_exception(exc)
@@ -313,8 +331,28 @@ class SettingsDialog(QDialog):
                 dialog = BridgeDiagnosticsDialog(self, diagnostics_text)
                 dialog.exec()
             return
-        status = payload.get("status") if isinstance(payload, dict) else payload
-        QMessageBox.information(self, "Complex Editor", f"Bridge OK: {status}")
+        info_lines = []
+        if isinstance(payload, dict):
+            status = str(payload.get("status") or payload.get("state") or "ok")
+            info_lines.append(f"Status: {status}")
+            details_map = [
+                ("Version", payload.get("version")),
+                ("Host", payload.get("host")),
+                ("Port", payload.get("port")),
+                ("Auth", payload.get("auth")),
+                ("Database", payload.get("db_path") or payload.get("database")),
+            ]
+            for label, value in details_map:
+                if value is None or value == "":
+                    continue
+                info_lines.append(f"{label}: {value}")
+        else:
+            info_lines.append(f"Status: {payload}")
+        QMessageBox.information(
+            self,
+            "Complex Editor",
+            "Bridge OK!\n" + "\n".join(info_lines),
+        )
 
     def _diagnostics_text_from_exception(self, exc: Exception) -> str:
         diagnostics = getattr(exc, "diagnostics", None)

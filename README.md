@@ -111,6 +111,19 @@ python -m gui.control_center
 This opens a simple interface for authentication, importing BOMs, and other
 debug actions.
 
+## Complex Editor bridge communication
+
+The GUI's Complex Editor integrations now perform a preflight readiness
+handshake before any other API calls. The handshake uses a shared
+proxy-bypassing HTTP session, always attaches the configured bearer token, and
+polls `/state` and `/selftest` until the bridge reports `ready == true`. If the
+bridge takes too long, the helper surfaces the latest reason gathered from
+`/state` or `/health` (for example `mdb_unavailable`).
+
+See [docs/ce_bridge_communication.md](docs/ce_bridge_communication.md) for a
+detailed narrative of the handshake and its integration points across the
+application.
+
 ## Datasheet Search & AI Rerank
 
 The GUI can search the web for datasheet PDFs and optionally use an AI model

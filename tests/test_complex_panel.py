@@ -37,6 +37,10 @@ def test_complex_panel_search_and_attach(monkeypatch, qapp):
         "app.integration.ce_bridge_client.ensure_ce_bridge_ready",
         lambda: None,
     )
+    monkeypatch.setattr(
+        "app.integration.ce_bridge_client.is_preflight_recent",
+        lambda max_age_s=5.0: True,
+    )
 
     link_snapshot = {}
 

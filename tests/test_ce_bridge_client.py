@@ -2,7 +2,7 @@ import json
 import pytest
 from requests import exceptions as req_exc
 
-from app.integration import ce_bridge_client
+from app.integration import ce_bridge_client, ce_bridge_transport
 
 
 class DummyResponse:
@@ -20,6 +20,25 @@ class DummyResponse:
             raise req_exc.HTTPError(f"status {self.status_code}")
 
 
+class DummySession:
+    def __init__(self):
+        self.trust_env = False
+        self.request_func = None
+        self.last_call: dict[str, Any] | None = None
+
+    def request(self, method, url, headers=None, timeout=None, **kwargs):
+        self.last_call = {
+            "method": method,
+            "url": url,
+            "headers": headers,
+            "timeout": timeout,
+            "kwargs": kwargs,
+        }
+        if self.request_func:
+            return self.request_func(method, url, headers=headers, timeout=timeout, **kwargs)
+        return DummyResponse(200, {})
+
+
 @pytest.fixture(autouse=True)
 def _fixed_settings(monkeypatch):
     settings = {
@@ -34,18 +53,19 @@ def _fixed_settings(monkeypatch):
     }
     monkeypatch.setattr(ce_bridge_client, "get_complex_editor_settings", lambda: settings)
     monkeypatch.setattr(ce_bridge_client, "ensure_ce_bridge_ready", lambda: None)
+    session = DummySession()
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda: session)
+    monkeypatch.setattr(ce_bridge_transport, "is_preflight_recent", lambda max_age_s=5.0: True)
+    monkeypatch.setattr(
+        ce_bridge_transport, "preflight_ready", lambda *a, **kw: {"ready": True}
+    )
     return settings
 
 
 def test_healthcheck_success(monkeypatch):
     response = DummyResponse(200, {"status": "ok"})
-
-    def fake_request(method, url, **kwargs):
-        assert method == "GET"
-        assert url == "http://bridge.local/health"
-        return response
-
-    monkeypatch.setattr(ce_bridge_client.requests, "request", fake_request)
+    session = ce_bridge_transport.get_session()
+    session.request_func = lambda method, url, **kwargs: response
 
     payload = ce_bridge_client.healthcheck()
     assert payload == {"status": "ok"}
@@ -53,12 +73,13 @@ def test_healthcheck_success(monkeypatch):
 
 def test_search_complexes_filters_non_dict(monkeypatch):
     response = DummyResponse(200, [{"id": "1"}, "bad", {"id": "2", "extra": True}])
+    session = ce_bridge_transport.get_session()
 
-    def fake_request(method, url, **kwargs):
-        assert kwargs["params"] == {"pn": "PN123", "limit": 10}
+    def request_func(method, url, **kwargs):
+        assert kwargs.get("params") == {"pn": "PN123", "limit": 10}
         return response
 
-    monkeypatch.setattr(ce_bridge_client.requests, "request", fake_request)
+    session.request_func = request_func
 
     results = ce_bridge_client.search_complexes("PN123", limit=10)
     assert results == [{"id": "1"}, {"id": "2", "extra": True}]
@@ -66,11 +87,8 @@ def test_search_complexes_filters_non_dict(monkeypatch):
 
 def test_get_complex_auth_error(monkeypatch):
     response = DummyResponse(401, {"detail": "nope"})
-
-    def fake_request(*args, **kwargs):
-        return response
-
-    monkeypatch.setattr(ce_bridge_client.requests, "request", fake_request)
+    session = ce_bridge_transport.get_session()
+    session.request_func = lambda *args, **kwargs: response
 
     with pytest.raises(ce_bridge_client.CEAuthError):
         ce_bridge_client.get_complex("abc")
@@ -78,36 +96,28 @@ def test_get_complex_auth_error(monkeypatch):
 
 def test_create_complex_cancelled(monkeypatch):
     response = DummyResponse(409, {"reason": "cancelled"})
-
-    def fake_request(*args, **kwargs):
-        return response
-
-    monkeypatch.setattr(ce_bridge_client.requests, "request", fake_request)
+    session = ce_bridge_transport.get_session()
+    session.request_func = lambda *args, **kwargs: response
 
     with pytest.raises(ce_bridge_client.CEUserCancelled):
         ce_bridge_client.create_complex("PN123")
 
 
 def test_request_includes_bearer(monkeypatch):
-    response = DummyResponse(200, {"status": "ok"})
-    captured = {}
-
-    def fake_request(method, url, **kwargs):
-        captured.update(kwargs)
-        return response
-
-    monkeypatch.setattr(ce_bridge_client.requests, "request", fake_request)
-
+    session = ce_bridge_transport.get_session()
+    session.request_func = lambda *args, **kwargs: DummyResponse(200, {"status": "ok"})
     ce_bridge_client.healthcheck()
-    headers = captured.get("headers")
+    headers = session.last_call.get("headers") if session.last_call else {}
     assert headers and headers["Authorization"] == "Bearer token-123"
 
 
 def test_network_errors_raise(monkeypatch):
-    def fake_request(*args, **kwargs):
+    session = ce_bridge_transport.get_session()
+
+    def error_request(*args, **kwargs):
         raise req_exc.Timeout("boom")
 
-    monkeypatch.setattr(ce_bridge_client.requests, "request", fake_request)
+    session.request_func = error_request
 
     with pytest.raises(ce_bridge_client.CENetworkError):
         ce_bridge_client.search_complexes("PN")

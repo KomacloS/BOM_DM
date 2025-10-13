@@ -4,12 +4,12 @@ import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
-import requests
 from requests import Response
 from requests import exceptions as req_exc
 
 from app.config import get_complex_editor_settings
 from app.integration.ce_bridge_manager import CEBridgeError, ensure_ce_bridge_ready
+from app.integration import ce_bridge_transport
 
 logger = logging.getLogger(__name__)
 
@@ -60,18 +60,26 @@ def _request(
     base_url = str(bridge_cfg.get("base_url") or "http://127.0.0.1:8765")
     timeout = _normalize_timeout(bridge_cfg.get("request_timeout_seconds"), 10.0)
 
-    headers: Dict[str, str] = {
-        "Accept": "application/json",
-    }
     token = str(bridge_cfg.get("auth_token") or "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+
+    if not ce_bridge_transport.is_preflight_recent():
+        try:
+            ce_bridge_transport.preflight_ready(
+                base_url,
+                token,
+                request_timeout_s=float(timeout),
+            )
+        except CEBridgeError as exc:
+            raise CENetworkError(str(exc)) from exc
+
+    headers: Dict[str, str] = ce_bridge_transport.build_headers(token)
+    session = ce_bridge_transport.get_session()
 
     url = urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
 
     logger.debug("CE bridge request %s %s", method, url)
     try:
-        response = requests.request(
+        response = session.request(
             method=method,
             url=url,
             headers=headers,
@@ -173,3 +181,9 @@ def create_complex(pn: str, aliases: Optional[List[str]] = None) -> Dict[str, An
     if not isinstance(payload, dict):  # pragma: no cover - defensive
         raise CENetworkError("Unexpected payload from create_complex")
     return payload
+
+
+def is_preflight_recent(max_age_s: float = 5.0) -> bool:
+    """Expose the latest preflight status for UI helpers."""
+
+    return ce_bridge_transport.is_preflight_recent(max_age_s)

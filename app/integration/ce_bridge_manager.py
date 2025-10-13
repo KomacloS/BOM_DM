@@ -16,10 +16,11 @@ import tempfile
 from typing import List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
 
-import requests
+from requests import Response
 from requests import exceptions as req_exc
 
 from app import config
+from app.integration import ce_bridge_transport
 
 logger = logging.getLogger(__name__)
 
@@ -209,12 +210,11 @@ def _short_exc(exc: BaseException) -> str:
 
 
 def _probe_bridge(base_url: str, token: str, timeout: int) -> Tuple[str, str, bool]:
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = ce_bridge_transport.build_headers(token)
     url = urljoin(base_url.rstrip("/") + "/", "health")
+    session = ce_bridge_transport.get_session()
     try:
-        response = requests.get(url, headers=headers, timeout=timeout)
+        response = session.get(url, headers=headers, timeout=timeout)
     except req_exc.Timeout as exc:
         return "not_running", _short_exc(exc), False
     except req_exc.ConnectionError as exc:
@@ -357,8 +357,26 @@ def ensure_ce_bridge_ready(timeout_seconds: float = 4.0) -> None:
         diagnostics.pre_probe_status = status
         diagnostics.pre_probe_detail = detail
         if ok:
+            try:
+                state_payload = ce_bridge_transport.preflight_ready(
+                    base_url,
+                    token,
+                    request_timeout_s=float(timeout),
+                )
+            except CEBridgeError as exc:
+                diagnostics.outcome = "error"
+                diagnostics.reason = str(exc)
+                diagnostics.traceback = "".join(traceback.format_stack(limit=10))
+                diagnostics.ts_end = datetime.now(timezone.utc)
+                exc.diagnostics = exc.diagnostics or diagnostics
+                logger.warning("Bridge diagnostics available (%s)", diagnostics.outcome)
+                raise
             diagnostics.outcome = "success"
-            diagnostics.reason = "Bridge already running"
+            diagnostics.reason = (
+                "Bridge ready"
+                if not isinstance(state_payload, dict)
+                else f"Bridge ready ({state_payload.get('reason') or 'ok'})"
+            )
             diagnostics.ts_end = datetime.now(timezone.utc)
             return
 
@@ -443,8 +461,26 @@ def ensure_ce_bridge_ready(timeout_seconds: float = 4.0) -> None:
             status, detail, ok = _probe_bridge(base_url, token, timeout)
             diagnostics.add_health_poll(time.monotonic() - start_poll, status, detail)
             if ok:
+                try:
+                    state_payload = ce_bridge_transport.preflight_ready(
+                        base_url,
+                        token,
+                        request_timeout_s=float(timeout),
+                    )
+                except CEBridgeError as exc:
+                    diagnostics.outcome = "error"
+                    diagnostics.reason = str(exc)
+                    diagnostics.traceback = "".join(traceback.format_stack(limit=10))
+                    diagnostics.ts_end = datetime.now(timezone.utc)
+                    exc.diagnostics = exc.diagnostics or diagnostics
+                    logger.warning("Bridge diagnostics available (%s)", diagnostics.outcome)
+                    raise
                 diagnostics.outcome = "success"
-                diagnostics.reason = "Bridge started successfully"
+                diagnostics.reason = (
+                    "Bridge started successfully"
+                    if not isinstance(state_payload, dict)
+                    else f"Bridge started successfully ({state_payload.get('reason') or 'ok'})"
+                )
                 diagnostics.ts_end = datetime.now(timezone.utc)
                 return
         diagnostics.outcome = "timeout"
@@ -499,7 +535,7 @@ def _bridge_request_without_ensure(
     endpoint: str,
     *,
     timeout: float = 5.0,
-) -> requests.Response | None:
+) -> Response | None:
     settings = config.get_complex_editor_settings()
     if not isinstance(settings, dict):
         return None
@@ -508,12 +544,11 @@ def _bridge_request_without_ensure(
         return None
     base_url = str(bridge_cfg.get("base_url") or "http://127.0.0.1:8765").strip()
     token = str(bridge_cfg.get("auth_token") or "").strip()
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = ce_bridge_transport.build_headers(token)
     url = urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
+    session = ce_bridge_transport.get_session()
     try:
-        return requests.request(method, url, headers=headers, timeout=timeout)
+        return session.request(method, url, headers=headers, timeout=timeout)
     except req_exc.RequestException:
         return None
 

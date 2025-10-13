@@ -245,6 +245,13 @@ class ComplexPanel(QWidget):
             self._part_id is not None and bool(self._part_number)
         )
 
+    def _maybe_show_preflight_message(self) -> None:
+        if not ce_bridge_client.is_preflight_recent():
+            self.status_label.setText(
+                "Complex Editor is starting (running diagnostics)…"
+            )
+            QApplication.processEvents()
+
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self.progress.setVisible(busy)
@@ -278,6 +285,7 @@ class ComplexPanel(QWidget):
         if not query:
             self._show_error("Search", "Enter a part number or alias to search.")
             return
+        self._maybe_show_preflight_message()
         self._set_busy(True)
         try:
             results = ce_bridge_client.search_complexes(query, limit=20)
@@ -333,6 +341,7 @@ class ComplexPanel(QWidget):
         if not ce_id:
             self._show_error("Attach", "Selected entry is missing an ID.")
             return
+        self._maybe_show_preflight_message()
         self._set_busy(True)
         try:
             complex_linker.attach_existing_complex(self._part_id, str(ce_id))
@@ -358,6 +367,7 @@ class ComplexPanel(QWidget):
         if not self._part_number:
             self._show_error("Create", "Part number is required to create a complex.")
             return
+        self._maybe_show_preflight_message()
         aliases = None
         text = (self.search_edit.text() or "").strip()
         if text and text != self._part_number:
@@ -399,6 +409,7 @@ class ComplexPanel(QWidget):
         if self._part_id is None or not self._part_number:
             self._show_error("Refresh", "Part number is required to refresh.")
             return
+        self._maybe_show_preflight_message()
         self._set_busy(True)
         try:
             attached = complex_linker.auto_link_by_pn(
