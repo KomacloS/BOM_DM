@@ -39,11 +39,25 @@ def _response(status_code: int):
 @pytest.fixture(autouse=True)
 def _reset_bridge_state(monkeypatch):
     ce_bridge_manager._BRIDGE_PROCESS = None
+    ce_bridge_manager._BRIDGE_PID = None
     ce_bridge_manager._BRIDGE_AUTO_STOP = False
+    ce_bridge_manager._BRIDGE_EXE_PATH = None
+    ce_bridge_manager._BRIDGE_BASE_URL = None
+    ce_bridge_manager._BRIDGE_TOKEN = None
+    ce_bridge_manager._BRIDGE_TIMEOUT = None
+    ce_bridge_manager._BRIDGE_STARTED_BY_APP = False
+    ce_bridge_manager._BRIDGE_IS_LOCALHOST = False
     monkeypatch.setattr(ce_bridge_manager, "port_busy", lambda *_args, **_kwargs: False)
     yield
     ce_bridge_manager._BRIDGE_PROCESS = None
+    ce_bridge_manager._BRIDGE_PID = None
     ce_bridge_manager._BRIDGE_AUTO_STOP = False
+    ce_bridge_manager._BRIDGE_EXE_PATH = None
+    ce_bridge_manager._BRIDGE_BASE_URL = None
+    ce_bridge_manager._BRIDGE_TOKEN = None
+    ce_bridge_manager._BRIDGE_TIMEOUT = None
+    ce_bridge_manager._BRIDGE_STARTED_BY_APP = False
+    ce_bridge_manager._BRIDGE_IS_LOCALHOST = False
 
 
 def test_ensure_skips_when_bridge_running(monkeypatch):
@@ -232,10 +246,64 @@ def test_ensure_rejects_non_executable(monkeypatch, tmp_path):
     assert diagnostics.reason and "not executable" in diagnostics.reason
 
 
-def test_stop_bridge_closes_process(monkeypatch):
+def test_restart_bridge_with_ui(monkeypatch):
+    ce_bridge_manager._BRIDGE_STARTED_BY_APP = True
+    ce_bridge_manager._BRIDGE_BASE_URL = "http://127.0.0.1:9100"
+    calls = {"stop": False, "ensure": False}
+
+    def fake_stop(*, force=False):
+        calls["stop"] = force
+
+    def fake_ensure(timeout_seconds, require_ui):
+        calls["ensure"] = require_ui
+
+    monkeypatch.setattr(ce_bridge_manager, "stop_ce_bridge_if_started", fake_stop)
+    monkeypatch.setattr(ce_bridge_manager, "ensure_ce_bridge_ready", fake_ensure)
+
+    ce_bridge_manager.restart_bridge_with_ui(4.0)
+
+    assert calls["stop"] is True
+    assert calls["ensure"] is True
+
+
+def test_stop_bridge_requests_shutdown(monkeypatch):
     proc = DummyProcess()
     ce_bridge_manager._BRIDGE_PROCESS = proc
+    ce_bridge_manager._BRIDGE_PID = proc.pid
     ce_bridge_manager._BRIDGE_AUTO_STOP = True
+    ce_bridge_manager._BRIDGE_STARTED_BY_APP = True
+    ce_bridge_manager._BRIDGE_BASE_URL = "http://127.0.0.1:9100"
+    ce_bridge_manager._BRIDGE_TOKEN = "token"
+    ce_bridge_manager._BRIDGE_TIMEOUT = 5.0
+
+    class SessionStub:
+        def __init__(self):
+            self.calls = []
+            self.trust_env = False
+
+        def get(self, url, **kwargs):
+            self.calls.append(("get", url, kwargs))
+            return types.SimpleNamespace(
+                status_code=200,
+                json=lambda: {"unsaved_changes": False, "wizard_open": False},
+            )
+
+        def post(self, url, **kwargs):
+            self.calls.append(("post", url, kwargs))
+            return types.SimpleNamespace(status_code=200)
+
+        def close(self):
+            pass
+
+    session = SessionStub()
+    monkeypatch.setattr(requests, "Session", lambda: session)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: None)
 
     ce_bridge_manager.stop_ce_bridge_if_started()
-    assert proc.terminated is True
+
+    assert session.calls[0][0] == "get"
+    assert session.calls[1][0] == "post"
+    assert proc.terminated is False
+    assert proc._poll == 0
+    assert ce_bridge_manager._BRIDGE_PROCESS is None
+    assert ce_bridge_manager._BRIDGE_STARTED_BY_APP is False

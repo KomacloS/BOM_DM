@@ -40,6 +40,7 @@ tests/test_datasheets.py
 tests/test_db_safe_migrate.py
 tests/test_ensure_schema_part_number_migration.py
 tests/test_export_viva.py
+tests/test_migrations.py
 tests/test_parts_updater.py
 tests/test_prefix_macros.py
 tests/test_reference_expansion.py

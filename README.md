@@ -64,6 +64,12 @@ python -m app.tools.db migrate
 
 If you do not need existing data you can also delete the SQLite database file.
 
+To force-run only the versioned schema upgrades (e.g., adding new columns) use:
+
+```bash
+python -m app.cli.migrate --db path/to/app.db
+```
+
 ## GUI-first Projects Terminal
 
 A lightweight desktop application written with **PyQt6** allows working with

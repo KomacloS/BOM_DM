@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import os
 import socket
 import traceback
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 import ipaddress
 
 
@@ -118,10 +118,17 @@ class CEBridgeDiagnostics:
     outcome: Optional[str] = None
     reason: Optional[str] = None
     traceback: Optional[str] = None
+    last_state_payload: Optional[Dict[str, Any]] = None
+    last_health_detail: Optional[str] = None
+    actions: List[str] = field(default_factory=list)
 
     def add_health_poll(self, offset_seconds: float, status: str, detail: str | None = None, limit: int = 10) -> None:
         if len(self.health_polls) < limit:
             self.health_polls.append(HealthPoll(offset_seconds=offset_seconds, status=status, detail=detail))
+
+    def add_action(self, text: str, limit: int = 25) -> None:
+        if len(self.actions) < limit:
+            self.actions.append(text)
 
     def finalize(self, outcome: str, reason: str | None = None) -> None:
         self.ts_end = utc_now()
@@ -190,6 +197,22 @@ class CEBridgeDiagnostics:
             for poll in self.health_polls:
                 detail = f": {poll.detail}" if poll.detail else ""
                 lines.append(f"t+{poll.offset_seconds:.1f}s: {poll.status}{detail}")
+            lines.append("")
+
+        if self.actions:
+            lines.append("[Actions]")
+            for entry in self.actions:
+                lines.append(f"- {entry}")
+            lines.append("")
+
+        if self.last_state_payload is not None:
+            lines.append("[Last /state Payload]")
+            lines.append(str(self.last_state_payload))
+            lines.append("")
+
+        if self.last_health_detail:
+            lines.append("[Last /health Detail]")
+            lines.append(self.last_health_detail)
             lines.append("")
 
         lines.append("[Traceback]")
