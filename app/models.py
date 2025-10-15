@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
-from sqlalchemy import Boolean, Column, JSON
+from sqlalchemy import Boolean, Column, JSON, Enum as SAEnum, Text
 from sqlmodel import SQLModel, Field
 
 if SQLModel.metadata.tables:
@@ -95,6 +95,27 @@ class Part(SQLModel, table=True):
     tol_p: Optional[str] = Field(default=None, max_length=8)
     tol_n: Optional[str] = Field(default=None, max_length=8)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class TestMethod(str, Enum):
+    macro = "macro"
+    python = "python"
+    quick_test = "quick_test"
+
+
+class PartTestAssignment(SQLModel, table=True):
+    part_id: int = Field(primary_key=True, foreign_key="part.id")
+    method: TestMethod = Field(
+        default=TestMethod.macro,
+        sa_column=Column(
+            SAEnum(TestMethod, name="testmethod"),
+            nullable=False,
+            server_default=TestMethod.macro.value,
+        ),
+    )
+    notes: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class BOMItem(SQLModel, table=True):
