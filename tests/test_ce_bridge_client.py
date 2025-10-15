@@ -1,4 +1,6 @@
 import json
+from collections import deque
+
 import pytest
 from requests import exceptions as req_exc
 
@@ -121,3 +123,79 @@ def test_network_errors_raise(monkeypatch):
 
     with pytest.raises(ce_bridge_client.CENetworkError):
         ce_bridge_client.search_complexes("PN")
+
+
+def test_open_complex_posts_and_waits_for_wizard(monkeypatch):
+    session = ce_bridge_transport.get_session()
+    calls = deque()
+
+    states = deque(
+        [
+            {"wizard_open": False, "focused_comp_id": "ce-1"},
+            {"wizard_open": True, "focused_comp_id": "ce-1"},
+        ]
+    )
+
+    def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(ce_bridge_client.time, "sleep", fake_sleep)
+
+    def request_func(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if method == "POST" and url.endswith("/complexes/ce-1/open"):
+            return DummyResponse(200, {"status": "ok"})
+        if method == "GET" and url.endswith("/state"):
+            payload = states[0] if states else {"wizard_open": True}
+            if states:
+                states.popleft()
+            return DummyResponse(200, payload)
+        if method == "POST" and url.endswith("/app/bring-to-front"):
+            return DummyResponse(200, {"status": "ok"})
+        raise AssertionError(f"Unexpected request {method} {url}")
+
+    session.request_func = request_func
+
+    ce_bridge_client.open_complex("ce-1", poll_timeout_s=0.2, poll_interval_s=0.0)
+
+    assert calls, "Expected at least one bridge call"
+    first_call = calls[0]
+    assert first_call[0] == "POST" and first_call[1].endswith("/complexes/ce-1/open")
+
+
+def test_open_complex_conflict_raises(monkeypatch):
+    session = ce_bridge_transport.get_session()
+
+    def request_func(method, url, **kwargs):
+        if method == "POST" and url.endswith("/complexes/ce-2/open"):
+            return DummyResponse(409, {"detail": "wizard busy"})
+        if method == "GET" and url.endswith("/state"):
+            return DummyResponse(200, {"wizard_open": False})
+        raise AssertionError(f"Unexpected request {method} {url}")
+
+    session.request_func = request_func
+
+    with pytest.raises(ce_bridge_client.CENetworkError) as excinfo:
+        ce_bridge_client.open_complex("ce-2", poll_timeout_s=0.0)
+    assert "wizard busy" in str(excinfo.value)
+
+
+def test_open_complex_times_out(monkeypatch):
+    session = ce_bridge_transport.get_session()
+
+    def fake_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(ce_bridge_client.time, "sleep", fake_sleep)
+
+    def request_func(method, url, **kwargs):
+        if method == "POST" and url.endswith("/complexes/ce-3/open"):
+            return DummyResponse(200, {"status": "ok"})
+        if method == "GET" and url.endswith("/state"):
+            return DummyResponse(200, {"wizard_open": False, "focused_comp_id": "ce-other"})
+        raise AssertionError(f"Unexpected request {method} {url}")
+
+    session.request_func = request_func
+
+    with pytest.raises(ce_bridge_client.CENetworkError):
+        ce_bridge_client.open_complex("ce-3", poll_timeout_s=0.0)
