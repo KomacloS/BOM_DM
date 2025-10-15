@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import List, Optional
 
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
-from ..models import Assembly, BOMItem, Part
+from ..domain.test_resolution import resolve_test_for_bom_item
+from ..models import Assembly, BOMItem, Part, PartTestMap, TestMode
 from . import BOMItemRead
 
 
@@ -29,18 +31,49 @@ def list_bom_items(assembly_id: int, session: Session) -> List[BOMItemRead]:
     """Return BOM items for an assembly with the related ``part_number``."""
 
     stmt = (
-        select(BOMItem, Part.part_number)
+        select(BOMItem, Part)
         .join(Part, Part.id == BOMItem.part_id, isouter=True)
         .where(BOMItem.assembly_id == assembly_id)
     )
     try:
         rows = session.exec(stmt).all()
-        return [BOMItemRead(part_number=pn, **item.model_dump()) for item, pn in rows]
     except OperationalError as e:  # pragma: no cover - depends on DB schema
         raise RuntimeError(
             "BOM items query failed; run 'python -m app.tools.db migrate'. Details: "
             f"{e}"
         ) from e
+
+    assembly = session.get(Assembly, assembly_id)
+    part_ids = {part.id for _item, part in rows if part is not None}
+    mappings: dict[int, list[PartTestMap]] = defaultdict(list)
+    if part_ids:
+        mapping_rows = session.exec(
+            select(PartTestMap).where(PartTestMap.part_id.in_(part_ids))
+        ).all()
+        for mapping in mapping_rows:
+            mappings[mapping.part_id].append(mapping)
+
+    results: list[BOMItemRead] = []
+    for item, part in rows:
+        pn = part.part_number if part is not None else None
+        resolved = resolve_test_for_bom_item(
+            assembly,
+            item,
+            part,
+            mappings.get(part.id if part else -1, []),
+        )
+        data = item.model_dump()
+        data.update(
+            {
+                "part_number": pn,
+                "resolved_profile": resolved.profile_used.value if resolved.profile_used else None,
+                "resolution_reason": resolved.reason.value,
+                "resolved_test_id": resolved.test_id,
+                "resolution_message": resolved.message,
+            }
+        )
+        results.append(BOMItemRead(**data))
+    return results
 
 
 def create_assembly(
@@ -49,6 +82,28 @@ def create_assembly(
     """Create and persist a new assembly."""
 
     asm = Assembly(project_id=project_id, rev=rev, notes=notes)
+    session.add(asm)
+    session.commit()
+    session.refresh(asm)
+    return asm
+
+
+def update_assembly_test_mode(
+    session: Session, assembly_id: int, mode: TestMode | str
+) -> Assembly:
+    """Update the ``test_mode`` for an assembly."""
+
+    asm = session.get(Assembly, assembly_id)
+    if asm is None:
+        raise ValueError(f"Assembly {assembly_id} not found")
+
+    if not isinstance(mode, TestMode):
+        try:
+            mode = TestMode(str(mode))
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Invalid test mode: {mode}") from exc
+
+    asm.test_mode = mode
     session.add(asm)
     session.commit()
     session.refresh(asm)

@@ -38,3 +38,5 @@ def test_bom_list_includes_part_number():
         items = list_bom_items(asm.id, session)
         assert len(items) == 3
         assert all(it.part_number == "P1" for it in items)
+        assert all(it.resolution_reason == "unresolved" for it in items)
+        assert all(it.resolved_profile is None for it in items)

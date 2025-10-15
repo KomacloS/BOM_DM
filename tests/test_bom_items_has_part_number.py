@@ -41,3 +41,5 @@ def test_list_items_includes_part_number():
         items = list_bom_items(asm.id, session)
         assert len(items) == 1
         assert items[0].part_number == "P1"
+        assert items[0].resolution_reason == "unresolved"
+        assert items[0].resolved_profile is None
