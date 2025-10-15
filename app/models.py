@@ -3,7 +3,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
-from sqlalchemy import Boolean, Column, JSON, Enum as SAEnum, Text
+import sqlalchemy as sa
+from sqlalchemy import Boolean, Column, JSON, Enum as SAEnum, Text, Index, UniqueConstraint
 from sqlmodel import SQLModel, Field
 
 if SQLModel.metadata.tables:
@@ -56,6 +57,11 @@ class ProjectPriority(str, Enum):
     urgent = "urgent"
 
 
+class TestMode(str, Enum):
+    powered = "powered"
+    non_powered = "non_powered"
+
+
 class Project(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     customer_id: int = Field(foreign_key="customer.id")
@@ -74,11 +80,24 @@ class Assembly(SQLModel, table=True):
     rev: str
     notes: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    test_mode: TestMode = Field(
+        default=TestMode.powered,
+        sa_column=Column(
+            SAEnum(TestMode, name="test_mode_enum"),
+            nullable=False,
+            server_default=TestMode.powered.value,
+        ),
+    )
 
 
 class PartType(str, Enum):
     active = "active"
     passive = "passive"
+
+
+class TestProfile(str, Enum):
+    ACTIVE = "ACTIVE"
+    PASSIVE = "PASSIVE"
 
 
 class Part(SQLModel, table=True):
@@ -116,6 +135,40 @@ class PartTestAssignment(SQLModel, table=True):
     notes: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class PartTestMap(SQLModel, table=True):
+    __tablename__ = "part_test_map"
+    __table_args__ = (
+        UniqueConstraint("part_id", "test_id", "profile", name="uq_part_test_map_part_test_profile"),
+        Index("ptm_part_profile_idx", "part_id", "profile"),
+    )
+
+    part_id: int = Field(
+        sa_column=Column(
+            sa.Integer,
+            sa.ForeignKey("part.id", ondelete="CASCADE"),
+            primary_key=True,
+            nullable=False,
+        )
+    )
+    test_id: int = Field(
+        sa_column=Column(
+            sa.Integer,
+            sa.ForeignKey("testmacro.id", ondelete="CASCADE"),
+            primary_key=True,
+            nullable=False,
+        )
+    )
+    profile: TestProfile = Field(
+        default=TestProfile.PASSIVE,
+        sa_column=Column(
+            SAEnum(TestProfile, name="test_profile_enum"),
+            nullable=False,
+            server_default=TestProfile.PASSIVE.value,
+            primary_key=True,
+        ),
+    )
 
 
 class BOMItem(SQLModel, table=True):

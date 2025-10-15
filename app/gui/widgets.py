@@ -31,7 +31,7 @@ from sqlmodel import select
 
 from . import state as app_state
 from .. import services
-from ..models import ProjectPriority, TaskStatus, Project, Assembly
+from ..models import ProjectPriority, TaskStatus, Project, Assembly, TestMode
 from ..services.customers import CustomerExistsError
 from .workflow import NewProjectWizard
 from ..constants import BOM_TEMPLATE_HEADERS as BOM_HEADERS
@@ -369,6 +369,7 @@ class AssembliesPane(QWidget):
         self._project_id: Optional[int] = None
         self._assembly_id: Optional[int] = None
         self._pending_id: Optional[int] = None
+        self._updating_mode: bool = False
 
         layout = QVBoxLayout(self)
         hdr = QHBoxLayout()
@@ -376,6 +377,13 @@ class AssembliesPane(QWidget):
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self._on_delete_assembly)
         hdr.addWidget(self.delete_btn)
+        self.mode_label = QLabel("Board Test Mode:")
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Powered", "Non-powered"])
+        self.mode_combo.setEnabled(False)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_change)
+        hdr.addWidget(self.mode_label)
+        hdr.addWidget(self.mode_combo)
         hdr.addStretch()
         layout.addLayout(hdr)
 
@@ -413,12 +421,12 @@ class AssembliesPane(QWidget):
         bom_lbl.setFont(f)
         layout.addWidget(bom_lbl)
 
-        self.items_table = QTableWidget(0, 4)
+        self.items_table = QTableWidget(0, 5)
         self.items_table.setHorizontalHeaderLabels(
-            ["Reference", "Qty", "Part Number", "Notes"]
+            ["Reference", "Qty", "Part Number", "Resolved Profile", "Notes"]
         )
         self.items_table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeMode.Stretch
+            4, QHeaderView.ResizeMode.Stretch
         )
         self.items_table.horizontalHeader().setStretchLastSection(True)
         self.items_table.setAlternatingRowColors(True)
@@ -467,6 +475,7 @@ class AssembliesPane(QWidget):
         self.items_table.setEnabled(False)
         self.import_btn.setEnabled(False)
         self.items_table.setRowCount(0)
+        self._update_mode_combo(None)
         self._state.refresh_assemblies(pid)
 
     def _populate(self, assemblies):  # pragma: no cover - UI glue
@@ -476,6 +485,7 @@ class AssembliesPane(QWidget):
             self.items_table.setEnabled(False)
             self.import_btn.setEnabled(False)
             self.items_table.setRowCount(0)
+            self.mode_combo.setEnabled(False)
             return
         self.table.setRowCount(len(assemblies))
         for row, a in enumerate(assemblies):
@@ -493,6 +503,7 @@ class AssembliesPane(QWidget):
             self.items_table.setEnabled(False)
             self.import_btn.setEnabled(False)
             self.items_table.setRowCount(0)
+            self.mode_combo.setEnabled(False)
 
     def _on_select(self, row: int, _col: int) -> None:  # pragma: no cover
         if row < 0:
@@ -501,6 +512,7 @@ class AssembliesPane(QWidget):
         self._assembly_id = aid
         self.delete_btn.setEnabled(True)
         self.assemblySelected.emit(aid)
+        self._update_mode_combo(aid)
         if aid:
             self.items_table.setEnabled(True)
             self.import_btn.setEnabled(True)
@@ -609,8 +621,55 @@ class AssembliesPane(QWidget):
             self.items_table.setItem(row, 1, QTableWidgetItem(str(i.qty)))
             pn = i.part_number or "—"
             self.items_table.setItem(row, 2, QTableWidgetItem(pn))
-            self.items_table.setItem(row, 3, QTableWidgetItem(i.notes or ""))
+            profile_item = QTableWidgetItem()
+            if i.resolution_reason == "unresolved":
+                profile_item.setText("⚠️")
+                profile_item.setToolTip(i.resolution_message or "Test mapping unresolved")
+            else:
+                profile_item.setText(i.resolved_profile or "—")
+                tooltip = i.resolution_message or f"Resolved via {i.resolution_reason}"
+                profile_item.setToolTip(tooltip)
+            self.items_table.setItem(row, 3, profile_item)
+            self.items_table.setItem(row, 4, QTableWidgetItem(i.notes or ""))
         self.items_table.resizeColumnsToContents()
+
+    def _update_mode_combo(self, assembly_id: Optional[int]) -> None:
+        if not assembly_id:
+            self._updating_mode = True
+            self.mode_combo.setCurrentIndex(0)
+            self.mode_combo.setEnabled(False)
+            self._updating_mode = False
+            return
+        with app_state.get_session() as s:
+            asm = s.get(Assembly, assembly_id)
+        if asm is None:
+            self._updating_mode = True
+            self.mode_combo.setCurrentIndex(0)
+            self.mode_combo.setEnabled(False)
+            self._updating_mode = False
+            return
+        mode_val = getattr(asm, "test_mode", TestMode.powered)
+        try:
+            mode_enum = mode_val if isinstance(mode_val, TestMode) else TestMode(str(mode_val))
+        except ValueError:
+            mode_enum = TestMode.powered
+        self._updating_mode = True
+        self.mode_combo.setCurrentIndex(0 if mode_enum == TestMode.powered else 1)
+        self.mode_combo.setEnabled(True)
+        self._updating_mode = False
+
+    def _on_mode_change(self) -> None:  # pragma: no cover - UI glue
+        if self._updating_mode or not self._assembly_id:
+            return
+        mode = TestMode.powered if self.mode_combo.currentIndex() == 0 else TestMode.non_powered
+        try:
+            with app_state.get_session() as s:
+                services.update_assembly_test_mode(s, self._assembly_id, mode)
+        except Exception as exc:
+            QMessageBox.warning(self, "Update failed", str(exc))
+            self._update_mode_combo(self._assembly_id)
+            return
+        self._state.refresh_bom_items(self._assembly_id)
 
     def _populate_tasks(self, tasks):  # pragma: no cover - UI glue
         if isinstance(tasks, Exception):

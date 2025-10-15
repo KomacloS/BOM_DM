@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 import re
+from collections import defaultdict
 
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from ..models import BOMItem, Part, PartType
+from ..domain.test_resolution import resolve_test_for_bom_item
+from ..models import Assembly, BOMItem, Part, PartTestMap, PartType
 
 # Regex for natural sort
 _token = re.compile(r"(\d+)")
@@ -31,6 +33,10 @@ class JoinedBOMRow(BaseModel):
     active_passive: Optional[Literal["active", "passive"]] = None
     datasheet_url: str | None = None
     product_url: str | None = None
+    resolved_profile: str | None = None
+    resolution_reason: str | None = None
+    resolved_test_id: int | None = None
+    resolution_message: str | None = None
 
 
 def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[JoinedBOMRow]:
@@ -42,9 +48,24 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
         .where(BOMItem.assembly_id == assembly_id)
     )
     rows = session.exec(stmt).all()
+    assembly = session.get(Assembly, assembly_id)
+    part_ids = {part.id for _item, part in rows}
+    mappings: dict[int, list[PartTestMap]] = defaultdict(list)
+    if part_ids:
+        mapping_rows = session.exec(
+            select(PartTestMap).where(PartTestMap.part_id.in_(part_ids))
+        ).all()
+        for mapping in mapping_rows:
+            mappings[mapping.part_id].append(mapping)
     result: List[JoinedBOMRow] = []
     for item, part in rows:
         ap = part.active_passive.value if isinstance(part.active_passive, PartType) else part.active_passive
+        resolved = resolve_test_for_bom_item(
+            assembly,
+            item,
+            part,
+            mappings.get(part.id, []),
+        )
         result.append(
             JoinedBOMRow(
                 bom_item_id=item.id,
@@ -62,6 +83,10 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
                 active_passive=ap,
                 datasheet_url=part.datasheet_url,
                 product_url=part.product_url,
+                resolved_profile=resolved.profile_used.value if resolved.profile_used else None,
+                resolution_reason=resolved.reason.value,
+                resolved_test_id=resolved.test_id,
+                resolution_message=resolved.message,
             )
         )
     result.sort(key=lambda r: natural_key(r.reference))
