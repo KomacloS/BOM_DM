@@ -39,3 +39,4 @@ Thumbs.db
 # --- Optional binaries/compressed files ---
 *.exe
 *.zip
+tests/_tmp_settings.toml

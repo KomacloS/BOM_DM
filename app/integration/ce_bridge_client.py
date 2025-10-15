@@ -43,6 +43,29 @@ class CEUserCancelled(Exception):
     """Raised when the user cancels an action via the Complex Editor UI."""
 
 
+class CEAliasConflict(Exception):
+    """Raised when adding aliases conflicts with existing Complex assignments."""
+
+    def __init__(self, ce_id: str | int, conflicts: list[str] | None = None) -> None:
+        self.ce_id = ce_id
+        self.conflicts = conflicts or []
+        message = f"Alias conflict for Complex {ce_id}"
+        if self.conflicts:
+            message = f"{message}: {', '.join(self.conflicts)}"
+        super().__init__(message)
+
+
+class CEBusyError(Exception):
+    """Raised when the Complex Editor is busy (wizard already open)."""
+
+
+class CEStaleLink(Exception):
+    """Raised when a previously linked Complex can no longer be found."""
+
+    def __init__(self, ce_id: str | int) -> None:
+        self.ce_id = ce_id
+        super().__init__(f"Complex {ce_id} not found")
+
 @dataclass
 class _BridgeConfig:
     base_url: str
@@ -248,7 +271,7 @@ def _preflight(
             raise CENetworkError(message)
 
         if status_callback and not announced:
-            status_callback("Starting Complex Editor (running diagnostics)…")
+            status_callback("Starting Complex Editor (running diagnostics)...")
             announced = True
 
         try:
@@ -299,9 +322,9 @@ def _preflight(
             if require_ui and not wizard_available:
                 if config.is_local and config.ui_enabled and bridge_owned_for_url(config.base_url) and not attempted_ui_restart:
                     if status_callback:
-                        status_callback("Complex Editor is running without UI; restarting with UI…")
+                        status_callback("Complex Editor is running without UI; restarting with UI...")
                     _PREFLIGHT_CACHE = None
-                    record_bridge_action("Attempting headless→UI restart via bridge restart")
+                    record_bridge_action("Attempting headless-to-UI restart via bridge restart")
                     try:
                         restart_bridge_with_ui(max(config.timeout, 5.0))
                     except CEBridgeError as exc:
@@ -312,7 +335,7 @@ def _preflight(
                     time.sleep(0.3)
                     continue
                 if status_callback:
-                    status_callback("Complex Editor is running without UI; opening the wizard…")
+                    status_callback("Complex Editor is running without UI; opening the wizard...")
             _PREFLIGHT_CACHE = _PreflightCache(
                 base_url=config.base_url,
                 expires_at=time.monotonic() + CACHE_TTL,
@@ -439,7 +462,7 @@ def _wait_for_wizard_close(
         last_payload = payload
         record_state_snapshot(payload)
         if status_callback and not announced:
-            status_callback("Complex Editor is already showing the wizard; waiting to retry…")
+            status_callback("Complex Editor is already showing the wizard; waiting to retry...")
             announced = True
         if not payload.get("wizard_open"):
             global _PREFLIGHT_CACHE
@@ -459,6 +482,182 @@ def _wait_for_wizard_close(
     raise CENetworkError("Complex Editor wizard did not close in time.")
 
 
+def add_aliases(ce_id: str | int, aliases: List[str]) -> Dict[str, Any]:
+    config = _load_bridge_config()
+    body = {"add": aliases, "remove": []}
+    response, state = _perform_request(
+        config,
+        "POST",
+        f"/complexes/{ce_id}/aliases",
+        json_body=body,
+    )
+    if response.status_code == 200:
+        payload = _json_from_response(response)
+        record_bridge_action(f"Added aliases {aliases} to Complex {ce_id}")
+        return payload if isinstance(payload, dict) else {}
+    if response.status_code == 409:
+        payload = _json_from_response(response)
+        conflicts_data = []
+        if isinstance(payload, dict):
+            raw_conflicts = payload.get("conflicts") or []
+            if isinstance(raw_conflicts, list):
+                conflicts_data = [str(item) for item in raw_conflicts]
+        raise CEAliasConflict(ce_id, conflicts_data)
+    if response.status_code in (401, 403):
+        raise CEAuthError("Invalid/expired CE bridge token; update the token in settings.")
+    if response.status_code == 404:
+        raise CENotFound("Complex Editor resource not found")
+    if response.status_code >= 500:
+        _raise_server_error(config, response, state)
+    raise CENetworkError(f"Complex Editor bridge returned HTTP {response.status_code}")
+
+
+
+
+
+def open_complex(
+    ce_id: str | int,
+    *,
+    status_callback: Optional[StatusCallback] = None,
+    allow_cached: bool = True,
+    retries: int = 1,
+    mode: str = "edit",
+) -> bool:
+    config = _load_bridge_config()
+    record_bridge_action(f"Open request for Complex {ce_id}")
+    state = _preflight(
+        config,
+        require_ui=True,
+        status_callback=status_callback,
+        allow_cached=allow_cached,
+    )
+    if _state_has_focus(state, ce_id):
+        record_bridge_action(f"Complex {ce_id} already focused; bringing to front")
+        _bring_ce_to_front(config)
+        if status_callback:
+            status_callback("Already open in Complex Editor.")
+        return True
+
+    if status_callback:
+        status_callback("Opening in Complex Editor...")
+
+    session = _session_for(config.base_url)
+    headers = _build_headers(config.token, json_body=True)
+    url = _url(config.base_url, f"complexes/{ce_id}/open")
+    try:
+        response = session.post(
+            url,
+            json={"mode": mode},
+            headers=headers,
+            timeout=config.timeout,
+        )
+    except (req_exc.Timeout, req_exc.ConnectTimeout, req_exc.ConnectionError) as exc:
+        raise CENetworkError("Cannot reach Complex Editor bridge") from exc
+    except req_exc.RequestException as exc:
+        raise CENetworkError("Unexpected bridge communication error") from exc
+
+    if response.status_code in (401, 403):
+        raise CEAuthError(f"CE bridge token invalid ({config.base_url})")
+    if response.status_code == 404:
+        raise CEStaleLink(ce_id)
+    if response.status_code == 409:
+        payload = _json_from_response(response)
+        reason = _extract_reason(payload).lower()
+        record_bridge_action(f"Open request for Complex {ce_id} returned busy ({reason or 'unspecified'})")
+        try:
+            ensure_ce_bridge_ready(timeout_seconds=max(config.timeout, 5.0), require_ui=True)
+        except CEBridgeError:
+            pass
+        raise CEBusyError(reason or "busy")
+    if response.status_code == 503:
+        payload = _json_from_response(response)
+        reason = _extract_reason(payload).lower()
+        if "headless" in reason and retries > 0 and config.is_local and bridge_owned_for_url(config.base_url):
+            record_bridge_action("Open request hit headless CE; restarting with UI")
+            restart_bridge_with_ui(max(config.timeout, 5.0))
+            global _PREFLIGHT_CACHE
+            _PREFLIGHT_CACHE = None
+            return open_complex(
+                ce_id,
+                status_callback=status_callback,
+                allow_cached=False,
+                retries=retries - 1,
+                mode=mode,
+            )
+        _raise_server_error(config, response, state)
+    if response.status_code >= 500:
+        _raise_server_error(config, response, state)
+    if not 200 <= response.status_code < 300:
+        raise CENetworkError(f"Complex Editor bridge returned HTTP {response.status_code}")
+
+    record_bridge_action(f"Opened Complex {ce_id} in editor")
+    _wait_for_focus_or_wizard(config, ce_id)
+    return False
+
+
+def _state_has_focus(state: Optional[Dict[str, Any]], ce_id: str | int) -> bool:
+    if not isinstance(state, dict):
+        return False
+    focused = state.get("focused_comp_id")
+    target_int: Optional[int]
+    try:
+        target_int = int(str(ce_id))
+    except (TypeError, ValueError):
+        target_int = None
+    if target_int is not None and focused == target_int:
+        return True
+    if target_int is None and focused == ce_id:
+        return True
+    return False
+
+
+def _bring_ce_to_front(config: _BridgeConfig) -> None:
+    if not config.ui_enabled:
+        return
+    try:
+        ensure_ce_bridge_ready(timeout_seconds=max(config.timeout, 5.0), require_ui=True)
+    except CEBridgeError:
+        pass
+
+def _wait_for_focus_or_wizard(config: _BridgeConfig, ce_id: str | int, *, timeout: float = 5.0) -> None:
+    session = _session_for(config.base_url)
+    headers = _build_headers(config.token)
+    state_url = _url(config.base_url, "state")
+    deadline = time.monotonic() + timeout
+    target_id: Optional[int]
+    try:
+        target_id = int(str(ce_id))
+    except ValueError:
+        target_id = None
+
+    while time.monotonic() < deadline:
+        try:
+            response = session.get(state_url, headers=headers, timeout=config.timeout)
+        except req_exc.RequestException:
+            time.sleep(0.25)
+            continue
+
+        if response.status_code != 200:
+            time.sleep(0.25)
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        record_state_snapshot(payload)
+        focused = payload.get("focused_comp_id")
+        if target_id is not None and focused == target_id:
+            record_bridge_action(f"Complex {ce_id} focused in editor")
+            return
+        if payload.get("wizard_open"):
+            record_bridge_action(f"Complex {ce_id} wizard opened")
+            return
+        time.sleep(0.25)
+
+    record_bridge_action(f"Open request for Complex {ce_id} completed without focus confirmation")
 def healthcheck() -> Dict[str, Any]:
     config = _load_bridge_config()
     session = _session_for(config.base_url)
@@ -556,7 +755,7 @@ def _create_complex_with_retry(
             raise CEUserCancelled("Creation cancelled")
         if reason == "wizard busy":
             if status_callback:
-                status_callback("Complex Editor is already showing the wizard; waiting to retry…")
+                status_callback("Complex Editor is already showing the wizard; waiting to retry...")
             _wait_for_wizard_close(config, status_callback=status_callback)
             if attempt >= 2:
                 raise CENetworkError("Complex Editor wizard remained busy.")
@@ -573,7 +772,7 @@ def _create_complex_with_retry(
         reason = _extract_reason(payload).lower()
         if "wizard unavailable" in reason and "headless" in reason:
             if status_callback:
-                status_callback("Complex Editor is running without UI; opening the wizard with UI…")
+                status_callback("Complex Editor is running without UI; opening the wizard with UI...")
             record_bridge_action("Create flow handling headless bridge (attempt %s)" % attempt)
             _start_bridge(config, require_ui=True)
             global _PREFLIGHT_CACHE

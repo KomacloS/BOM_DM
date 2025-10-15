@@ -1,4 +1,12 @@
 import json
+import os
+from pathlib import Path
+
+TMP_SETTINGS = Path("tests/_tmp_settings.toml")
+if not TMP_SETTINGS.exists():
+    TMP_SETTINGS.write_text('[database]\nurl="sqlite:///:memory:"\n')
+os.environ.setdefault("BOM_SETTINGS_PATH", str(TMP_SETTINGS.resolve()))
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 import pytest
 from requests import exceptions as req_exc
@@ -56,6 +64,7 @@ class FakeSession:
 
 @pytest.fixture(autouse=True)
 def _stable_config(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///:memory:")
     original_preflight = ce_bridge_client._preflight
     config = ce_bridge_client._BridgeConfig(
         base_url="http://bridge.local",
@@ -229,3 +238,137 @@ def test_preflight_timeout_includes_last_error(monkeypatch, _stable_config):
 
     assert "warm_up" in str(exc.value)
     assert "503 headless" in str(exc.value)
+
+
+def test_add_aliases_success(monkeypatch, _stable_config):
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_perform_request",
+        lambda *args, **kwargs: (DummyResponse(200, {"status": "ok"}), {}),
+    )
+    result = ce_bridge_client.add_aliases(5, ["PN-5"])
+    assert result == {"status": "ok"}
+
+
+def test_add_aliases_conflict(monkeypatch, _stable_config):
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_perform_request",
+        lambda *args, **kwargs: (DummyResponse(409, {"conflicts": ["ce-9"], "reason": "alias_conflict"}), {}),
+    )
+    with pytest.raises(ce_bridge_client.CEAliasConflict) as exc:
+        ce_bridge_client.add_aliases(9, ["PN-9"])
+    assert exc.value.conflicts == ["ce-9"]
+
+def test_open_complex_success(monkeypatch, _stable_config):
+    session = FakeSession(DummyResponse(200, {}))
+    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_preflight",
+        lambda *args, **kwargs: {"ready": True, "wizard_available": True},
+    )
+    waited = {"called": False}
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_wait_for_focus_or_wizard",
+        lambda *args, **kwargs: waited.__setitem__("called", True),
+    )
+
+    result = ce_bridge_client.open_complex(42, status_callback=lambda _: None)
+
+    assert result is False
+    assert session.calls[0][0] == "post"
+    assert session.calls[0][1].endswith("/complexes/42/open")
+    assert waited["called"] is True
+
+
+def test_open_complex_stale(monkeypatch, _stable_config):
+    session = FakeSession(DummyResponse(404, {}))
+    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_preflight",
+        lambda *args, **kwargs: {"ready": True, "wizard_available": True},
+    )
+    with pytest.raises(ce_bridge_client.CEStaleLink):
+        ce_bridge_client.open_complex(7)
+
+
+def test_open_complex_busy(monkeypatch, _stable_config):
+    session = FakeSession(DummyResponse(409, {"reason": "wizard busy"}))
+    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_preflight",
+        lambda *args, **kwargs: {"ready": True, "wizard_available": True},
+    )
+    front_calls = []
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "ensure_ce_bridge_ready",
+        lambda *args, **kwargs: front_calls.append(True),
+    )
+    with pytest.raises(ce_bridge_client.CEBusyError):
+        ce_bridge_client.open_complex(7)
+    assert front_calls
+
+
+def test_open_complex_headless_retry(monkeypatch, _stable_config):
+    session = FakeSession(
+        DummyResponse(503, {"detail": "wizard unavailable (headless)"}),
+        DummyResponse(200, {}),
+    )
+    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_preflight",
+        lambda *args, **kwargs: {"ready": True, "wizard_available": True},
+    )
+    restart_calls = []
+    monkeypatch.setattr(ce_bridge_client, "restart_bridge_with_ui", lambda timeout: restart_calls.append(timeout))
+    monkeypatch.setattr(ce_bridge_client, "bridge_owned_for_url", lambda _url: True)
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_wait_for_focus_or_wizard",
+        lambda *args, **kwargs: None,
+    )
+    result = ce_bridge_client.open_complex(9)
+    assert result is False
+    assert len(session.calls) == 2
+    assert restart_calls
+
+
+def test_open_complex_already_open(monkeypatch, _stable_config):
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_preflight",
+        lambda *args, **kwargs: {"ready": True, "wizard_available": True, "focused_comp_id": 42},
+    )
+    bring_calls = []
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "ensure_ce_bridge_ready",
+        lambda *args, **kwargs: bring_calls.append(True),
+    )
+
+    def _fail_session(_base):
+        raise AssertionError("session should not be used when already focused")
+
+    monkeypatch.setattr(ce_bridge_client, "_session_for", _fail_session)
+    result = ce_bridge_client.open_complex(42, status_callback=lambda _: None)
+    assert result is True
+    assert bring_calls
+
+
+def test_open_complex_auth_error_includes_base(monkeypatch, _stable_config):
+    session = FakeSession(DummyResponse(401, {}))
+    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "_preflight",
+        lambda *args, **kwargs: {"ready": True, "wizard_available": True},
+    )
+    with pytest.raises(ce_bridge_client.CEAuthError) as exc:
+        ce_bridge_client.open_complex(11)
+    assert _stable_config.base_url in str(exc.value)

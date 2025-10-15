@@ -1,11 +1,22 @@
 import pytest
+import os
+from pathlib import Path
+
+TMP_SETTINGS = Path("tests/_tmp_settings.toml")
+if not TMP_SETTINGS.exists():
+    TMP_SETTINGS.write_text('[database]\nurl="sqlite:///:memory:"\n')
+
+os.environ.setdefault("BOM_SETTINGS_PATH", str(TMP_SETTINGS.resolve()))
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.domain import complex_linker
 from app.domain.complex_linker import ComplexLink
 from app.integration import ce_bridge_client
-from app.integration.ce_bridge_client import CENetworkError, CENotFound
+from app.integration import ce_bridge_client
+from app.integration.ce_bridge_client import CENetworkError, CENotFound, CEUserCancelled
 
 
 @pytest.fixture
@@ -163,6 +174,7 @@ def test_auto_link_by_pn_success_and_network(monkeypatch):
 
 
 def test_unlink_existing_complex(monkeypatch, sqlite_engine):
+    monkeypatch.setattr(complex_linker, "record_bridge_action", lambda msg: None)
     monkeypatch.setattr(
         complex_linker.ce_bridge_client,
         "get_complex",
@@ -187,6 +199,7 @@ def test_unlink_existing_complex(monkeypatch, sqlite_engine):
 
 
 def test_check_link_stale_not_found(monkeypatch):
+    monkeypatch.setattr(complex_linker, "record_bridge_action", lambda msg: None)
     class DummyClient:
         def get_complex(self, ce_id):
             raise CENotFound("gone")
@@ -197,6 +210,7 @@ def test_check_link_stale_not_found(monkeypatch):
 
 
 def test_check_link_stale_transient(monkeypatch):
+    monkeypatch.setattr(complex_linker, "record_bridge_action", lambda msg: None)
     class DummyClient:
         def get_complex(self, ce_id):
             raise CENetworkError("offline")
@@ -207,6 +221,7 @@ def test_check_link_stale_transient(monkeypatch):
 
 
 def test_check_link_stale_ok(monkeypatch):
+    monkeypatch.setattr(complex_linker, "record_bridge_action", lambda msg: None)
     class DummyClient:
         def get_complex(self, ce_id):
             return {"id": ce_id}
@@ -214,3 +229,138 @@ def test_check_link_stale_ok(monkeypatch):
     stale, reason = complex_linker.check_link_stale(DummyClient(), {"ce_complex_id": "ce-1"})
     assert stale is False
     assert reason == ""
+
+
+def test_attach_as_alias_and_link(monkeypatch, sqlite_engine):
+    monkeypatch.setattr(complex_linker, "record_bridge_action", lambda msg: None)
+    alias_calls = []
+    monkeypatch.setattr(
+        complex_linker,
+        "add_aliases",
+        lambda ce_id, aliases: alias_calls.append((ce_id, aliases)) or {},
+    )
+    details = {
+        "id": "ce-88",
+        "pn": "PN-ALIAS",
+        "db_path": "C:/ce88.mdb",
+        "aliases": ["PN-ALIAS"],
+        "pin_map": {},
+        "macro_ids": [],
+        "source_hash": None,
+        "total_pins": 10,
+    }
+    monkeypatch.setattr(
+        complex_linker.ce_bridge_client,
+        "get_complex",
+        lambda ce_id: dict(details, id=ce_id),
+    )
+
+    record = complex_linker.attach_as_alias_and_link(12, "PN-ALIAS", "ce-88")
+    assert alias_calls == [("ce-88", ["PN-ALIAS"])]
+    assert record["ce_complex_id"] == "ce-88"
+
+
+def test_attach_as_alias_and_link_conflict(monkeypatch):
+    monkeypatch.setattr(complex_linker, "record_bridge_action", lambda msg: None)
+
+    def _raise_conflict(ce_id, aliases):
+        raise ce_bridge_client.CEAliasConflict(ce_id, ["ce-77"])
+
+    monkeypatch.setattr(complex_linker, "add_aliases", _raise_conflict)
+
+    with pytest.raises(complex_linker.AliasConflictError) as exc:
+        complex_linker.attach_as_alias_and_link(1, "PN", "ce-77")
+    assert exc.value.conflicts == ["ce-77"]
+
+def test_open_in_ce_uses_existing_link(monkeypatch):
+    open_calls = []
+    monkeypatch.setattr(
+        complex_linker,
+        "open_complex",
+        lambda ce_id, status_callback=None, allow_cached=True: open_calls.append((ce_id, allow_cached)) or False,
+    )
+    link = {"ce_complex_id": "ce-1", "part_id": 5, "ce_pn": "PN1"}
+    result = complex_linker.open_in_ce({"link": link, "pn": "PN1", "part_id": 5}, use_cached_preflight=True)
+    assert open_calls == [("ce-1", True)]
+    assert result.ce_id == "ce-1"
+    assert result.already_open is False
+    assert result.link_record == link
+
+
+def test_open_in_ce_with_selection(monkeypatch):
+    monkeypatch.setattr(
+        complex_linker,
+        "search_complexes",
+        lambda pn, limit=20: [{"id": "ce-2", "pn": pn}],
+    )
+    open_calls = []
+    monkeypatch.setattr(
+        complex_linker,
+        "open_complex",
+        lambda ce_id, status_callback=None, allow_cached=True: open_calls.append(ce_id) or False,
+    )
+
+    result = complex_linker.open_in_ce(
+        {"pn": "PN2", "part_id": 7},
+        chooser=lambda items: (items[0], False),
+        use_cached_preflight=False,
+    )
+    assert open_calls == ["ce-2"]
+    assert result.ce_id == "ce-2"
+
+
+def test_open_in_ce_attach_first(monkeypatch):
+    monkeypatch.setattr(
+        complex_linker,
+        "search_complexes",
+        lambda pn, limit=20: [{"id": "ce-3", "pn": pn, "aliases": []}],
+    )
+    open_calls = []
+    monkeypatch.setattr(
+        complex_linker,
+        "open_complex",
+        lambda ce_id, status_callback=None, allow_cached=True: open_calls.append(ce_id) or False,
+    )
+    attached = {"ce_complex_id": "ce-3", "part_id": 8, "ce_pn": "PN3"}
+    monkeypatch.setattr(
+        complex_linker,
+        "attach_as_alias_and_link",
+        lambda part_id, pn, ce_id, status_callback=None: dict(attached, part_id=part_id, ce_pn=pn),
+    )
+
+    result = complex_linker.open_in_ce(
+        {"pn": "PN3", "part_id": 8},
+        chooser=lambda items: (items[0], True),
+    )
+    assert open_calls == ["ce-3"]
+    assert result.link_record["ce_complex_id"] == "ce-3"
+
+
+def test_open_in_ce_stale_wrap(monkeypatch):
+    monkeypatch.setattr(
+        complex_linker,
+        "open_complex",
+        lambda ce_id, status_callback=None, allow_cached=True: (_ for _ in ()).throw(ce_bridge_client.CEStaleLink(ce_id)),
+    )
+    with pytest.raises(complex_linker.CEStaleLinkError):
+        complex_linker.open_in_ce({"link": {"ce_complex_id": "ce-4"}})
+
+
+def test_open_in_ce_busy_wrap(monkeypatch):
+    monkeypatch.setattr(
+        complex_linker,
+        "open_complex",
+        lambda ce_id, status_callback=None, allow_cached=True: (_ for _ in ()).throw(ce_bridge_client.CEBusyError("busy")),
+    )
+    with pytest.raises(complex_linker.CEBusyEditorError):
+        complex_linker.open_in_ce({"link": {"ce_complex_id": "ce-5"}})
+
+
+def test_open_in_ce_cancel(monkeypatch):
+    monkeypatch.setattr(
+        complex_linker,
+        "search_complexes",
+        lambda pn, limit=20: [{"id": "ce-6", "pn": pn}],
+    )
+    with pytest.raises(CEUserCancelled):
+        complex_linker.open_in_ce({"pn": "PN6"}, chooser=lambda items: (None, False))
