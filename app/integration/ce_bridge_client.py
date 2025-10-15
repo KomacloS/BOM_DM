@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
@@ -187,3 +188,104 @@ def is_preflight_recent(max_age_s: float = 5.0) -> bool:
     """Expose the latest preflight status for UI helpers."""
 
     return ce_bridge_transport.is_preflight_recent(max_age_s)
+
+
+def get_state() -> Dict[str, Any]:
+    """Fetch the current bridge state payload."""
+
+    response = _request("GET", "/state")
+    payload = _json_from_response(response)
+    if not isinstance(payload, dict):  # pragma: no cover - defensive
+        raise CENetworkError("Unexpected payload from state endpoint")
+    return payload
+
+
+def bring_to_front() -> None:
+    """Ask the Complex Editor window to come to the foreground."""
+
+    try:
+        _request("POST", "/app/bring-to-front")
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug("Failed to bring Complex Editor to front: %s", exc)
+
+
+def _is_editing_target(state: Dict[str, Any], ce_id: str) -> bool:
+    """Return True if ``state`` reflects the edit wizard for ``ce_id``."""
+
+    target = str(ce_id)
+    wizard_open = bool(state.get("wizard_open"))
+    editing_id = state.get("editing_comp_id")
+    focused_id = state.get("focused_comp_id")
+
+    if editing_id is not None:
+        return str(editing_id) == target and wizard_open
+    if wizard_open:
+        if focused_id is None:
+            return True
+        return str(focused_id) == target
+    return False
+
+
+def _wait_for_edit_state(
+    ce_id: str,
+    *,
+    poll_timeout_s: float = 5.0,
+    poll_interval_s: float = 0.3,
+) -> Dict[str, Any]:
+    """Poll the bridge state until the edit UI for ``ce_id`` is active."""
+
+    deadline = time.monotonic() + max(poll_timeout_s, 0.0)
+    while True:
+        response = _request("GET", "/state")
+        state_payload = _json_from_response(response)
+        state_payload = state_payload if isinstance(state_payload, dict) else {}
+        if _is_editing_target(state_payload, ce_id):
+            return state_payload
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(max(poll_interval_s, 0.05))
+    raise CENetworkError(
+        "Complex Editor did not confirm that the edit window opened in time"
+    )
+
+
+def open_complex(
+    ce_id: str,
+    *,
+    mode: str = "edit",
+    poll_timeout_s: float = 5.0,
+    poll_interval_s: float = 0.3,
+    bring_front: bool = True,
+) -> Dict[str, Any]:
+    """Open the specified complex in the Complex Editor UI."""
+
+    if not ce_id:
+        raise ValueError("Complex ID is required to open in Complex Editor")
+    endpoint = f"/complexes/{ce_id}/open"
+    body: Dict[str, Any] = {}
+    if mode:
+        body["mode"] = mode
+
+    response = _request("POST", endpoint, json_body=body, allow_conflict=True)
+    if response.status_code == 409:
+        payload = _json_from_response(response) if response.content else {}
+        message = "Complex Editor is busy; finish the current operation and retry."
+        if isinstance(payload, dict):
+            detail = str(
+                payload.get("detail")
+                or payload.get("reason")
+                or payload.get("message")
+                or ""
+            ).strip()
+            if detail:
+                message = detail
+        raise CENetworkError(message)
+
+    state_payload = _wait_for_edit_state(
+        str(ce_id),
+        poll_timeout_s=poll_timeout_s,
+        poll_interval_s=poll_interval_s,
+    )
+    if bring_front:
+        bring_to_front()
+    return state_payload
