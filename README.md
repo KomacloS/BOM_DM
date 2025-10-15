@@ -52,6 +52,38 @@ Download a BOM template (CSV or XLSX accepted):
 curl http://localhost:8000/bom/template
 ```
 
+## Part test methods & local assets
+
+Assign a test method to a part to create local automation scaffolding. The
+backend stores the mapping in the new `part_test_assignment` table and manages
+files under the repository's `data/` directory:
+
+```
+data/
+  python/<PN>/            # Python automation assets per part number
+  QuickTest/<PN>.txt      # Plain-text quick test scripts
+```
+
+Use the API to manage assignments and assets:
+
+- `POST /tests/assign` – set a part's method to `macro`, `python`, or
+  `quick_test`. Assigning `python` creates `data/python/<PN>/`, while
+  `quick_test` ensures `data/QuickTest/<PN>.txt` exists.
+- `GET /tests/{pn}/detail` – return metadata about the current assignment
+  including relative and absolute paths to on-disk assets.
+- `GET /tests/{pn}/python/zip` – download the `data/python/<PN>/` folder as a
+  zip archive (useful in the browser-only build).
+- `POST /tests/{pn}/quicktest/read` – read or lazily create the quick test
+  `.txt` file.
+- `POST /tests/{pn}/quicktest/write` – persist quick test edits back to disk.
+
+All filesystem helpers reject unsafe part numbers (only `A-Z`, `a-z`, `0-9`,
+`-`, `_`, and `.` are allowed) to prevent path traversal. The React components
+in `frontend/src/components/TestMethodSelector.tsx` and
+`frontend/src/components/QuickTestEditor.tsx` demonstrate how to integrate the
+API, providing desktop-only folder reveal actions plus web-friendly download
+flows.
+
 ### Schema drift on SQLite (dev)
 
 During development the SQLite schema can drift. To inspect and apply safe
