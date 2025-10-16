@@ -432,6 +432,12 @@ class ComplexPanel(QWidget):
             outcome = complex_linker.create_and_attach_complex(
                 self._part_id, self._part_number, aliases
             )
+        except CEAuthError:
+            base_url = ce_bridge_client.get_active_base_url()
+            self._show_error(
+                "Authentication",
+                f"Authentication to Complex Editor failed.\nBridge URL: {base_url}",
+            )
         except CEWizardLaunchError as exc:
             self._set_busy(False)
             self._show_launch_error(exc)
@@ -444,6 +450,7 @@ class ComplexPanel(QWidget):
             if outcome is None:
                 self.status_label.setText("Complex Editor did not return a result.")
             elif outcome.status == "attached":
+                self.progress.setVisible(False)
                 self.status_label.setText(outcome.message)
                 if self._part_id is not None:
                     self._current_link = self._load_link_snapshot(self._part_id)

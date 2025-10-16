@@ -61,6 +61,7 @@ def _fixed_settings(monkeypatch):
     monkeypatch.setattr(
         ce_bridge_transport, "preflight_ready", lambda *a, **kw: {"ready": True}
     )
+    monkeypatch.setattr(ce_bridge_client, "get_viva_export_settings", lambda: {})
     return settings
 
 
@@ -103,6 +104,71 @@ def test_create_complex_cancelled(monkeypatch):
 
     with pytest.raises(ce_bridge_client.CEUserCancelled):
         ce_bridge_client.create_complex("PN123")
+
+
+def test_resolve_bridge_config_keeps_ce_token(monkeypatch):
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "get_viva_export_settings",
+        lambda: {"ce_auth_token": "   "},
+    )
+    base_url, token, timeout = ce_bridge_client._resolve_bridge_config()
+    assert base_url.startswith("http://bridge.local")
+    assert token == "token-123"
+    assert timeout == 5.0
+
+
+def test_resolve_bridge_config_overrides_token(monkeypatch):
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "get_viva_export_settings",
+        lambda: {"ce_auth_token": "override", "ce_bridge_url": "http://0.0.0.0:9000"},
+    )
+    base_url, token, _timeout = ce_bridge_client._resolve_bridge_config()
+    assert base_url == "http://127.0.0.1:9000"
+    assert token == "override"
+
+
+def test_create_complex_success(monkeypatch):
+    response = DummyResponse(201, {"id": 7})
+    session = ce_bridge_transport.get_session()
+
+    def request_func(method, url, **kwargs):
+        assert method == "POST"
+        assert url.endswith("/complexes")
+        assert kwargs["json"] == {"pn": "PN123", "aliases": ["ALT"]}
+        return response
+
+    session.request_func = request_func
+
+    payload = ce_bridge_client.create_complex("PN123", ["ALT"])
+    assert payload == {"id": 7}
+
+
+def test_create_complex_conflict_includes_trace(monkeypatch):
+    response = DummyResponse(409, {"detail": "duplicate", "trace_id": "abc123"})
+    session = ce_bridge_transport.get_session()
+    session.request_func = lambda *args, **kwargs: response
+
+    with pytest.raises(ce_bridge_client.CENetworkError) as excinfo:
+        ce_bridge_client.create_complex("PN123")
+
+    message = str(excinfo.value)
+    assert "duplicate" in message
+    assert "abc123" in message
+
+
+def test_create_complex_server_error(monkeypatch):
+    response = DummyResponse(500, {"detail": "ce broke", "trace_id": "trace-5"})
+    session = ce_bridge_transport.get_session()
+    session.request_func = lambda *args, **kwargs: response
+
+    with pytest.raises(ce_bridge_client.CENetworkError) as excinfo:
+        ce_bridge_client.create_complex("PN500")
+
+    message = str(excinfo.value)
+    assert "ce broke" in message
+    assert "trace-5" in message
 
 
 def test_request_includes_bearer(monkeypatch):
