@@ -66,7 +66,14 @@ from .parts import (
     update_part_tolerances,
     clear_part_datasheet,
 )
-from .export_viva import build_viva_groups, write_viva_txt
+from .export_viva import (
+    VIVAExportPaths,
+    build_export_folder_name,
+    build_export_paths,
+    build_viva_groups,
+    sanitize_token,
+    write_viva_txt,
+)
 from .datasheets import (
     DATASHEET_STORE,
     sha256_of_file,
@@ -110,7 +117,11 @@ __all__ = [
     "update_part_value",
     "update_part_tolerances",
     "clear_part_datasheet",
+    "VIVAExportPaths",
+    "build_export_folder_name",
+    "build_export_paths",
     "build_viva_groups",
+    "sanitize_token",
     "write_viva_txt",
     "DATASHEET_STORE",
     "sha256_of_file",

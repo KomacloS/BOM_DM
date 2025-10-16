@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import urljoin
 
 from requests import Response
@@ -33,6 +33,27 @@ class CEUserCancelled(Exception):
 
 class CEWizardUnavailable(Exception):
     """Raised when the Complex Editor wizard UI is not available via the bridge."""
+
+
+class CEExportBusyError(CENetworkError):
+    """Raised when the bridge reports that an export cannot start because CE is busy."""
+
+
+class CEExportStrictError(CENetworkError):
+    """Raised when the bridge blocks the export due to missing/unlinked complexes."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        unlinked: Optional[List[str]] = None,
+        missing: Optional[List[str]] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.unlinked: List[str] = list(unlinked or [])
+        self.missing: List[str] = list(missing or [])
+        self.payload: Dict[str, Any] = dict(payload or {})
 
 
 def _normalize_timeout(raw: Any, default: float = 10.0) -> float:
@@ -159,6 +180,74 @@ def get_complex(ce_id: str) -> Dict[str, Any]:
     if not isinstance(payload, dict):  # pragma: no cover - defensive
         raise CENetworkError("Unexpected payload from get_complex")
     return payload
+
+
+def export_complexes_mdb(
+    pns: Iterable[str],
+    out_dir: str,
+    *,
+    mdb_name: str = "bom_complexes.mdb",
+    require_linked: bool = True,
+) -> Dict[str, Any]:
+    """Trigger an MDB export for the provided part numbers via the bridge."""
+
+    unique_pns = []
+    seen: set[str] = set()
+    for pn in pns:
+        text = str(pn or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        unique_pns.append(text)
+
+    body: Dict[str, Any] = {
+        "pns": unique_pns,
+        "out_dir": out_dir,
+        "mdb_name": mdb_name,
+        "require_linked": bool(require_linked),
+    }
+
+    response = _request(
+        "POST",
+        "/exports/mdb",
+        json_body=body,
+        allow_conflict=True,
+    )
+    if response.status_code == 409:
+        payload = _json_from_response(response) if response.content else {}
+        payload = payload if isinstance(payload, dict) else {}
+        reason = str(payload.get("reason") or "").strip().lower()
+        if reason == "busy":
+            message = str(payload.get("message") or payload.get("detail") or "")
+            if not message:
+                message = "Complex Editor is busy; finish the current operation and retry."
+            raise CEExportBusyError(message)
+        if reason in {"unlinked_or_missing", "unlinked", "missing"}:
+            unlinked = payload.get("unlinked")
+            missing = payload.get("missing")
+            raise CEExportStrictError(
+                "Some PNs aren't linked to complexes",
+                unlinked=[str(x) for x in unlinked or [] if isinstance(x, str)],
+                missing=[str(x) for x in missing or [] if isinstance(x, str)],
+                payload=payload,
+            )
+        message = str(
+            payload.get("message")
+            or payload.get("detail")
+            or payload.get("reason")
+            or "Complex Editor rejected the export"
+        )
+        raise CENetworkError(message)
+
+    payload = _json_from_response(response)
+    if isinstance(payload, dict):
+        return payload
+    if payload in (None, ""):
+        return {}
+    raise CENetworkError("Unexpected payload from export response")
 
 
 def create_complex(pn: str, aliases: Optional[List[str]] = None) -> Dict[str, Any]:
