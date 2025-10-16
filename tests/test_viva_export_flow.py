@@ -96,12 +96,20 @@ def mock_ce(monkeypatch, tmp_path):
     def get_base():
         return "http://127.0.0.1:8765"
 
-    def export(comp_ids, out_dir, *, mdb_name="bom_complexes.mdb", require_linked=True):
+    def export(
+        comp_ids,
+        out_dir,
+        *,
+        mdb_name="bom_complexes.mdb",
+        require_linked=True,
+        pns=None,
+    ):
         calls["export"] = {
             "comp_ids": list(comp_ids),
             "out_dir": out_dir,
             "mdb_name": mdb_name,
             "require_linked": require_linked,
+            "pns": list(pns or []),
         }
         Path(out_dir, mdb_name).write_text("stub", encoding="utf-8")
         return {"exported": len(comp_ids), "trace_id": "trace-123"}
@@ -156,6 +164,7 @@ def test_perform_viva_export_happy_path(populated_context, mock_ce, tmp_path):
     assert Path(result.paths.mdb_path).exists()
 
     assert mock_ce["export"]["comp_ids"] == [123]
+    assert mock_ce["export"]["pns"] == [part.part_number]
 
 
 def test_determine_comp_ids_requires_complex(populated_context, monkeypatch):

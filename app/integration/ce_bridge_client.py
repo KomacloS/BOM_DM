@@ -321,6 +321,21 @@ def _int_list(values: Iterable[int | str]) -> List[int]:
     return unique
 
 
+def _pn_list(values: Iterable[str]) -> List[str]:
+    unique: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(text)
+    return unique
+
+
 def _raise_export_error(status_code: int, payload: Dict[str, Any]) -> None:
     reason = str(payload.get("reason") or payload.get("detail") or "").strip().lower()
     message = str(
@@ -410,12 +425,19 @@ def export_complexes_mdb(
     *,
     mdb_name: str = "bom_complexes.mdb",
     require_linked: bool = True,
+    pns: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """Trigger an MDB export for the provided Complex IDs via the bridge."""
 
     ids = _int_list(comp_ids)
+    pn_source: Iterable[str]
+    if pns is not None:
+        pn_source = pns
+    else:
+        pn_source = (str(value) for value in comp_ids if isinstance(value, str))
+    pn_list = _pn_list(pn_source)
     body: Dict[str, Any] = {
-        "pns": [],
+        "pns": pn_list,
         "comp_ids": ids,
         "out_dir": out_dir,
         "mdb_name": mdb_name,

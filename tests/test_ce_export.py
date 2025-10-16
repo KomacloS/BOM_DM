@@ -23,15 +23,32 @@ def test_export_complexes_mdb_success(monkeypatch):
 
     monkeypatch.setattr(ce_bridge_client, "_request", fake_request)
     result = ce_bridge_client.export_complexes_mdb(
-        ["PN1", "pn1", "PN2", ""],
+        [101, "101", 202],
         "C:/out",
+        pns=["PN1", "pn1", "PN2", ""],
     )
 
     assert result == {"exported": 2, "linked": 2}
     assert captured["json"]["pns"] == ["PN1", "PN2"]
+    assert captured["json"]["comp_ids"] == [101, 202]
     assert captured["json"]["out_dir"] == "C:/out"
     assert captured["json"]["mdb_name"] == "bom_complexes.mdb"
     assert captured["json"]["require_linked"] is True
+
+
+def test_export_complexes_mdb_infers_pns(monkeypatch):
+    captured = {}
+
+    def fake_request(method, endpoint, json_body=None, allow_conflict=False):
+        captured["json"] = json_body
+        return _FakeResponse(200, {"exported": 1})
+
+    monkeypatch.setattr(ce_bridge_client, "_request", fake_request)
+
+    ce_bridge_client.export_complexes_mdb(["PN1", "pn1", "PN2", ""], "C:/out")
+
+    assert captured["json"]["pns"] == ["PN1", "PN2"]
+    assert captured["json"]["comp_ids"] == []
 
 
 def test_export_complexes_mdb_busy(monkeypatch):
