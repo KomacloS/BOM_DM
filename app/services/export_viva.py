@@ -525,7 +525,14 @@ def perform_viva_export(
     paths = build_export_paths(base_dir, assembly_code, assembly_rev, timestamp=timestamp)
 
     lines = collect_bom_lines(session, assembly_id)
-    comp_ids, unresolved, missing_rows = determine_comp_ids(lines, strict=strict, resolver=resolver)
+    comp_ids, unresolved, missing_rows = determine_comp_ids(
+        lines, strict=strict, resolver=resolver
+    )
+    complex_pns = [
+        line.part_number
+        for line in lines
+        if line.requires_complex and isinstance(line.part_number, str) and line.part_number.strip()
+    ]
 
     paths.folder.mkdir(parents=True, exist_ok=True)
     write_viva_txt(str(paths.bom_txt), list(bom_rows))
@@ -537,6 +544,7 @@ def perform_viva_export(
             comp_ids,
             str(paths.folder),
             mdb_name=mdb_name,
+            pns=complex_pns,
         )
     except CEExportError as exc:
         ce_bridge_url = _safe_bridge_url()
