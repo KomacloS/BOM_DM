@@ -118,6 +118,7 @@ class Part(SQLModel, table=True):
 
 class TestMethod(str, Enum):
     macro = "macro"
+    complex = "complex"
     python = "python"
     quick_test = "quick_test"
 

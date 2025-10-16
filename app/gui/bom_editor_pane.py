@@ -10,8 +10,10 @@ Features implemented:
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from pathlib import Path
+import json
+import os
 
 from PyQt6.QtGui import (
     QAction,
@@ -75,13 +77,17 @@ from ..config import (
     PDF_VIEWER_PATH,
     PDF_OPEN_DEBUG,
     get_complex_editor_settings,
+    get_viva_export_settings,
+    save_viva_export_settings,
 )
 from ..integration import ce_bridge_client
 from ..integration.ce_bridge_client import (
     CEAuthError,
     CENetworkError,
     CEExportBusyError,
+    CEExportError,
     CEExportStrictError,
+    CEPNResolutionError,
 )
 import subprocess, shutil, time, os
 from datetime import datetime
@@ -1870,97 +1876,84 @@ QTableView::item:selected:hover {
                 QMessageBox.warning(self, "Cannot export", str(exc))
                 return
 
-        asm, proj = self._load_assembly_context()
-        assembly_code = getattr(proj, "code", None) or getattr(proj, "title", "") or f"ASM{self._assembly_id}"
-        assembly_rev = getattr(asm, "rev", "") or "REV"
-
-        force_prompt = bool(
-            QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier
-        )
-        base_root = self._determine_export_base_root(proj, force_prompt=force_prompt)
-        if base_root is None:
-            return
-        try:
-            base_root.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            QMessageBox.warning(self, "Export failed", f"Cannot create export root: {exc}")
-            return
-
-        export_paths = services.build_export_paths(base_root, assembly_code, assembly_rev)
-        try:
-            export_paths.folder.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            QMessageBox.warning(
-                self,
-                "Export failed",
-                f"Cannot create export folder {export_paths.folder}: {exc}",
+            asm, proj = self._load_assembly_context()
+            strict_mode = True
+            viva_settings = config.get_viva_export_settings()
+            force_prompt = bool(
+                QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier
             )
-            return
-
-        try:
-            services.write_viva_txt(str(export_paths.bom_txt), rows)
-        except Exception as exc:
-            QMessageBox.warning(self, "Export failed", f"Unable to write BOM text: {exc}")
-            return
-
-        pn_scope, pn_map = self._build_pn_scope(part_scope)
-        ce_payload: Dict[str, object] | None = None
-        while True:
+            base_root = self._determine_export_base_root(
+                proj,
+                force_prompt=force_prompt,
+                viva_settings=viva_settings,
+            )
+            if base_root is None:
+                return
             try:
-                ce_payload = ce_bridge_client.export_complexes_mdb(
-                    pn_scope,
-                    str(export_paths.folder),
-                    mdb_name=export_paths.mdb_path.name,
-                    require_linked=True,
+                base_root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                detail = os.strerror(exc.errno) if getattr(exc, "errno", None) else str(exc)
+                message = (
+                    f"Could not prepare the export folder:\n{base_root}\n"
+                    f"{detail}"
                 )
-            except CEExportBusyError as exc:
-                retry = QMessageBox.question(
-                    self,
-                    "Complex Editor busy",
-                    f"{exc}\nRetry the export?",
-                    QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel,
-                    QMessageBox.StandardButton.Retry,
-                )
-                if retry == QMessageBox.StandardButton.Retry:
-                    continue
-                logging.info(
-                    "VIVA export cancelled due to CE busy: assembly=%s scope=%d", 
-                    self._assembly_id,
-                    len(pn_scope),
-                )
+                QMessageBox.warning(self, "Export failed", message)
                 return
-            except CEExportStrictError as exc:
-                logging.info(
-                    "VIVA export blocked: assembly=%s pn_scope=%d unlinked=%d missing=%d",
-                    self._assembly_id,
-                    len(pn_scope),
-                    len(exc.unlinked),
-                    len(exc.missing),
-                )
-                self._show_strict_fail_dialog(exc, pn_map)
+            except Exception as exc:
+                QMessageBox.warning(self, "Export failed", f"Cannot create export root: {exc}")
                 return
-            except CEAuthError as exc:
-                QMessageBox.warning(self, "Complex Editor", str(exc))
-                return
-            except CENetworkError as exc:
-                self._show_export_error(str(exc))
-                return
-            else:
-                break
 
-        self._export_settings.setValue("last_root", str(base_root))
-        if isinstance(ce_payload, dict):
-            counts = {k: ce_payload.get(k) for k in ("exported", "linked", "skipped")}
-        else:
-            counts = {}
-        logging.info(
-            "VIVA export success: assembly=%s pn_scope=%d folder=%s ce=%s",
-            self._assembly_id,
-            len(pn_scope),
-            export_paths.folder,
-            counts,
-        )
-        self._show_export_success(export_paths)
+            while True:
+                try:
+                    result = services.perform_viva_export(
+                        session,
+                        self._assembly_id,
+                        base_dir=base_root,
+                        bom_rows=rows,
+                        strict=strict_mode,
+                    )
+                except services.VIVAExportValidationError as exc:
+                    self._show_unlinked_components(exc.missing)
+                    return
+                except CEPNResolutionError as exc:
+                    if not exc.unresolved:
+                        QMessageBox.warning(
+                            self,
+                            "VIVA export",
+                            "Complex Editor could not resolve some part numbers.",
+                        )
+                        return
+                    if not self._prompt_unresolved_pns(exc.unresolved):
+                        return
+                    strict_mode = False
+                    continue
+                except CEExportBusyError as exc:
+                    retry = QMessageBox.question(
+                        self,
+                        "Complex Editor busy",
+                        f"{exc}\nRetry the export?",
+                        QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel,
+                        QMessageBox.StandardButton.Retry,
+                    )
+                    if retry == QMessageBox.StandardButton.Retry:
+                        continue
+                    logging.info(
+                        "VIVA export cancelled due to CE busy: assembly=%s",
+                        self._assembly_id,
+                    )
+                    return
+                except CEAuthError as exc:
+                    QMessageBox.warning(self, "Complex Editor", str(exc))
+                    return
+                except CEExportError as exc:
+                    self._show_ce_export_error(exc)
+                    return
+                except CENetworkError as exc:
+                    self._show_export_error(str(exc))
+                    return
+                else:
+                    self._finalize_viva_success(result, base_root)
+                    return
 
     def _export_excel(self) -> None:  # pragma: no cover - UI glue
         # Save visible table to an .xlsx, preserving 'Link' hyperlinks; skip 'Datasheet' column
@@ -2068,20 +2061,38 @@ QTableView::item:selected:hover {
         project,
         *,
         force_prompt: bool = False,
+        viva_settings: Optional[Dict[str, object]] = None,
     ) -> Optional[Path]:
-        stored_raw = self._export_settings.value("last_root", "")
         stored_path = None
-        if isinstance(stored_raw, str) and stored_raw.strip():
-            try:
-                stored_path = Path(stored_raw).expanduser().resolve()
-            except Exception:
-                stored_path = Path(stored_raw).expanduser()
+        if viva_settings:
+            last_path = viva_settings.get("last_export_path")
+            if isinstance(last_path, str) and last_path.strip():
+                try:
+                    stored_path = Path(last_path).expanduser().resolve()
+                except Exception:
+                    stored_path = Path(last_path).expanduser()
+        if stored_path is None:
+            stored_raw = self._export_settings.value("last_root", "")
+            if isinstance(stored_raw, str) and stored_raw.strip():
+                try:
+                    stored_path = Path(stored_raw).expanduser().resolve()
+                except Exception:
+                    stored_path = Path(stored_raw).expanduser()
         if stored_path is not None and not force_prompt:
             return stored_path
         default_root = self._project_default_root(project)
+        if default_root is None and viva_settings:
+            cfg_dir = viva_settings.get("viva_export_base_dir")
+            if isinstance(cfg_dir, str) and cfg_dir.strip():
+                try:
+                    default_root = Path(cfg_dir).expanduser().resolve()
+                except Exception:
+                    default_root = Path(cfg_dir).expanduser()
         if default_root is not None and not force_prompt:
             return default_root
-        start = default_root or stored_path or DATA_ROOT
+        start = default_root or stored_path or Path(viva_settings.get("viva_export_base_dir") if viva_settings else DATA_ROOT)
+        if not isinstance(start, Path):
+            start = DATA_ROOT
         directory = QFileDialog.getExistingDirectory(
             self,
             "Select VIVA export root",
@@ -2091,34 +2102,25 @@ QTableView::item:selected:hover {
             return None
         return Path(directory).expanduser().resolve()
 
-    def _build_pn_scope(self, part_scope: Iterable[int]) -> tuple[list[str], Dict[str, int]]:
-        pn_list: list[str] = []
-        pn_map: Dict[str, int] = {}
-        seen: set[str] = set()
-        for pid in part_scope:
-            if not isinstance(pid, int):
-                continue
-            pn = (self._part_numbers.get(pid) or "").strip()
-            if not pn:
-                continue
-            link = self._complex_links.get(pid)
-            ce_id = getattr(link, "ce_complex_id", None) if link else None
-            if not ce_id:
-                continue
-            key = pn.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            pn_list.append(pn)
-            pn_map[key] = pid
-        return pn_list, pn_map
-
     def _show_export_success(
         self,
         paths: services.VIVAExportPaths,
+        *,
+        warnings: Sequence[str] | None = None,
+        manifest: Optional[Dict[str, object]] = None,
     ) -> None:
         message = f"VIVA export ready • 1 txt, 1 mdb → {paths.folder}"
-        details = f"BOM text: {paths.bom_txt}\nComplex MDB: {paths.mdb_path}"
+        details_lines = [
+            f"BOM text: {paths.bom_txt}",
+            f"Complex MDB: {paths.mdb_path}",
+        ]
+        trace_id = manifest.get("trace_id") if isinstance(manifest, dict) else None
+        if isinstance(trace_id, str) and trace_id.strip():
+            details_lines.append(f"Trace ID: {trace_id.strip()}")
+        if warnings:
+            warning_text = "\n".join(warnings)
+            details_lines.append(f"Warnings:\n{warning_text}")
+        details = "\n".join(details_lines)
         box = QMessageBox(self)
         box.setWindowTitle("Export for VIVA")
         box.setIcon(QMessageBox.Icon.Information)
@@ -2142,6 +2144,121 @@ QTableView::item:selected:hover {
         if box.clickedButton() == logs_button:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_DIR)))
 
+    def _finalize_viva_success(
+        self,
+        result: services.VIVAExportOutcome,
+        base_root: Path,
+    ) -> None:
+        self._export_settings.setValue("last_root", str(base_root))
+        try:
+            save_viva_export_settings(last_export_path=str(base_root))
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.debug("Failed to persist VIVA export path: %s", exc)
+        manifest = result.manifest
+        trace_id = manifest.get("trace_id") if isinstance(manifest, dict) else None
+        logging.info(
+            "VIVA export success: assembly=%s comp_ids=%d folder=%s trace_id=%s",
+            self._assembly_id,
+            len(result.comp_ids),
+            result.paths.folder,
+            trace_id,
+        )
+        self._show_export_success(
+            result.paths,
+            warnings=result.warnings,
+            manifest=manifest,
+        )
+
+    def _prompt_unresolved_pns(self, unresolved: Sequence[str]) -> bool:
+        lines = [str(pn) for pn in unresolved]
+        if len(lines) > 12:
+            display = lines[:12] + ["…"]
+        else:
+            display = lines
+        text = "\n".join(display)
+        box = QMessageBox(self)
+        box.setWindowTitle("Unresolved complexes")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("Complex Editor could not resolve some part numbers.")
+        box.setInformativeText(text)
+        export_button = box.addButton(
+            "Export only resolved",
+            QMessageBox.ButtonRole.AcceptRole,
+        )
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        return box.clickedButton() == export_button
+
+    def _show_unlinked_components(
+        self, missing: Sequence[services.VIVAMissingComplex]
+    ) -> None:
+        if not missing:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Unlinked components")
+        layout = QVBoxLayout(dialog)
+        label = QLabel(
+            "These BOM lines require a Complex assignment before exporting.", dialog
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        table = QTableWidget(dialog)
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Line", "Part Number", "Description", "Reference"])
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setRowCount(len(missing))
+        for row, item in enumerate(missing):
+            table.setItem(row, 0, QTableWidgetItem(str(item.line_number)))
+            table.setItem(row, 1, QTableWidgetItem(item.part_number or ""))
+            table.setItem(row, 2, QTableWidgetItem(item.description or ""))
+            table.setItem(row, 3, QTableWidgetItem(item.reference))
+        layout.addWidget(table)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(600, 320)
+        dialog.exec()
+
+    def _show_ce_export_error(self, error: CEExportError) -> None:
+        details: List[str] = []
+        if error.reason:
+            details.append(f"Reason: {error.reason}")
+        if error.trace_id:
+            details.append(f"Trace ID: {error.trace_id}")
+        try:
+            base_url = ce_bridge_client.get_active_base_url()
+        except Exception:
+            base_url = None
+        if base_url:
+            details.append(f"Bridge URL: {base_url}")
+        message = str(error)
+        box = QMessageBox(self)
+        box.setWindowTitle("Export failed")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("Export failed")
+        box.setInformativeText("\n".join([message] + details if details else [message]))
+        diagnostics_button = None
+        diagnostics = getattr(error, "diagnostics", None)
+        if isinstance(diagnostics, services.VIVAExportDiagnostics):
+            diagnostics_button = box.addButton(
+                "Copy diagnostics",
+                QMessageBox.ButtonRole.ActionRole,
+            )
+        logs_button = box.addButton("Open Logs", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == logs_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_DIR)))
+        elif diagnostics_button and clicked == diagnostics_button:
+            self._copy_viva_diagnostics(diagnostics, error)
+        
+
     def _show_strict_fail_dialog(
         self,
         error: CEExportStrictError,
@@ -2149,6 +2266,36 @@ QTableView::item:selected:hover {
     ) -> None:
         dialog = VivaStrictFailDialog(self, error, pn_map, self._open_complex_for_part)
         dialog.exec()
+
+    def _copy_viva_diagnostics(
+        self,
+        diagnostics: services.VIVAExportDiagnostics | None,
+        error: CEExportError,
+    ) -> None:
+        if diagnostics is None:
+            return
+        payload: Dict[str, object] = {}
+        manifest_path = diagnostics.manifest_path
+        if manifest_path and manifest_path.exists():
+            try:
+                payload["manifest"] = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                payload["manifest_error"] = str(exc)
+        ce_path = diagnostics.ce_response_path
+        if ce_path and ce_path.exists():
+            try:
+                payload["ce_response"] = json.loads(ce_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                payload["ce_response_error"] = str(exc)
+        elif error.payload:
+            payload["ce_response"] = error.payload
+        text = json.dumps(payload, indent=2, sort_keys=True)
+        QApplication.clipboard().setText(text)
+        QMessageBox.information(
+            self,
+            "Diagnostics copied",
+            "Diagnostics JSON copied to clipboard.",
+        )
 
     def _open_complex_for_part(self, part_id: int) -> bool:
         link = self._complex_links.get(part_id)
