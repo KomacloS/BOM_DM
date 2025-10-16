@@ -148,6 +148,7 @@ def _read_settings_dict() -> Dict[str, Any]:
     return {}
 
 _BOOL_TRUE_VALUES = {"1", "true", "yes", "on"}
+_UNSET = object()
 
 
 def _coerce_positive_int(value: Any, default: int) -> int:
@@ -235,6 +236,79 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return default
+
+
+def _default_viva_base_dir() -> Path:
+    documents = Path.home() / "Documents"
+    target = documents / "VIVA_Exports"
+    if _is_dir_writable(documents):
+        return target.resolve()
+    fallback = Path.home() / "VIVA_Exports"
+    return fallback.resolve()
+
+
+def get_viva_export_settings() -> Dict[str, Any]:
+    """Return persisted VIVA export configuration with defaults applied."""
+
+    default_dir = str(_default_viva_base_dir())
+    settings = {
+        "ce_bridge_url": "http://127.0.0.1:8765",
+        "ce_auth_token": None,
+        "viva_export_base_dir": default_dir,
+        "last_export_path": None,
+    }
+    data = _read_settings_dict().get("viva_export")
+    if isinstance(data, Mapping):
+        url = data.get("ce_bridge_url") or data.get("ceBridgeUrl")
+        if isinstance(url, str) and url.strip():
+            settings["ce_bridge_url"] = url.strip()
+        token = data.get("ce_auth_token")
+        if token is None:
+            token = data.get("ceAuthToken")
+        if token is not None and str(token).strip():
+            settings["ce_auth_token"] = str(token).strip()
+        base_dir = (
+            data.get("viva_export_base_dir")
+            or data.get("vivaExportBaseDir")
+            or data.get("base_dir")
+        )
+        if base_dir:
+            settings["viva_export_base_dir"] = str(base_dir)
+        last_path = data.get("last_export_path")
+        if last_path:
+            settings["last_export_path"] = str(last_path)
+    return settings
+
+
+def save_viva_export_settings(
+    *,
+    ce_bridge_url: Optional[str] = None,
+    ce_auth_token: object = _UNSET,
+    viva_export_base_dir: Optional[str] = None,
+    last_export_path: Optional[str] = None,
+) -> None:
+    """Persist VIVA export configuration overrides."""
+
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if _toml_reader is not None and SETTINGS_PATH.exists():
+        with open(SETTINGS_PATH, "rb") as handle:
+            data = _toml_reader.load(handle)  # type: ignore[arg-type]
+    elif _toml_rw is not None and SETTINGS_PATH.exists():
+        data = _toml_rw.load(SETTINGS_PATH)  # type: ignore[call-arg]
+    else:
+        data = {}
+    export_cfg = dict(data.get("viva_export", {}))
+    if ce_bridge_url is not None:
+        export_cfg["ce_bridge_url"] = str(ce_bridge_url).strip()
+    if ce_auth_token is not _UNSET:
+        token_text = "" if ce_auth_token in (None, "") else str(ce_auth_token).strip()
+        export_cfg["ce_auth_token"] = token_text
+    if viva_export_base_dir is not None:
+        export_cfg["viva_export_base_dir"] = str(viva_export_base_dir)
+    if last_export_path is not None:
+        export_cfg["last_export_path"] = str(last_export_path)
+    data["viva_export"] = export_cfg
+    _write_settings_data(data)
 
 _COMPLEX_EDITOR_DEFAULTS: Dict[str, Any] = {
     "ui_enabled": True,

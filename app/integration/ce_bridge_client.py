@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, Iterable, List, Optional
-from urllib.parse import urljoin
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from requests import Response
 from requests import exceptions as req_exc
 
-from app.config import get_complex_editor_settings
+from app.config import get_complex_editor_settings, get_viva_export_settings
 from app.integration.ce_bridge_manager import CEBridgeError, ensure_ce_bridge_ready
 from app.integration import ce_bridge_transport
 
 logger = logging.getLogger(__name__)
+
+_LAST_BASE_URL: Optional[str] = None
 
 
 class CEAuthError(Exception):
@@ -35,11 +37,30 @@ class CEWizardUnavailable(Exception):
     """Raised when the Complex Editor wizard UI is not available via the bridge."""
 
 
-class CEExportBusyError(CENetworkError):
+class CEExportError(CENetworkError):
+    """Base class for Complex Editor export failures."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: Optional[int] = None,
+        reason: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.reason = reason
+        self.payload: Dict[str, Any] = dict(payload or {})
+        trace = self.payload.get("trace_id")
+        self.trace_id = str(trace).strip() if isinstance(trace, str) else None
+
+
+class CEExportBusyError(CEExportError):
     """Raised when the bridge reports that an export cannot start because CE is busy."""
 
 
-class CEExportStrictError(CENetworkError):
+class CEExportStrictError(CEExportError):
     """Raised when the bridge blocks the export due to missing/unlinked complexes."""
 
     def __init__(
@@ -49,11 +70,27 @@ class CEExportStrictError(CENetworkError):
         unlinked: Optional[List[str]] = None,
         missing: Optional[List[str]] = None,
         payload: Optional[Dict[str, Any]] = None,
+        status_code: Optional[int] = None,
+        reason: Optional[str] = None,
     ) -> None:
-        super().__init__(message)
-        self.unlinked: List[str] = list(unlinked or [])
-        self.missing: List[str] = list(missing or [])
-        self.payload: Dict[str, Any] = dict(payload or {})
+        super().__init__(
+            message,
+            status_code=status_code,
+            reason=reason,
+            payload=payload,
+        )
+        self.unlinked: List[str] = [str(x) for x in unlinked or []]
+        self.missing: List[str] = [str(x) for x in missing or []]
+
+
+class CEPNResolutionError(CEExportError):
+    """Raised when part numbers could not be resolved to Complex IDs."""
+
+    def __init__(self, unresolved: Sequence[str]) -> None:
+        payload = {"unresolved": list(unresolved)}
+        message = "Complex Editor could not resolve some part numbers to Complex IDs"
+        super().__init__(message, status_code=409, reason="pn_resolution", payload=payload)
+        self.unresolved: List[str] = [str(p) for p in unresolved]
 
 
 def _normalize_timeout(raw: Any, default: float = 10.0) -> float:
@@ -63,6 +100,43 @@ def _normalize_timeout(raw: Any, default: float = 10.0) -> float:
         return max(0.1, float(raw))
     except (TypeError, ValueError):
         return float(default)
+
+
+def _normalize_base_url(base_url: str) -> str:
+    text = (base_url or "http://127.0.0.1:8765").strip()
+    if not text:
+        text = "http://127.0.0.1:8765"
+    parsed = urlparse(text if "://" in text else f"http://{text}")
+    host = parsed.hostname or "127.0.0.1"
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    scheme = parsed.scheme or "http"
+    port = parsed.port
+    netloc = host
+    if port:
+        netloc = f"{host}:{port}"
+    path = parsed.path or ""
+    normalized = urlunparse((scheme, netloc, path, "", "", ""))
+    return normalized.rstrip("/")
+
+
+def _resolve_bridge_config() -> tuple[str, str, float]:
+    settings = get_complex_editor_settings()
+    bridge_cfg = settings.get("bridge", {}) if isinstance(settings, dict) else {}
+    base_url = str(bridge_cfg.get("base_url") or "http://127.0.0.1:8765")
+    token = str(bridge_cfg.get("auth_token") or "").strip()
+    timeout = _normalize_timeout(bridge_cfg.get("request_timeout_seconds"), 10.0)
+
+    viva_cfg = get_viva_export_settings()
+    if isinstance(viva_cfg, dict):
+        override = viva_cfg.get("ce_bridge_url")
+        if override:
+            base_url = str(override).strip() or base_url
+        override_token = viva_cfg.get("ce_auth_token")
+        if override_token is not None:
+            token = str(override_token).strip()
+    base_url = _normalize_base_url(base_url)
+    return base_url, token, timeout
 
 
 def _request(
@@ -77,12 +151,7 @@ def _request(
         ensure_ce_bridge_ready()
     except CEBridgeError as exc:
         raise CENetworkError(str(exc)) from exc
-    settings = get_complex_editor_settings()
-    bridge_cfg = settings.get("bridge", {}) if isinstance(settings, dict) else {}
-    base_url = str(bridge_cfg.get("base_url") or "http://127.0.0.1:8765")
-    timeout = _normalize_timeout(bridge_cfg.get("request_timeout_seconds"), 10.0)
-
-    token = str(bridge_cfg.get("auth_token") or "").strip()
+    base_url, token, timeout = _resolve_bridge_config()
 
     if not ce_bridge_transport.is_preflight_recent():
         try:
@@ -98,6 +167,9 @@ def _request(
     session = ce_bridge_transport.get_session()
 
     url = urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
+
+    global _LAST_BASE_URL
+    _LAST_BASE_URL = base_url
 
     logger.debug("CE bridge request %s %s", method, url)
     try:
@@ -182,29 +254,165 @@ def get_complex(ce_id: str) -> Dict[str, Any]:
     return payload
 
 
+def lookup_complex_ids(pns: Sequence[str]) -> Tuple[Dict[str, int], List[str]]:
+    """Resolve part numbers to Complex IDs via the bridge search endpoint."""
+
+    mapping: Dict[str, int] = {}
+    unresolved: List[str] = []
+    for pn in pns:
+        target = (pn or "").strip()
+        if not target:
+            continue
+        try:
+            results = search_complexes(target, limit=5)
+        except CENetworkError:
+            unresolved.append(target)
+            continue
+        lower = target.lower()
+        resolved_id: Optional[int] = None
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            candidate_id = item.get("id") or item.get("comp_id") or item.get("complex_id")
+            aliases = item.get("aliases")
+            alias_match = False
+            if isinstance(aliases, (list, tuple)):
+                alias_match = lower in {
+                    str(alias).strip().lower()
+                    for alias in aliases
+                    if isinstance(alias, (str, int)) and str(alias).strip()
+                }
+            candidate_pn = str(
+                item.get("pn")
+                or item.get("part_number")
+                or item.get("name")
+                or ""
+            ).strip().lower()
+            if candidate_pn == lower or alias_match:
+                try:
+                    resolved_id = int(candidate_id)
+                except (TypeError, ValueError):
+                    resolved_id = None
+                if resolved_id is not None:
+                    break
+        if resolved_id is not None:
+            mapping[target] = resolved_id
+        else:
+            unresolved.append(target)
+    return mapping, unresolved
+
+
+def _int_list(values: Iterable[int | str]) -> List[int]:
+    unique: List[int] = []
+    seen: set[int] = set()
+    for value in values:
+        try:
+            num = int(value)
+        except (TypeError, ValueError):
+            continue
+        if num in seen:
+            continue
+        seen.add(num)
+        unique.append(num)
+    return unique
+
+
+def _raise_export_error(status_code: int, payload: Dict[str, Any]) -> None:
+    reason = str(payload.get("reason") or payload.get("detail") or "").strip().lower()
+    message = str(
+        payload.get("message")
+        or payload.get("detail")
+        or payload.get("reason")
+        or "Complex Editor rejected the export"
+    )
+    if reason == "busy":
+        raise CEExportBusyError(
+            message or "Complex Editor is busy; finish the current operation and retry.",
+            status_code=status_code,
+            reason=reason,
+            payload=payload,
+        )
+    if reason in {"unlinked_or_missing", "unlinked", "missing"}:
+        unlinked = payload.get("unlinked")
+        missing = payload.get("missing")
+        raise CEExportStrictError(
+            message or "Some BOM rows are missing Complex links",
+            unlinked=[str(x) for x in unlinked or [] if isinstance(x, (str, int))],
+            missing=[str(x) for x in missing or [] if isinstance(x, (str, int))],
+            payload=payload,
+            status_code=status_code,
+            reason=reason,
+        )
+    if reason == "invalid_comp_ids":
+        raise CEExportError(
+            message or "Complex Editor reported unknown Complex IDs",
+            status_code=status_code,
+            reason=reason,
+            payload=payload,
+        )
+    if reason == "outdir_unwritable":
+        raise CEExportError(
+            message or "Export directory is not writable",
+            status_code=status_code,
+            reason=reason,
+            payload=payload,
+        )
+    if reason == "bad_filename":
+        raise CEExportError(
+            message or "Invalid MDB filename",
+            status_code=status_code,
+            reason=reason,
+            payload=payload,
+        )
+    if reason == "filesystem_error":
+        raise CEExportError(
+            message or "Complex Editor encountered a filesystem error",
+            status_code=status_code,
+            reason=reason,
+            payload=payload,
+        )
+    if reason == "template_missing_or_incompatible":
+        raise CEExportError(
+            message or "Complex Editor template asset is missing or incompatible",
+            status_code=status_code,
+            reason=reason,
+            payload=payload,
+        )
+    if reason == "data_invalid":
+        raise CEExportError(
+            message or "Complex Editor reported invalid source data",
+            status_code=status_code,
+            reason=reason,
+            payload=payload,
+        )
+    if status_code == 503 and reason == "headless":
+        raise CEExportError(
+            message or "Complex Editor exporter unavailable in headless mode",
+            status_code=status_code,
+            reason=reason,
+            payload=payload,
+        )
+    raise CEExportError(
+        message or f"Complex Editor export failed with HTTP {status_code}",
+        status_code=status_code,
+        reason=reason or None,
+        payload=payload,
+    )
+
+
 def export_complexes_mdb(
-    pns: Iterable[str],
+    comp_ids: Iterable[int | str],
     out_dir: str,
     *,
     mdb_name: str = "bom_complexes.mdb",
     require_linked: bool = True,
 ) -> Dict[str, Any]:
-    """Trigger an MDB export for the provided part numbers via the bridge."""
+    """Trigger an MDB export for the provided Complex IDs via the bridge."""
 
-    unique_pns = []
-    seen: set[str] = set()
-    for pn in pns:
-        text = str(pn or "").strip()
-        if not text:
-            continue
-        lowered = text.lower()
-        if lowered in seen:
-            continue
-        seen.add(lowered)
-        unique_pns.append(text)
-
+    ids = _int_list(comp_ids)
     body: Dict[str, Any] = {
-        "pns": unique_pns,
+        "pns": [],
+        "comp_ids": ids,
         "out_dir": out_dir,
         "mdb_name": mdb_name,
         "require_linked": bool(require_linked),
@@ -216,38 +424,39 @@ def export_complexes_mdb(
         json_body=body,
         allow_conflict=True,
     )
-    if response.status_code == 409:
-        payload = _json_from_response(response) if response.content else {}
-        payload = payload if isinstance(payload, dict) else {}
-        reason = str(payload.get("reason") or "").strip().lower()
-        if reason == "busy":
-            message = str(payload.get("message") or payload.get("detail") or "")
-            if not message:
-                message = "Complex Editor is busy; finish the current operation and retry."
-            raise CEExportBusyError(message)
-        if reason in {"unlinked_or_missing", "unlinked", "missing"}:
-            unlinked = payload.get("unlinked")
-            missing = payload.get("missing")
-            raise CEExportStrictError(
-                "Some PNs aren't linked to complexes",
-                unlinked=[str(x) for x in unlinked or [] if isinstance(x, str)],
-                missing=[str(x) for x in missing or [] if isinstance(x, str)],
-                payload=payload,
-            )
-        message = str(
-            payload.get("message")
-            or payload.get("detail")
-            or payload.get("reason")
-            or "Complex Editor rejected the export"
-        )
-        raise CENetworkError(message)
 
-    payload = _json_from_response(response)
+    payload = _json_from_response(response) if response.content else {}
+    payload = payload if isinstance(payload, dict) else {}
+
+    if response.status_code in (409, 503):
+        _raise_export_error(response.status_code, payload)
+    if response.status_code >= 500:
+        raise CEExportError(
+            "Complex Editor export failed due to an internal error",
+            status_code=response.status_code,
+            reason=str(payload.get("reason") or ""),
+            payload=payload,
+        )
+
     if isinstance(payload, dict):
         return payload
     if payload in (None, ""):
         return {}
-    raise CENetworkError("Unexpected payload from export response")
+    raise CEExportError(
+        "Complex Editor returned an unexpected response for export",
+        status_code=response.status_code,
+        reason=str(payload.get("reason") or "") if isinstance(payload, dict) else None,
+        payload=payload if isinstance(payload, dict) else {},
+    )
+
+
+def get_active_base_url() -> str:
+    """Return the most recently used bridge base URL."""
+
+    if _LAST_BASE_URL:
+        return _LAST_BASE_URL
+    base_url, _token, _timeout = _resolve_bridge_config()
+    return base_url
 
 
 def create_complex(pn: str, aliases: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -287,6 +496,41 @@ def get_state() -> Dict[str, Any]:
     if not isinstance(payload, dict):  # pragma: no cover - defensive
         raise CENetworkError("Unexpected payload from state endpoint")
     return payload
+
+
+def wait_until_ready(
+    *, timeout_s: float = 90.0, poll_interval_s: float = 1.0
+) -> Dict[str, Any]:
+    """Poll the bridge state until ``ready`` is ``True`` or timeout occurs."""
+
+    deadline = time.monotonic() + max(timeout_s, 1.0)
+    last_payload: Dict[str, Any] = {}
+    last_error: Optional[Exception] = None
+    interval = max(poll_interval_s, 0.1)
+    while time.monotonic() < deadline:
+        try:
+            payload = get_state()
+        except (CENetworkError, CEAuthError) as exc:
+            last_error = exc
+            payload = {}
+        else:
+            last_payload = payload
+            if payload.get("ready") is True:
+                return payload
+        time.sleep(interval)
+    reason = ""
+    for key in ("reason", "detail", "status"):
+        value = last_payload.get(key)
+        if isinstance(value, str) and value.strip():
+            reason = value.strip()
+            break
+    if reason:
+        raise CENetworkError(
+            f"Complex Editor bridge did not become ready (last status: {reason})"
+        )
+    if last_error is not None:
+        raise CENetworkError(str(last_error))
+    raise CENetworkError("Complex Editor bridge did not become ready in time")
 
 
 def bring_to_front() -> None:
