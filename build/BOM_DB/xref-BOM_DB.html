@@ -3404,6 +3404,7 @@ imported by:
  &#8226;   <a href="#app.gui.auto_datasheet_dialog">app.gui.auto_datasheet_dialog</a>
  &#8226;   <a href="#app.gui.bom_editor_pane">app.gui.bom_editor_pane</a>
  &#8226;   <a href="#app.gui.dialogs.settings_dialog">app.gui.dialogs.settings_dialog</a>
+ &#8226;   <a href="#app.gui.widgets.complex_panel">app.gui.widgets.complex_panel</a>
 
   </div>
 
@@ -5070,6 +5071,7 @@ imported by:
  &#8226;   <a href="#app.services.pdf_utils">app.services.pdf_utils</a>
  &#8226;   <a href="#app.services.projects">app.services.projects</a>
  &#8226;   <a href="#app.services.tasks">app.services.tasks</a>
+ &#8226;   <a href="#app.storage.migrations">app.storage.migrations</a>
  &#8226;   <a href="#bs4.builder">bs4.builder</a>
  &#8226;   <a href="#bs4.builder._htmlparser">bs4.builder._htmlparser</a>
  &#8226;   <a href="#bs4.builder._lxml">bs4.builder._lxml</a>
@@ -6724,6 +6726,7 @@ imported by:
  &#8226;   <a href="#app.logic">app.logic</a>
  &#8226;   <a href="#app.models">app.models</a>
  &#8226;   <a href="#app.services">app.services</a>
+ &#8226;   <a href="#app.storage">app.storage</a>
 
   </div>
 
@@ -6819,7 +6822,10 @@ imports:
  &#8226;   <a href="#app">app</a>
  &#8226;   <a href="#app.config">app.config</a>
  &#8226;   <a href="#app.db_safe_migrate">app.db_safe_migrate</a>
+ &#8226;   <a href="#app.storage.migrations">app.storage.migrations</a>
+ &#8226;   <a href="#logging">logging</a>
  &#8226;   <a href="#sqlmodel">sqlmodel</a>
+ &#8226;   <a href="#typing">typing</a>
 
   </div>
   <div class="import">
@@ -6882,6 +6888,8 @@ imports:
  &#8226;   <a href="#app.domain">app.domain</a>
  &#8226;   <a href="#app.integration">app.integration</a>
  &#8226;   <a href="#app.integration.ce_bridge_client">app.integration.ce_bridge_client</a>
+ &#8226;   <a href="#app.integration.ce_bridge_manager">app.integration.ce_bridge_manager</a>
+ &#8226;   <a href="#dataclasses">dataclasses</a>
  &#8226;   <a href="#datetime">datetime</a>
  &#8226;   <a href="#json">json</a>
  &#8226;   <a href="#logging">logging</a>
@@ -7227,6 +7235,7 @@ imported by:
 <span class="moduletype">SourceModule</span>  <div class="import">
 imports:
     <a href="#PyQt6.QtCore">PyQt6.QtCore</a>
+ &#8226;   <a href="#PyQt6.QtGui">PyQt6.QtGui</a>
  &#8226;   <a href="#PyQt6.QtWidgets">PyQt6.QtWidgets</a>
  &#8226;   <a href="#__future__">__future__</a>
  &#8226;   <a href="#app.config">app.config</a>
@@ -7237,8 +7246,10 @@ imports:
  &#8226;   <a href="#app.gui.widgets">app.gui.widgets</a>
  &#8226;   <a href="#app.integration">app.integration</a>
  &#8226;   <a href="#app.integration.ce_bridge_client">app.integration.ce_bridge_client</a>
+ &#8226;   <a href="#app.integration.ce_bridge_manager">app.integration.ce_bridge_manager</a>
  &#8226;   <a href="#logging">logging</a>
  &#8226;   <a href="#sqlmodel">sqlmodel</a>
+ &#8226;   <a href="#time">time</a>
  &#8226;   <a href="#typing">typing</a>
 
   </div>
@@ -7312,9 +7323,12 @@ imports:
  &#8226;   <a href="#app.config">app.config</a>
  &#8226;   <a href="#app.integration">app.integration</a>
  &#8226;   <a href="#app.integration.ce_bridge_manager">app.integration.ce_bridge_manager</a>
+ &#8226;   <a href="#dataclasses">dataclasses</a>
+ &#8226;   <a href="#ipaddress">ipaddress</a>
  &#8226;   <a href="#logging">logging</a>
  &#8226;   <a href="#requests">requests</a>
  &#8226;   <a href="#requests.exceptions">requests.exceptions</a>
+ &#8226;   <a href="#time">time</a>
  &#8226;   <a href="#typing">typing</a>
  &#8226;   <a href="#urllib.parse">urllib.parse</a>
 
@@ -7383,8 +7397,10 @@ imports:
   <div class="import">
 imported by:
     <a href="#__main__.py">__main__.py</a>
+ &#8226;   <a href="#app.domain.complex_linker">app.domain.complex_linker</a>
  &#8226;   <a href="#app.gui.dialogs.settings_dialog">app.gui.dialogs.settings_dialog</a>
  &#8226;   <a href="#app.gui.main">app.gui.main</a>
+ &#8226;   <a href="#app.gui.widgets.complex_panel">app.gui.widgets.complex_panel</a>
  &#8226;   <a href="#app.integration">app.integration</a>
  &#8226;   <a href="#app.integration.ce_bridge_client">app.integration.ce_bridge_client</a>
  &#8226;   <a href="#app.services.bom_import">app.services.bom_import</a>
@@ -7934,6 +7950,43 @@ imports:
   <div class="import">
 imported by:
     <a href="#app.services">app.services</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="app.storage"></a>
+  <a target="code" href="///C:/Users/Michael/Documents/Python/BOM_DB_project/BOM_DB/app/storage/__init__.py" type="text/plain"><tt>app.storage</tt></a>
+<span class="moduletype">Package</span>  <div class="import">
+imports:
+    <a href="#app">app</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#app.storage.migrations">app.storage.migrations</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="app.storage.migrations"></a>
+  <a target="code" href="///C:/Users/Michael/Documents/Python/BOM_DB_project/BOM_DB/app/storage/migrations.py" type="text/plain"><tt>app.storage.migrations</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#app.storage">app.storage</a>
+ &#8226;   <a href="#logging">logging</a>
+ &#8226;   <a href="#pathlib">pathlib</a>
+ &#8226;   <a href="#sqlite3">sqlite3</a>
+ &#8226;   <a href="#typing">typing</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#app.database">app.database</a>
 
   </div>
 
@@ -11347,7 +11400,9 @@ imports:
   <div class="import">
 imported by:
     <a href="#annotated_types">annotated_types</a>
+ &#8226;   <a href="#app.domain.complex_linker">app.domain.complex_linker</a>
  &#8226;   <a href="#app.gui.auto_datasheet_dialog">app.gui.auto_datasheet_dialog</a>
+ &#8226;   <a href="#app.integration.ce_bridge_client">app.integration.ce_bridge_client</a>
  &#8226;   <a href="#app.integration.ce_bridge_diagnostics">app.integration.ce_bridge_diagnostics</a>
  &#8226;   <a href="#app.logic.autofill_rules">app.logic.autofill_rules</a>
  &#8226;   <a href="#app.services.datasheet_search">app.services.datasheet_search</a>
@@ -17246,7 +17301,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#app.integration.ce_bridge_diagnostics">app.integration.ce_bridge_diagnostics</a>
+    <a href="#app.integration.ce_bridge_client">app.integration.ce_bridge_client</a>
+ &#8226;   <a href="#app.integration.ce_bridge_diagnostics">app.integration.ce_bridge_diagnostics</a>
  &#8226;   <a href="#psycopg2._ipaddress">psycopg2._ipaddress</a>
  &#8226;   <a href="#pydantic._internal._generate_schema">pydantic._internal._generate_schema</a>
  &#8226;   <a href="#pydantic._internal._validators">pydantic._internal._validators</a>
@@ -17693,6 +17749,7 @@ imported by:
  &#8226;   <a href="#PyQt6.uic.pyuic">PyQt6.uic.pyuic</a>
  &#8226;   <a href="#PyQt6.uic.uiparser">PyQt6.uic.uiparser</a>
  &#8226;   <a href="#app.ai_agents">app.ai_agents</a>
+ &#8226;   <a href="#app.database">app.database</a>
  &#8226;   <a href="#app.db_safe_migrate">app.db_safe_migrate</a>
  &#8226;   <a href="#app.domain.complex_linker">app.domain.complex_linker</a>
  &#8226;   <a href="#app.gui.auto_datasheet_dialog">app.gui.auto_datasheet_dialog</a>
@@ -17706,6 +17763,7 @@ imported by:
  &#8226;   <a href="#app.services.datasheet_html">app.services.datasheet_html</a>
  &#8226;   <a href="#app.services.datasheet_search">app.services.datasheet_search</a>
  &#8226;   <a href="#app.services.gpt_rerank">app.services.gpt_rerank</a>
+ &#8226;   <a href="#app.storage.migrations">app.storage.migrations</a>
  &#8226;   <a href="#asyncio.futures">asyncio.futures</a>
  &#8226;   <a href="#asyncio.log">asyncio.log</a>
  &#8226;   <a href="#bs4.dammit">bs4.dammit</a>
@@ -25281,6 +25339,7 @@ imported by:
  &#8226;   <a href="#app.services.gpt_rerank">app.services.gpt_rerank</a>
  &#8226;   <a href="#app.services.parts">app.services.parts</a>
  &#8226;   <a href="#app.services.pdf_utils">app.services.pdf_utils</a>
+ &#8226;   <a href="#app.storage.migrations">app.storage.migrations</a>
  &#8226;   <a href="#dotenv.main">dotenv.main</a>
  &#8226;   <a href="#fake_useragent.utils">fake_useragent.utils</a>
  &#8226;   <a href="#importlib.metadata">importlib.metadata</a>
@@ -44019,7 +44078,8 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#sqlalchemy.dialects.sqlite.pysqlite">sqlalchemy.dialects.sqlite.pysqlite</a>
+    <a href="#app.storage.migrations">app.storage.migrations</a>
+ &#8226;   <a href="#sqlalchemy.dialects.sqlite.pysqlite">sqlalchemy.dialects.sqlite.pysqlite</a>
  &#8226;   <a href="#sqlite3">sqlite3</a>
  &#8226;   <a href="#sqlite3.__main__">sqlite3.__main__</a>
  &#8226;   <a href="#sqlite3.dbapi2">sqlite3.dbapi2</a>
@@ -45424,6 +45484,8 @@ imported by:
  &#8226;   <a href="#_pydatetime">_pydatetime</a>
  &#8226;   <a href="#_strptime">_strptime</a>
  &#8226;   <a href="#app.gui.bom_editor_pane">app.gui.bom_editor_pane</a>
+ &#8226;   <a href="#app.gui.widgets.complex_panel">app.gui.widgets.complex_panel</a>
+ &#8226;   <a href="#app.integration.ce_bridge_client">app.integration.ce_bridge_client</a>
  &#8226;   <a href="#app.integration.ce_bridge_manager">app.integration.ce_bridge_manager</a>
  &#8226;   <a href="#asyncio.base_events">asyncio.base_events</a>
  &#8226;   <a href="#asyncio.windows_events">asyncio.windows_events</a>
@@ -46352,6 +46414,7 @@ imported by:
  &#8226;   <a href="#annotated_types">annotated_types</a>
  &#8226;   <a href="#app.ai_agents">app.ai_agents</a>
  &#8226;   <a href="#app.config">app.config</a>
+ &#8226;   <a href="#app.database">app.database</a>
  &#8226;   <a href="#app.db_safe_migrate">app.db_safe_migrate</a>
  &#8226;   <a href="#app.domain.complex_linker">app.domain.complex_linker</a>
  &#8226;   <a href="#app.gui.auto_datasheet_dialog">app.gui.auto_datasheet_dialog</a>
@@ -46384,6 +46447,7 @@ imported by:
  &#8226;   <a href="#app.services.pdf_utils">app.services.pdf_utils</a>
  &#8226;   <a href="#app.services.projects">app.services.projects</a>
  &#8226;   <a href="#app.services.tasks">app.services.tasks</a>
+ &#8226;   <a href="#app.storage.migrations">app.storage.migrations</a>
  &#8226;   <a href="#asyncio.staggered">asyncio.staggered</a>
  &#8226;   <a href="#asyncio.timeouts">asyncio.timeouts</a>
  &#8226;   <a href="#bs4">bs4</a>
