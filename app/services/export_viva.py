@@ -1,17 +1,75 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 import re
-from typing import Iterable, Dict, List
+from typing import Dict, Iterable, List, Optional
 
 from sqlmodel import Session, select
 
 from ..models import Part
 
 
+@dataclass(frozen=True)
+class VIVAExportPaths:
+    """Convenience container describing the generated VIVA export paths."""
+
+    folder: Path
+    bom_txt: Path
+    mdb_path: Path
+
+
 def natural_key(s: str) -> List[object]:
     """Natural sort key splitting digits from text."""
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
+
+
+_INVALID_FILENAME = re.compile(r"[\\/:*?\"<>|]+")
+
+
+def sanitize_token(value: Optional[str], fallback: str) -> str:
+    """Return ``value`` trimmed and stripped of characters invalid on Windows."""
+
+    text = (value or "").strip()
+    if not text:
+        text = fallback
+    sanitized = _INVALID_FILENAME.sub("_", text)
+    sanitized = sanitized.strip(" .") or fallback
+    return sanitized[:120]
+
+
+def build_export_folder_name(
+    assembly_code: str,
+    revision: str,
+    *,
+    timestamp: Optional[datetime] = None,
+) -> str:
+    """Construct a timestamped folder name for a VIVA export."""
+
+    ts = (timestamp or datetime.now()).strftime("%Y%m%d_%H%M")
+    code_token = sanitize_token(assembly_code, "ASM")
+    rev_token = sanitize_token(revision, "REV")
+    return f"VIVA_{code_token}_{rev_token}_{ts}"
+
+
+def build_export_paths(
+    base_dir: Path,
+    assembly_code: str,
+    revision: str,
+    *,
+    timestamp: Optional[datetime] = None,
+) -> VIVAExportPaths:
+    """Return the folder and file paths for a VIVA export rooted at ``base_dir``."""
+
+    folder_name = build_export_folder_name(assembly_code, revision, timestamp=timestamp)
+    folder = base_dir / folder_name
+    return VIVAExportPaths(
+        folder=folder,
+        bom_txt=folder / "BOM_to_VIVA.txt",
+        mdb_path=folder / "bom_complexes.mdb",
+    )
 
 
 def build_viva_groups(rows_from_gui: Iterable[dict], session: Session, assembly_id: int) -> List[dict]:

@@ -10,7 +10,7 @@ Features implemented:
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 from pathlib import Path
 
 from PyQt6.QtGui import (
@@ -36,19 +36,56 @@ from PyQt6.QtCore import (
     QPersistentModelIndex,
 )
 from PyQt6.QtWidgets import (
-    QWidget, QTableView, QVBoxLayout, QLineEdit, QPushButton, QToolBar, QMenu,
-    QToolButton, QStyle, QApplication,
-    QStyledItemDelegate, QHeaderView, QAbstractItemView, QStyleOptionViewItem,
-    QLabel, QMessageBox, QSpinBox, QComboBox, QFileDialog, QInputDialog, QStyleOptionButton,
-    QSplitter
+    QWidget,
+    QTableView,
+    QVBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QToolBar,
+    QMenu,
+    QToolButton,
+    QStyle,
+    QApplication,
+    QStyledItemDelegate,
+    QHeaderView,
+    QAbstractItemView,
+    QStyleOptionViewItem,
+    QLabel,
+    QMessageBox,
+    QSpinBox,
+    QComboBox,
+    QFileDialog,
+    QInputDialog,
+    QStyleOptionButton,
+    QSplitter,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QTableWidget,
+    QTableWidgetItem,
 )
 from PyQt6.QtGui import QPainter, QBrush, QColor, QDesktopServices, QGuiApplication, QTextDocument, QTextOption
 import logging
 from .. import services
 from ..services.datasheets import get_local_open_path
-from ..config import DATA_ROOT, PDF_VIEWER, PDF_VIEWER_PATH, PDF_OPEN_DEBUG, get_complex_editor_settings
+from ..config import (
+    DATA_ROOT,
+    LOG_DIR,
+    PDF_VIEWER,
+    PDF_VIEWER_PATH,
+    PDF_OPEN_DEBUG,
+    get_complex_editor_settings,
+)
+from ..integration import ce_bridge_client
+from ..integration.ce_bridge_client import (
+    CEAuthError,
+    CENetworkError,
+    CEExportBusyError,
+    CEExportStrictError,
+)
 import subprocess, shutil, time, os
 from datetime import datetime
+from functools import partial
 from ..logic.autofill_rules import infer_from_pn_and_desc
 from ..logic.prefix_macros import load_prefix_macros, reload_prefix_macros
 from . import state as app_state
@@ -385,6 +422,74 @@ class TestDetailDelegate(QStyledItemDelegate):
         self.commitData.emit(editor)
         self.closeEditor.emit(editor)
 
+
+class VivaStrictFailDialog(QDialog):
+    """Modal dialog presenting PNs that blocked a VIVA export."""
+
+    def __init__(
+        self,
+        parent: QWidget,
+        error: CEExportStrictError,
+        pn_map: Dict[str, int],
+        open_part_cb,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Some PNs aren't linked to complexes")
+        self._pn_map = pn_map
+        self._open_part_cb = open_part_cb
+        self._entries: list[tuple[str, str]] = []
+
+        layout = QVBoxLayout(self)
+        label = QLabel("Some PNs aren't linked to complexes", self)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        self.table = QTableWidget(0, 3, self)
+        self.table.setHorizontalHeaderLabels(["PN", "Status", ""])
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.table)
+
+        for status, pn in self._iter_entries(error):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(pn))
+            self.table.setItem(row, 1, QTableWidgetItem(status))
+            self._entries.append((pn, status))
+            part_id = pn_map.get(pn.lower())
+            if part_id is not None:
+                button = QPushButton("Open in CE", self)
+                button.clicked.connect(partial(self._open_clicked, pn.lower()))
+                self.table.setCellWidget(row, 2, button)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, self)
+        copy_button = buttons.addButton("Copy list", QDialogButtonBox.ButtonRole.ActionRole)
+        copy_button.clicked.connect(self._copy_entries)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self.resize(520, 320)
+
+    def _iter_entries(self, error: CEExportStrictError) -> Iterable[tuple[str, str]]:
+        for pn in error.unlinked:
+            yield "Unlinked", str(pn)
+        for pn in error.missing:
+            yield "Missing", str(pn)
+
+    def _open_clicked(self, pn_key: str) -> None:
+        part_id = self._pn_map.get(pn_key)
+        if part_id is None:
+            return
+        self._open_part_cb(part_id)
+
+    def _copy_entries(self) -> None:
+        text = "\n".join(f"{status}: {pn}" for pn, status in self._entries)
+        QApplication.clipboard().setText(text)
+
+
 class BOMEditorPane(QWidget):
     """Widget presenting BOM items with active/passive classification."""
 
@@ -420,6 +525,8 @@ class BOMEditorPane(QWidget):
         self._dirty_datasheets: Dict[int, Optional[str]] = {}
         # View mode: 'by_pn' or 'by_ref'
         self._part_numbers: Dict[int, str] = {}
+        self._complex_links: Dict[int, object] = {}
+        self._export_settings = QSettings("BOM_DB", "ExportForVIVA")
         self._complex_settings = get_complex_editor_settings()
         bridge_cfg = self._complex_settings.get('bridge', {}) if isinstance(self._complex_settings, dict) else {}
         bridge_enabled = bool(bridge_cfg.get('enabled')) if isinstance(bridge_cfg, dict) else False
@@ -493,8 +600,8 @@ class BOMEditorPane(QWidget):
         self.auto_ds_act.setEnabled(False)
         self.auto_ds_act.triggered.connect(self._auto_datasheet)
 
-        # BOM to VIVA export
-        self.export_viva_act = QAction("BOM to VIVA", self)
+        # Export for VIVA
+        self.export_viva_act = QAction("Export for VIVA", self)
         self.export_viva_act.triggered.connect(self._on_export_viva)
 
         # Reload prefix map
@@ -800,6 +907,7 @@ QTableView::item:selected:hover {
         self._part_values.clear()
         self._tolerances.clear()
         self._dirty_datasheets.clear()
+        self._complex_links.clear()
         for r in self._rows_raw:
             # Use DB-provided value; may be None in future schema
             self._parts_state[r.part_id] = getattr(r, "active_passive", None)
@@ -810,6 +918,7 @@ QTableView::item:selected:hover {
             self._tolerances[r.part_id] = (getattr(r, "tol_p", None), getattr(r, "tol_n", None))
             # Seed product link if available so the Link column shows after reload
             self._part_product_links[r.part_id] = getattr(r, "product_url", None)
+        self._reload_complex_links({r.part_id for r in self._rows_raw})
         # Overlay any saved test assignments from settings for visible parts
         self._load_test_assignments_from_settings()
 
@@ -1092,6 +1201,29 @@ QTableView::item:selected:hover {
                 ta["method"] = (method or "").strip()
                 ta["detail"] = (detail or "").strip() or None
                 ta["qt_path"] = (qt_path or "").strip() or None
+
+    def _reload_complex_links(self, part_ids: Iterable[int]) -> None:
+        ids: Set[int] = {int(pid) for pid in part_ids if isinstance(pid, int)}
+        if not ids:
+            return
+        try:
+            from sqlmodel import select
+            from ..domain.complex_linker import ComplexLink
+
+            with app_state.get_session() as session:
+                rows = session.exec(
+                    select(ComplexLink).where(ComplexLink.part_id.in_(ids))
+                ).all()
+        except Exception as exc:  # pragma: no cover - defensive
+            logging.debug("Failed to refresh complex links: %s", exc)
+            return
+        for pid in ids:
+            self._complex_links.pop(pid, None)
+        for row in rows:
+            try:
+                self._complex_links[row.part_id] = row
+            except Exception:  # pragma: no cover - defensive
+                logging.debug("Skipping malformed complex link row: %s", row)
 
     def _show_stub_dialog(self, message: str) -> None:
         from .dialogs.tm_stub_dialog import TestMethodStubDialog
@@ -1500,8 +1632,10 @@ QTableView::item:selected:hover {
         self._ensure_complex_panel_visible_for_part(part_id)
 
     def _on_complex_link_updated(self, part_id: int) -> None:
+        self._reload_complex_links([part_id])
         self._refresh_rows_for_part(part_id)
         self._ensure_complex_panel_visible_for_part(part_id)
+        self._install_datasheet_widgets()
 
     def _on_apply_toggled(self, checked: bool) -> None:
         if checked and (
@@ -1676,20 +1810,36 @@ QTableView::item:selected:hover {
             pass
 
     # ------------------------------------------------------------------
-    def _collect_table_rows(self) -> list[dict]:
-        """Return current table rows as dictionaries for export."""
+    def _collect_table_rows(self) -> tuple[list[dict], Set[int]]:
+        """Return visible table rows and the set of part ids they reference."""
+
+        model = self.table.model()
+        if model is None:
+            return [], set()
         tm_col = self._col_indices.get("test_method")
         td_col = self._col_indices.get("test_detail")
         ref_col = self._col_indices.get("ref")
         pn_col = self._col_indices.get("pn")
         rows: list[dict] = []
-        for r in range(self.model.rowCount()):
-            pn = self.model.data(self.model.index(r, pn_col)) if pn_col is not None else ""
-            refs = self.model.data(self.model.index(r, ref_col)) if ref_col is not None else ""
-            tm = self.model.data(self.model.index(r, tm_col)) if tm_col is not None else ""
-            td = self.model.data(self.model.index(r, td_col)) if td_col is not None else ""
+        part_scope: Set[int] = set()
+        for r in range(model.rowCount()):
+            pn_idx = model.index(r, pn_col) if pn_col is not None else None
+            ref_idx = model.index(r, ref_col) if ref_col is not None else None
+            tm_idx = model.index(r, tm_col) if tm_col is not None else None
+            td_idx = model.index(r, td_col) if td_col is not None else None
+            pn = model.data(pn_idx) if pn_idx is not None else ""
+            refs = model.data(ref_idx) if ref_idx is not None else ""
+            tm = model.data(tm_idx) if tm_idx is not None else ""
+            td = model.data(td_idx) if td_idx is not None else ""
+            part_id = None
+            if pn_idx is not None:
+                part_id = model.data(pn_idx, PartIdRole)
+            if part_id is None and ref_idx is not None:
+                part_id = model.data(ref_idx, PartIdRole)
+            if isinstance(part_id, int):
+                part_scope.add(part_id)
             if self._view_mode == "by_pn":
-                ref_list = [x.strip() for x in (refs or "").split(",") if x.strip()]
+                ref_list = [x.strip() for x in str(refs or "").split(",") if x.strip()]
                 for ref in ref_list:
                     rows.append(
                         {
@@ -1702,40 +1852,115 @@ QTableView::item:selected:hover {
             else:
                 rows.append(
                     {
-                        "reference": (refs or "").strip(),
+                        "reference": str(refs or "").strip(),
                         "part_number": pn or "",
                         "test_method": tm or "",
                         "test_detail": td or "",
                     }
                 )
-        return rows
+        return rows, part_scope
 
     def _on_export_viva(self) -> None:  # pragma: no cover - UI glue
-        table_rows = self._collect_table_rows()
+        table_rows, part_scope = self._collect_table_rows()
+        self._reload_complex_links(part_scope)
         with app_state.get_session() as session:
             try:
                 rows = services.build_viva_groups(table_rows, session, self._assembly_id)
             except ValueError as exc:
                 QMessageBox.warning(self, "Cannot export", str(exc))
                 return
-        # Build default filename with Customer and Project
-        base = self._default_export_basename()
-        default_name = f"{base} - BOM to VIVA.txt" if base else f"BOM_to_VIVA_{self._assembly_id}.txt"
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save BOM to VIVA",
-            default_name,
-            "Text files (*.txt)",
+
+        asm, proj = self._load_assembly_context()
+        assembly_code = getattr(proj, "code", None) or getattr(proj, "title", "") or f"ASM{self._assembly_id}"
+        assembly_rev = getattr(asm, "rev", "") or "REV"
+
+        force_prompt = bool(
+            QApplication.keyboardModifiers() & Qt.KeyboardModifier.ShiftModifier
         )
-        if not path:
+        base_root = self._determine_export_base_root(proj, force_prompt=force_prompt)
+        if base_root is None:
             return
-        services.write_viva_txt(path, rows)
-        total_refs = sum(int(r["quantity"]) for r in rows)
-        QMessageBox.information(
-            self,
-            "Export complete",
-            f"Exported {len(rows)} groups / {total_refs} references to {path}",
+        try:
+            base_root.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", f"Cannot create export root: {exc}")
+            return
+
+        export_paths = services.build_export_paths(base_root, assembly_code, assembly_rev)
+        try:
+            export_paths.folder.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Export failed",
+                f"Cannot create export folder {export_paths.folder}: {exc}",
+            )
+            return
+
+        try:
+            services.write_viva_txt(str(export_paths.bom_txt), rows)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", f"Unable to write BOM text: {exc}")
+            return
+
+        pn_scope, pn_map = self._build_pn_scope(part_scope)
+        ce_payload: Dict[str, object] | None = None
+        while True:
+            try:
+                ce_payload = ce_bridge_client.export_complexes_mdb(
+                    pn_scope,
+                    str(export_paths.folder),
+                    mdb_name=export_paths.mdb_path.name,
+                    require_linked=True,
+                )
+            except CEExportBusyError as exc:
+                retry = QMessageBox.question(
+                    self,
+                    "Complex Editor busy",
+                    f"{exc}\nRetry the export?",
+                    QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Retry,
+                )
+                if retry == QMessageBox.StandardButton.Retry:
+                    continue
+                logging.info(
+                    "VIVA export cancelled due to CE busy: assembly=%s scope=%d", 
+                    self._assembly_id,
+                    len(pn_scope),
+                )
+                return
+            except CEExportStrictError as exc:
+                logging.info(
+                    "VIVA export blocked: assembly=%s pn_scope=%d unlinked=%d missing=%d",
+                    self._assembly_id,
+                    len(pn_scope),
+                    len(exc.unlinked),
+                    len(exc.missing),
+                )
+                self._show_strict_fail_dialog(exc, pn_map)
+                return
+            except CEAuthError as exc:
+                QMessageBox.warning(self, "Complex Editor", str(exc))
+                return
+            except CENetworkError as exc:
+                self._show_export_error(str(exc))
+                return
+            else:
+                break
+
+        self._export_settings.setValue("last_root", str(base_root))
+        if isinstance(ce_payload, dict):
+            counts = {k: ce_payload.get(k) for k in ("exported", "linked", "skipped")}
+        else:
+            counts = {}
+        logging.info(
+            "VIVA export success: assembly=%s pn_scope=%d folder=%s ce=%s",
+            self._assembly_id,
+            len(pn_scope),
+            export_paths.folder,
+            counts,
         )
+        self._show_export_success(export_paths)
 
     def _export_excel(self) -> None:  # pragma: no cover - UI glue
         # Save visible table to an .xlsx, preserving 'Link' hyperlinks; skip 'Datasheet' column
@@ -1816,6 +2041,134 @@ QTableView::item:selected:hover {
                 return base
         except Exception:
             return ""
+
+    def _load_assembly_context(self):
+        try:
+            from ..models import Assembly, Project
+
+            with app_state.get_session() as session:
+                asm = session.get(Assembly, self._assembly_id)
+                proj = None
+                if asm and getattr(asm, "project_id", None):
+                    proj = session.get(Project, asm.project_id)
+            return asm, proj
+        except Exception as exc:  # pragma: no cover - defensive
+            logging.debug("Failed to load assembly context: %s", exc)
+            return None, None
+
+    def _project_default_root(self, project) -> Optional[Path]:
+        code = getattr(project, "code", None) if project else None
+        if not code:
+            return None
+        sanitized = services.sanitize_token(code, str(code))
+        return (DATA_ROOT / "Projects" / sanitized).resolve()
+
+    def _determine_export_base_root(
+        self,
+        project,
+        *,
+        force_prompt: bool = False,
+    ) -> Optional[Path]:
+        stored_raw = self._export_settings.value("last_root", "")
+        stored_path = None
+        if isinstance(stored_raw, str) and stored_raw.strip():
+            try:
+                stored_path = Path(stored_raw).expanduser().resolve()
+            except Exception:
+                stored_path = Path(stored_raw).expanduser()
+        if stored_path is not None and not force_prompt:
+            return stored_path
+        default_root = self._project_default_root(project)
+        if default_root is not None and not force_prompt:
+            return default_root
+        start = default_root or stored_path or DATA_ROOT
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select VIVA export root",
+            str(start),
+        )
+        if not directory:
+            return None
+        return Path(directory).expanduser().resolve()
+
+    def _build_pn_scope(self, part_scope: Iterable[int]) -> tuple[list[str], Dict[str, int]]:
+        pn_list: list[str] = []
+        pn_map: Dict[str, int] = {}
+        seen: set[str] = set()
+        for pid in part_scope:
+            if not isinstance(pid, int):
+                continue
+            pn = (self._part_numbers.get(pid) or "").strip()
+            if not pn:
+                continue
+            link = self._complex_links.get(pid)
+            ce_id = getattr(link, "ce_complex_id", None) if link else None
+            if not ce_id:
+                continue
+            key = pn.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            pn_list.append(pn)
+            pn_map[key] = pid
+        return pn_list, pn_map
+
+    def _show_export_success(
+        self,
+        paths: services.VIVAExportPaths,
+    ) -> None:
+        message = f"VIVA export ready • 1 txt, 1 mdb → {paths.folder}"
+        details = f"BOM text: {paths.bom_txt}\nComplex MDB: {paths.mdb_path}"
+        box = QMessageBox(self)
+        box.setWindowTitle("Export for VIVA")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(message)
+        box.setInformativeText(details)
+        open_button = box.addButton("Open Folder", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() == open_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.folder)))
+
+    def _show_export_error(self, message: str) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("Export failed")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("Export failed")
+        box.setInformativeText(message)
+        logs_button = box.addButton("Open Logs", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() == logs_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(LOG_DIR)))
+
+    def _show_strict_fail_dialog(
+        self,
+        error: CEExportStrictError,
+        pn_map: Dict[str, int],
+    ) -> None:
+        dialog = VivaStrictFailDialog(self, error, pn_map, self._open_complex_for_part)
+        dialog.exec()
+
+    def _open_complex_for_part(self, part_id: int) -> bool:
+        link = self._complex_links.get(part_id)
+        ce_id = getattr(link, "ce_complex_id", None) if link else None
+        if not ce_id:
+            QMessageBox.information(
+                self,
+                "Complex Editor",
+                "No linked complex is available for this part.",
+            )
+            return False
+        try:
+            ce_bridge_client.open_complex(str(ce_id))
+        except CEAuthError as exc:
+            QMessageBox.warning(self, "Complex Editor", str(exc))
+            return False
+        except CENetworkError as exc:
+            QMessageBox.warning(self, "Complex Editor", str(exc))
+            return False
+        return True
 
     def closeEvent(self, event) -> None:  # pragma: no cover - UI glue
         # Persist column settings per mode
