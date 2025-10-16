@@ -134,7 +134,9 @@ def _resolve_bridge_config() -> tuple[str, str, float]:
             base_url = str(override).strip() or base_url
         override_token = viva_cfg.get("ce_auth_token")
         if override_token is not None:
-            token = str(override_token).strip()
+            candidate = str(override_token).strip()
+            if candidate:
+                token = candidate
     base_url = _normalize_base_url(base_url)
     return base_url, token, timeout
 
@@ -205,6 +207,8 @@ def _request(
             return response
 
     if not response.ok:
+        if allow_conflict:
+            return response
         try:
             response.raise_for_status()
         except req_exc.HTTPError as exc:
@@ -459,14 +463,27 @@ def get_active_base_url() -> str:
     return base_url
 
 
+def _append_trace(message: str, payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return message
+    trace = payload.get("trace_id")
+    trace_text = str(trace).strip() if isinstance(trace, str) else ""
+    if trace_text:
+        return f"{message} (trace: {trace_text})"
+    return message
+
+
 def create_complex(pn: str, aliases: Optional[List[str]] = None) -> Dict[str, Any]:
     """Create a new complex in the bridge and return its representation."""
+
     body: Dict[str, Any] = {"pn": pn}
     if aliases:
         body["aliases"] = aliases
     response = _request("POST", "/complexes", json_body=body, allow_conflict=True)
     payload = _json_from_response(response) if response.content else {}
-    if response.status_code == 409:
+    status = response.status_code
+
+    if status == 409:
         if isinstance(payload, dict):
             detail = str(payload.get("detail") or payload.get("reason") or "").strip()
             if detail.lower() == "wizard handler unavailable":
@@ -476,7 +493,27 @@ def create_complex(pn: str, aliases: Optional[List[str]] = None) -> Dict[str, An
             message = detail or "Complex Editor reported a conflict creating the complex."
         else:  # pragma: no cover - defensive
             message = "Complex Editor reported a conflict creating the complex."
+        message = _append_trace(message, payload)
         raise CENetworkError(message)
+
+    if status >= 500:
+        if isinstance(payload, dict):
+            message = str(payload.get("detail") or payload.get("reason") or "").strip()
+        else:  # pragma: no cover - defensive
+            message = "Complex Editor failed to create the complex."
+        message = message or "Complex Editor failed to create the complex."
+        message = _append_trace(message, payload)
+        raise CENetworkError(message)
+
+    if status >= 400:
+        if isinstance(payload, dict):
+            message = str(payload.get("detail") or payload.get("reason") or "").strip()
+        else:  # pragma: no cover - defensive
+            message = "Complex Editor bridge returned an error creating the complex."
+        message = message or f"Complex Editor bridge returned HTTP {status}"
+        message = _append_trace(message, payload)
+        raise CENetworkError(message)
+
     if not isinstance(payload, dict):  # pragma: no cover - defensive
         raise CENetworkError("Unexpected payload from create_complex")
     return payload
@@ -612,6 +649,16 @@ def open_complex(
             ).strip()
             if detail:
                 message = detail
+        raise CENetworkError(message)
+
+    if response.status_code >= 400:
+        payload = _json_from_response(response) if response.content else {}
+        if isinstance(payload, dict):
+            detail = str(payload.get("detail") or payload.get("reason") or "").strip()
+        else:  # pragma: no cover - defensive
+            detail = ""
+        message = detail or f"Complex Editor bridge returned HTTP {response.status_code}"
+        message = _append_trace(message, payload)
         raise CENetworkError(message)
 
     state_payload = _wait_for_edit_state(

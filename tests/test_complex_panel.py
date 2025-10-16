@@ -7,6 +7,7 @@ try:
 except ImportError:
     pytest.skip("PyQt6 not available", allow_module_level=True)
 
+from app.domain.complex_linker import CreateComplexOutcome
 from app.gui.widgets.complex_panel import ComplexPanel
 
 
@@ -85,5 +86,81 @@ def test_complex_panel_search_and_attach(monkeypatch, qapp):
     assert panel.db_path_value.text() == "C:/linked.mdb"
     assert panel.synced_value.text() == "2024-04-01T00:00:00"
     assert panel.refresh_button.isEnabled()
+
+    panel.deleteLater()
+
+
+def test_complex_panel_create_updates_ui(monkeypatch, qapp):
+    monkeypatch.setattr(
+        "app.gui.widgets.complex_panel.get_complex_editor_settings",
+        lambda: _settings_stub(),
+    )
+    link_snapshot: dict[str, str] = {}
+
+    def fake_load(self, part_id):
+        return link_snapshot or None
+
+    def fake_create(part_id, pn, aliases):
+        assert part_id == 99
+        assert pn == "PN-CREATE"
+        link_snapshot.clear()
+        link_snapshot.update(
+            {
+                "ce_complex_id": "55",
+                "ce_db_uri": "C:/ce55.mdb",
+                "synced_at": "2024-05-01T00:00:00",
+            }
+        )
+        return CreateComplexOutcome(
+            status="attached",
+            message="Created Complex 55 and attached to part 99.",
+            created_id="55",
+        )
+
+    monkeypatch.setattr(ComplexPanel, "_load_link_snapshot", fake_load)
+    monkeypatch.setattr(
+        "app.domain.complex_linker.create_and_attach_complex", fake_create
+    )
+
+    panel = ComplexPanel()
+    panel.set_context(99, "PN-CREATE")
+    panel._on_create_clicked()
+    qapp.processEvents()
+
+    assert panel.linked_id_value.text() == "55"
+    assert panel.db_path_value.text() == "C:/ce55.mdb"
+    assert panel.synced_value.text() == "2024-05-01T00:00:00"
+    assert not panel.progress.isVisible()
+    assert panel.status_label.text() == "Created Complex 55 and attached to part 99."
+
+    panel.deleteLater()
+
+
+def test_complex_panel_create_cancelled(monkeypatch, qapp):
+    monkeypatch.setattr(
+        "app.gui.widgets.complex_panel.get_complex_editor_settings",
+        lambda: _settings_stub(),
+    )
+    link_snapshot: dict[str, str] = {}
+
+    def fake_load(self, part_id):
+        return link_snapshot or None
+
+    def fake_create(part_id, pn, aliases):
+        return CreateComplexOutcome(status="cancelled", message="Creation cancelled.")
+
+    monkeypatch.setattr(ComplexPanel, "_load_link_snapshot", fake_load)
+    monkeypatch.setattr(
+        "app.domain.complex_linker.create_and_attach_complex", fake_create
+    )
+
+    panel = ComplexPanel()
+    panel.set_context(77, "PN-CAN")
+    panel._on_create_clicked()
+    qapp.processEvents()
+
+    assert panel.linked_id_value.text() == "-"
+    assert panel.status_label.text() == "Creation cancelled."
+    assert not panel.progress.isVisible()
 
     panel.deleteLater()

@@ -11,8 +11,13 @@ from sqlmodel import Field, SQLModel, Session, select
 from app import config, database
 from app.domain import complex_creation
 from app.integration import ce_bridge_client
-from app.integration.ce_bridge_client import CENetworkError
+from app.integration.ce_bridge_client import (
+    CENetworkError,
+    CEUserCancelled,
+    CEWizardUnavailable,
+)
 from app.integration.ce_bridge_manager import CEBridgeError
+from app.models import PartTestAssignment, TestMethod
 
 logger = logging.getLogger(__name__)
 
@@ -121,11 +126,84 @@ def _needs_settings_fix(error: CEBridgeError) -> bool:
     return "complex editor executable" in message or "config" in message
 
 
-def create_and_attach_complex(
-    part_id: int, pn: str, aliases: list[str] | None = None
+def _clean_aliases(aliases: list[str] | None) -> list[str]:
+    alias_list: list[str] = []
+    for alias in aliases or []:
+        if isinstance(alias, str):
+            text = alias.strip()
+            if text:
+                alias_list.append(text)
+    return alias_list
+
+
+def _persist_link(part_id: int, ce_id: str) -> None:
+    session = _session()
+    now_iso = _utc_iso()
+    now_dt = datetime.utcnow()
+    try:
+        stmt = select(ComplexLink).where(ComplexLink.part_id == part_id)
+        link = session.exec(stmt).first()
+        if link:
+            link.ce_complex_id = ce_id
+            link.ce_db_uri = link.ce_db_uri or None
+            link.aliases = link.aliases or "[]"
+            link.pin_map = link.pin_map or "{}"
+            link.macro_ids = link.macro_ids or "[]"
+            link.synced_at = now_iso
+            link.updated_at = now_iso
+            if not link.created_at:
+                link.created_at = now_iso
+        else:
+            link = ComplexLink(
+                part_id=part_id,
+                ce_complex_id=ce_id,
+                ce_db_uri=None,
+                aliases="[]",
+                pin_map="{}",
+                macro_ids="[]",
+                source_hash=None,
+                synced_at=now_iso,
+                created_at=now_iso,
+                updated_at=now_iso,
+            )
+            session.add(link)
+
+        assignment = session.get(PartTestAssignment, part_id)
+        if assignment is None:
+            assignment = PartTestAssignment(part_id=part_id, method=TestMethod.complex)
+            assignment.created_at = now_dt
+            assignment.updated_at = now_dt
+            session.add(assignment)
+        else:
+            if assignment.method != TestMethod.complex:
+                assignment.method = TestMethod.complex
+            assignment.updated_at = now_dt
+            session.add(assignment)
+
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+
+def _refresh_link_snapshot(part_id: int, ce_id: str) -> None:
+    try:
+        attach_existing_complex(part_id, ce_id)
+    except CENetworkError as exc:
+        logger.warning(
+            "Failed to refresh Complex %s after creation: %s",
+            ce_id,
+            exc,
+        )
+
+
+def _launch_wizard_flow(
+    part_id: int, pn: str, aliases: list[str]
 ) -> CreateComplexOutcome:
     try:
-        launch = complex_creation.launch_wizard(pn, aliases or [])
+        launch = complex_creation.launch_wizard(pn, aliases)
     except CEBridgeError as exc:
         raise CEWizardLaunchError(str(exc), fix_in_settings=_needs_settings_fix(exc)) from exc
 
@@ -139,6 +217,52 @@ def create_and_attach_complex(
         pn=launch.pn,
         aliases=launch.aliases,
         polling_enabled=_bridge_polling_enabled(settings),
+    )
+
+
+def create_and_attach_complex(
+    part_id: int, pn: str, aliases: list[str] | None = None
+) -> CreateComplexOutcome:
+    alias_list = _clean_aliases(aliases)
+
+    try:
+        ce_bridge_client.wait_until_ready()
+        payload = ce_bridge_client.create_complex(pn, alias_list or None)
+    except CEUserCancelled:
+        logger.info("Complex creation cancelled for part %s", part_id)
+        return CreateComplexOutcome(status="cancelled", message="Creation cancelled.")
+    except CEWizardUnavailable:
+        return _launch_wizard_flow(part_id, pn, alias_list)
+
+    if not isinstance(payload, dict):  # pragma: no cover - defensive
+        raise CENetworkError("Complex Editor returned an unexpected response for create_complex")
+
+    created = payload.get("id")
+    try:
+        created_id = int(created)
+    except (TypeError, ValueError):
+        raise CENetworkError("Complex Editor did not return a valid complex ID") from None
+
+    ce_id = str(created_id)
+    _persist_link(part_id, ce_id)
+    _refresh_link_snapshot(part_id, ce_id)
+
+    base_url = ce_bridge_client.get_active_base_url()
+    logger.info(
+        "Created Complex %s for part %s via bridge %s",
+        ce_id,
+        part_id,
+        base_url,
+    )
+
+    message = f"Created Complex {ce_id} and attached to part {part_id}."
+    return CreateComplexOutcome(
+        status="attached",
+        message=message,
+        created_id=ce_id,
+        pn=pn,
+        aliases=alias_list,
+        polling_enabled=False,
     )
 
 
