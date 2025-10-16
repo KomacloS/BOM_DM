@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.domain.complex_linker import ComplexLink
 from app.models import Assembly, BOMItem, Part, PartTestAssignment, Project, TestMethod
@@ -164,7 +164,7 @@ def test_perform_viva_export_happy_path(populated_context, mock_ce, tmp_path):
     assert Path(result.paths.mdb_path).exists()
 
     assert mock_ce["export"]["comp_ids"] == [123]
-    assert mock_ce["export"]["pns"] == [part.part_number]
+    assert mock_ce["export"]["pns"] == []
 
 
 def test_determine_comp_ids_requires_complex(populated_context, monkeypatch):
@@ -265,3 +265,24 @@ def test_perform_viva_export_persists_ce_error(populated_context, tmp_path, monk
     if diagnostics.ce_response_path:
         ce_response = json.loads(diagnostics.ce_response_path.read_text(encoding="utf-8"))
         assert ce_response["reason"] == "busy"
+
+
+def test_determine_comp_ids_includes_assigned_without_requirement(populated_context):
+    session = populated_context["session"]
+    assembly = populated_context["assembly"]
+    part = populated_context["part"]
+
+    assignment = session.exec(
+        select(PartTestAssignment).where(PartTestAssignment.part_id == part.id)
+    ).one()
+    assignment.method = TestMethod.macro
+    session.add(assignment)
+    session.add(ComplexLink(part_id=part.id, ce_complex_id="654"))
+    session.commit()
+
+    lines = collect_bom_lines(session, assembly.id)
+    comp_ids, warnings, missing = determine_comp_ids(lines)
+
+    assert comp_ids == [654]
+    assert warnings == []
+    assert missing == []

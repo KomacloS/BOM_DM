@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
@@ -317,35 +317,6 @@ def collect_bom_lines(session: Session, assembly_id: int) -> List[VIVABOMLine]:
     return lines
 
 
-def _missing_complex_rows(lines: Sequence[VIVABOMLine]) -> List[VIVAMissingComplex]:
-    missing: List[VIVAMissingComplex] = []
-    for line in lines:
-        if not line.requires_complex:
-            continue
-        if line.complex_id is not None:
-            continue
-        missing.append(
-            VIVAMissingComplex(
-                line_number=line.line_number,
-                part_number=line.part_number,
-                description=line.description,
-                reference=line.reference,
-            )
-        )
-    return missing
-
-
-def _dedupe_preserve_order(values: Iterable[int]) -> List[int]:
-    seen: set[int] = set()
-    deduped: List[int] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        deduped.append(value)
-    return deduped
-
-
 def _resolve_comp_ids_by_pn(
     pns: Sequence[str],
     *,
@@ -384,36 +355,54 @@ def determine_comp_ids(
 ) -> Tuple[List[int], List[str], List[VIVAMissingComplex]]:
     """Return deduplicated comp ids, unresolved PN warnings and missing rows."""
 
-    missing_rows = _missing_complex_rows(lines)
+    assigned_ids: List[int] = []
+    missing_rows: List[VIVAMissingComplex] = []
+    pn_lookup: Dict[str, List[VIVABOMLine]] = {}
+
+    for line in lines:
+        if line.complex_id is not None:
+            assigned_ids.append(line.complex_id)
+
+        if not line.requires_complex:
+            continue
+
+        if line.complex_id is not None:
+            continue
+
+        missing_rows.append(
+            VIVAMissingComplex(
+                line_number=line.line_number,
+                part_number=line.part_number,
+                description=line.description,
+                reference=line.reference,
+            )
+        )
+
+        pn = (line.part_number or "").strip()
+        if pn:
+            pn_lookup.setdefault(pn, []).append(line)
+
     if missing_rows and strict:
         raise VIVAExportValidationError(missing_rows)
 
-    comp_ids: List[int] = []
-    pn_lookup: Dict[str, List[VIVABOMLine]] = {}
-    for line in lines:
-        if not line.requires_complex:
-            continue
-        if line.complex_id is not None:
-            comp_ids.append(line.complex_id)
-            continue
-        pn = (line.part_number or "").strip()
-        if not pn:
-            continue
-        pn_lookup.setdefault(pn, []).append(line)
-
     unresolved: List[str] = []
+    resolved_ids: List[int] = []
     if pn_lookup:
-        mapping, unresolved = _resolve_comp_ids_by_pn(list(pn_lookup.keys()), resolver=resolver)
+        mapping, unresolved = _resolve_comp_ids_by_pn(
+            list(pn_lookup.keys()), resolver=resolver
+        )
         for pn, lines_for_pn in pn_lookup.items():
             resolved_id = mapping.get(pn)
             if resolved_id is None:
                 continue
-            comp_ids.append(resolved_id)
+            resolved_ids.append(resolved_id)
         if unresolved and strict:
             raise CEPNResolutionError(unresolved)
 
-    deduped = _dedupe_preserve_order(comp_ids)
-    return deduped, unresolved, missing_rows
+    comp_ids = assigned_ids + resolved_ids
+    if comp_ids:
+        comp_ids = sorted({int(value) for value in comp_ids})
+    return comp_ids, unresolved, missing_rows
 
 
 def _ce_bridge_version() -> Optional[str]:
@@ -528,11 +517,15 @@ def perform_viva_export(
     comp_ids, unresolved, missing_rows = determine_comp_ids(
         lines, strict=strict, resolver=resolver
     )
-    complex_pns = [
-        line.part_number
-        for line in lines
-        if line.requires_complex and isinstance(line.part_number, str) and line.part_number.strip()
-    ]
+
+    if mdb_name is None:
+        mdb_name = "bom_complexes.mdb"
+    mdb_name = str(mdb_name).strip() or "bom_complexes.mdb"
+    if not mdb_name.lower().endswith(".mdb"):
+        mdb_name = f"{mdb_name}.mdb"
+    if len(mdb_name) > 64:
+        raise ValueError("MDB filename must be 64 characters or fewer")
+    paths = replace(paths, mdb_path=paths.folder / mdb_name)
 
     paths.folder.mkdir(parents=True, exist_ok=True)
     write_viva_txt(str(paths.bom_txt), list(bom_rows))
@@ -542,9 +535,8 @@ def perform_viva_export(
     try:
         ce_payload = ce_bridge_client.export_complexes_mdb(
             comp_ids,
-            str(paths.folder),
+            str(paths.folder.resolve()),
             mdb_name=mdb_name,
-            pns=complex_pns,
         )
     except CEExportError as exc:
         ce_bridge_url = _safe_bridge_url()
