@@ -4,14 +4,15 @@ import ipaddress
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from requests import Response
 from requests import exceptions as req_exc
 
-from app.config import get_complex_editor_settings
+from app.config import get_complex_editor_settings, get_viva_export_settings
 from app.integration.ce_bridge_manager import (
     CEBridgeError,
     bridge_owned_for_url,
@@ -65,6 +66,24 @@ class CEStaleLink(Exception):
     def __init__(self, ce_id: str | int) -> None:
         self.ce_id = ce_id
         super().__init__(f"Complex {ce_id} not found")
+
+
+class CEExportError(Exception):
+    """Raised when exporting complexes to MDB fails with structured payload."""
+
+    def __init__(
+        self,
+        status_code: int,
+        reason: str,
+        payload: Optional[Dict[str, Any]] = None,
+        trace_id: Optional[str] = None,
+    ) -> None:
+        self.status_code = status_code
+        self.reason = reason
+        self.payload = payload or {}
+        self.trace_id = trace_id
+        message = reason or f"Complex Editor export failed (HTTP {status_code})"
+        super().__init__(message)
 
 @dataclass
 class _BridgeConfig:
@@ -134,6 +153,11 @@ def _load_bridge_config() -> _BridgeConfig:
     base_url, is_local, host, port = _normalize_base_url(str(bridge_cfg.get("base_url") or "http://127.0.0.1:8765"))
     timeout = _normalize_timeout(bridge_cfg.get("request_timeout_seconds"), 10.0)
     token = str(bridge_cfg.get("auth_token") or "").strip()
+    viva_cfg = get_viva_export_settings()
+    if isinstance(viva_cfg, dict):
+        viva_token = str(viva_cfg.get("ce_auth_token") or "").strip()
+        if viva_token:
+            token = viva_token
 
     return _BridgeConfig(
         base_url=base_url,
@@ -649,15 +673,40 @@ def _wait_for_focus_or_wizard(config: _BridgeConfig, ce_id: str | int, *, timeou
             payload = {}
         record_state_snapshot(payload)
         focused = payload.get("focused_comp_id")
-        if target_id is not None and focused == target_id:
-            record_bridge_action(f"Complex {ce_id} focused in editor")
-            return
-        if payload.get("wizard_open"):
-            record_bridge_action(f"Complex {ce_id} wizard opened")
-            return
-        time.sleep(0.25)
+    if target_id is not None and focused == target_id:
+        record_bridge_action(f"Complex {ce_id} focused in editor")
+        return
+    if payload.get("wizard_open"):
+        record_bridge_action(f"Complex {ce_id} wizard opened")
+        return
+    time.sleep(0.25)
 
     record_bridge_action(f"Open request for Complex {ce_id} completed without focus confirmation")
+
+
+def get_bridge_context() -> Dict[str, Any]:
+    """Return non-sensitive metadata about the configured CE bridge."""
+    config = _load_bridge_config()
+    return {
+        "base_url": config.base_url,
+        "timeout": config.timeout,
+        "ui_enabled": config.ui_enabled,
+    }
+
+
+def wait_until_ready(
+    *,
+    require_ui: bool = False,
+    allow_cached: bool = True,
+) -> Dict[str, Any]:
+    """Ensure the CE bridge is ready and return the latest state payload."""
+    config = _load_bridge_config()
+    return _preflight(
+        config,
+        require_ui=require_ui,
+        status_callback=None,
+        allow_cached=allow_cached,
+    )
 def healthcheck() -> Dict[str, Any]:
     config = _load_bridge_config()
     session = _session_for(config.base_url)
@@ -693,6 +742,77 @@ def search_complexes(pn: str, limit: int = 20) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     raise CENetworkError("Unexpected payload from search_complexes")
+
+
+def export_complexes_mdb(
+    *,
+    comp_ids: Sequence[str | int],
+    out_dir: str,
+    mdb_name: str,
+) -> Dict[str, Any]:
+    config = _load_bridge_config()
+    if not comp_ids:
+        raise ValueError("comp_ids must contain at least one Complex Editor id")
+    normalized_ids: List[int] = []
+    for cid in comp_ids:
+        text = str(cid).strip()
+        if not text:
+            continue
+        try:
+            normalized_ids.append(int(text))
+        except ValueError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Invalid Complex Editor id: {cid}") from exc
+    if not normalized_ids:
+        raise ValueError("comp_ids must contain at least one Complex Editor id")
+    resolved_dir = Path(out_dir).expanduser().resolve()
+    sanitized_name = (mdb_name or "bom_complexes.mdb").strip()
+    if not sanitized_name.lower().endswith(".mdb"):
+        sanitized_name = f"{sanitized_name}.mdb"
+    if len(sanitized_name) > 64:
+        sanitized_name = sanitized_name[-64:]
+    body = {
+        "pns": [],
+        "comp_ids": normalized_ids,
+        "out_dir": resolved_dir.as_posix(),
+        "mdb_name": sanitized_name,
+        "require_linked": True,
+    }
+    response, state = _perform_request(
+        config,
+        "POST",
+        "/exports/mdb",
+        json_body=body,
+    )
+    payload = _json_from_response(response)
+    if 200 <= response.status_code < 300:
+        if isinstance(payload, dict):
+            return payload
+        raise CENetworkError("Unexpected payload from export_complexes_mdb")
+    features_export = False
+    if isinstance(state, dict):
+        features = state.get("features") if isinstance(state.get("features"), dict) else {}
+        features_export = bool(features.get("export_mdb"))
+    trace_id: Optional[str] = None
+    if isinstance(payload, dict):
+        trace_raw = payload.get("trace_id")
+        if isinstance(trace_raw, str) and trace_raw.strip():
+            trace_id = trace_raw.strip()
+    reason = _extract_reason(payload)
+    if response.status_code == 404:
+        reason_key = "export_mdb_unsupported" if not features_export else "endpoint_missing"
+        raise CEExportError(
+            response.status_code,
+            reason_key,
+            payload if isinstance(payload, dict) else {},
+            trace_id,
+        )
+    if response.status_code == 409:
+        raise CEExportError(response.status_code, reason.lower() if reason else "conflict", payload if isinstance(payload, dict) else {}, trace_id)
+    if response.status_code >= 500:
+        raise CEExportError(response.status_code, reason or "server_error", payload if isinstance(payload, dict) else {}, trace_id)
+    if response.status_code >= 400:
+        raise CEExportError(response.status_code, reason or f"HTTP {response.status_code}", payload if isinstance(payload, dict) else {}, trace_id)
+    _raise_server_error(config, response, state)
 
 
 def get_complex(ce_id: str) -> Dict[str, Any]:

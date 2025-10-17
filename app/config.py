@@ -145,8 +145,12 @@ def _read_settings_dict() -> Dict[str, Any]:
         if _toml_rw is not None:
             return _toml_rw.load(SETTINGS_PATH)  # type: ignore[call-arg]
     except Exception:
+        pass
+    try:
+        text = SETTINGS_PATH.read_text(encoding='utf-8')
+    except Exception:
         return {}
-    return {}
+    return _parse_simple_toml(text)
 
 _BOOL_TRUE_VALUES = {"1", "true", "yes", "on"}
 
@@ -175,6 +179,72 @@ def _load_max_datasheet_mb(default: int = 25) -> int:
                 return _coerce_positive_int(data[key], default)
     return default
 
+
+
+def _parse_simple_toml(text: str) -> Dict[str, Any]:
+    """Very small TOML parser used when tomllib/toml are unavailable.
+
+    Supports sections, dotted sections, quoted strings, numbers, and booleans.
+    Unknown constructs are ignored so we never corrupt the caller's data.
+    """
+
+    data: Dict[str, Any] = {}
+
+    def _ensure_section(parts: list[str]) -> Dict[str, Any]:
+        cursor: Dict[str, Any] = data
+        for name in parts:
+            entry = cursor.setdefault(name, {})
+            if not isinstance(entry, dict):
+                entry = {}
+                cursor[name] = entry
+            cursor = entry  # type: ignore[assignment]
+        return cursor
+
+    current_path: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1].strip()
+            if not section:
+                current_path = []
+                continue
+            parts = [p.strip() for p in section.split('.') if p.strip()]
+            current_path = parts
+            _ensure_section(current_path)
+            continue
+        if '=' not in line:
+            continue
+        key_part, value_part = line.split('=', 1)
+        key = key_part.strip()
+        value = value_part.strip()
+        if not key:
+            continue
+        if value.startswith('"') and value.endswith('"'):
+            body = value[1:-1]
+            body = (
+                body
+                .replace('\\\\', '\\')
+                .replace('\\"', '"')
+                .replace('\\n', '\n')
+                .replace('\\r', '\r')
+            )
+            parsed: Any = body
+        elif value.lower() in ('true', 'false'):
+            parsed = value.lower() == 'true'
+        else:
+            try:
+                parsed = int(value)
+            except ValueError:
+                try:
+                    parsed = float(value)
+                except ValueError:
+                    parsed = value
+        target = _ensure_section(current_path)
+        target[key] = parsed
+    return data
+
 def _toml_scalar(value: Any) -> str:
     if isinstance(value, bool):
         return str(value).lower()
@@ -183,7 +253,13 @@ def _toml_scalar(value: Any) -> str:
     if value is None:
         return ""
     text_value = str(value)
-    escaped = text_value.replace('\\', '\\').replace('"', '\"')
+    escaped = (
+        text_value
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
     return f"\"{escaped}\""
 
 def _write_settings_data(data: Dict[str, Any]) -> None:
@@ -252,6 +328,12 @@ _COMPLEX_EDITOR_DEFAULTS: Dict[str, Any] = {
     "note_or_link": "",
 }
 
+_VIVA_EXPORT_DEFAULTS: Dict[str, Any] = {
+    "last_export_path": "",
+    "viva_export_base_dir": "",
+    "ce_auth_token": "",
+}
+
 def load_settings() -> str:
     """Return database URL from env or settings.toml."""
     _ensure_settings()
@@ -302,6 +384,41 @@ def reload_settings() -> None:
     get_engine(load_settings())
     refresh_paths()
     MAX_DATASHEET_MB = _load_max_datasheet_mb()
+
+def get_viva_export_settings() -> Dict[str, Any]:
+    """Return persisted VIVA export preferences with defaults applied."""
+    settings = copy.deepcopy(_VIVA_EXPORT_DEFAULTS)
+    data = _read_settings_dict().get("viva_export")
+    if isinstance(data, dict):
+        last_path = data.get("last_export_path")
+        base_dir = data.get("viva_export_base_dir") or data.get("export_base_dir")
+        ce_token = data.get("ce_auth_token")
+        if isinstance(last_path, str):
+            settings["last_export_path"] = last_path.strip()
+        if isinstance(base_dir, str):
+            settings["viva_export_base_dir"] = base_dir.strip()
+        if isinstance(ce_token, str):
+            settings["ce_auth_token"] = ce_token.strip()
+    return settings
+
+def save_viva_export_settings(
+    *,
+    last_export_path: Optional[str] = None,
+    viva_export_base_dir: Optional[str] = None,
+    ce_auth_token: Optional[str] = None,
+) -> None:
+    """Persist VIVA export preferences into settings.toml."""
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = _read_settings_dict()
+    viva_cfg = dict(data.get("viva_export", {}))
+    if last_export_path is not None:
+        viva_cfg["last_export_path"] = str(last_export_path).strip()
+    if viva_export_base_dir is not None:
+        viva_cfg["viva_export_base_dir"] = str(viva_export_base_dir).strip()
+    if ce_auth_token is not None:
+        viva_cfg["ce_auth_token"] = str(ce_auth_token).strip()
+    data["viva_export"] = viva_cfg
+    _write_settings_data(data)
 
 def _from_settings(section: str, key: str, default: str) -> str:
     try:
@@ -396,13 +513,7 @@ def save_paths_config(
     Any value left as None is preserved.
     """
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if _toml_reader is not None and SETTINGS_PATH.exists():
-        with open(SETTINGS_PATH, "rb") as handle:
-            data = _toml_reader.load(handle)  # type: ignore[arg-type]
-    elif _toml_rw is not None and SETTINGS_PATH.exists():
-        data = _toml_rw.load(SETTINGS_PATH)  # type: ignore[call-arg]
-    else:
-        data = {}
+    data = _read_settings_dict()
     paths = dict(data.get("paths", {}))
     if data_root is not None:
         paths["data_root"] = str(Path(data_root).expanduser().resolve())
@@ -416,13 +527,7 @@ def save_paths_config(
 
 def save_database_url(url: str) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if _toml_reader is not None and SETTINGS_PATH.exists():
-        with open(SETTINGS_PATH, "rb") as handle:
-            data = _toml_reader.load(handle)  # type: ignore[arg-type]
-    elif _toml_rw is not None and SETTINGS_PATH.exists():
-        data = _toml_rw.load(SETTINGS_PATH)  # type: ignore[call-arg]
-    else:
-        data = {}
+    data = _read_settings_dict()
     database = dict(data.get("database", {}))
     database["url"] = _ensure_sqlite_directory(url)
     data["database"] = database
@@ -506,13 +611,7 @@ def save_complex_editor_settings(
 ) -> None:
     """Persist Complex Editor settings into settings.toml."""
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if _toml_reader is not None and SETTINGS_PATH.exists():
-        with open(SETTINGS_PATH, "rb") as handle:
-            data = _toml_reader.load(handle)  # type: ignore[arg-type]
-    elif _toml_rw is not None and SETTINGS_PATH.exists():
-        data = _toml_rw.load(SETTINGS_PATH)  # type: ignore[call-arg]
-    else:
-        data = {}
+    data = _read_settings_dict()
     ce_cfg = dict(data.get("complex_editor", {}))
     if ui_enabled is not None:
         ce_cfg["ui_enabled"] = bool(ui_enabled)
@@ -554,13 +653,7 @@ def save_viewer_config(
     Any value left as None is preserved.
     """
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if _toml_reader is not None and SETTINGS_PATH.exists():
-        with open(SETTINGS_PATH, "rb") as handle:
-            data = _toml_reader.load(handle)  # type: ignore[arg-type]
-    elif _toml_rw is not None and SETTINGS_PATH.exists():
-        data = _toml_rw.load(SETTINGS_PATH)  # type: ignore[call-arg]
-    else:
-        data = {}
+    data = _read_settings_dict()
     viewer = dict(data.get("viewer", {}))
     if pdf_viewer is not None:
         viewer["pdf_viewer"] = str(pdf_viewer).strip().lower()
