@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from urllib.parse import urljoin
 
 import requests
@@ -31,11 +31,31 @@ def get_session() -> requests.Session:
     return _SESSION
 
 
-def build_headers(token: str) -> Dict[str, str]:
-    headers: Dict[str, str] = {"Accept": "application/json"}
+def build_headers(
+    token: str,
+    trace_id: Optional[str] = None,
+    *,
+    accept: str = "application/json",
+    content_type: Optional[str] = None,
+) -> Dict[str, str]:
+    """Return default headers for CE bridge requests.
+
+    The helper normalises the optional ``token`` and ``trace_id`` values and ensures the
+    ``Accept`` header is set to JSON by default.  ``content_type`` may be provided for
+    callers issuing JSON ``POST`` requests.
+    """
+
+    headers: Dict[str, str] = {}
+    if accept:
+        headers["Accept"] = accept
     token = (token or "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    trace_text = (trace_id or "").strip()
+    if trace_text:
+        headers["X-Trace-Id"] = trace_text
+    if content_type:
+        headers["Content-Type"] = content_type
     return headers
 
 
