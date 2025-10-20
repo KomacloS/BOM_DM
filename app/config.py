@@ -596,6 +596,24 @@ def get_complex_editor_settings() -> Dict[str, Any]:
             if timeout_val and timeout_val > 0:
                 target_bridge["request_timeout_seconds"] = timeout_val
     return settings
+
+
+def get_ce_app_exe() -> Optional[Path]:
+    """Return the configured Complex Editor desktop executable path, if any."""
+    env_path = os.getenv("CE_APP_EXE")
+    if env_path:
+        value = Path(env_path).expanduser()
+        return value
+
+    data = _read_settings_dict().get("complex_editor")
+    if isinstance(data, dict):
+        app_exe = data.get("app_exe_path") or data.get("exe_path")
+        if app_exe:
+            try:
+                return Path(str(app_exe)).expanduser()
+            except Exception:
+                return Path(str(app_exe))
+    return None
 def save_complex_editor_settings(
     *,
     exe_path: Optional[str] = None,

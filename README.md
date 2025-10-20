@@ -168,3 +168,12 @@ export AI_CHAT_AUTH_SCHEME=""  # not used when header != Authorization
 ```
 
 On Windows PowerShell, replace `export VAR=value` with `$env:VAR = "value"`.
+
+## Complex Editor Bridge
+
+### Zero-touch mode (CE UI auto-launch)
+
+- BOM_DB now orchestrates the Complex Editor Bridge automatically whenever you press **BOM → VIVA**.  
+- If the bridge reports `headless: true` and exports are blocked, BOM_DB will launch the CE desktop UI from `CE_APP_EXE` (environment variable) or `[complex_editor].app_exe_path` in `settings.toml`.
+- The app polls `/admin/health` until exports are allowed (up to ~30s) and then performs the MDB export with a single summary dialog.
+- When BOM_DB exits it only shuts down the CE process that it started (via `/admin/shutdown`, falling back to terminate/kill if needed).

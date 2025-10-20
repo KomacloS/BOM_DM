@@ -8,7 +8,8 @@ import io
 
 from .constants import BOM_TEMPLATE_HEADERS
 
-from .database import engine, get_session, ensure_schema
+from .database import get_session, ensure_schema
+from .config import get_engine
 from .models import Customer, Project, Assembly, Part, Task, TaskStatus, User
 from .services import (
     import_bom,
@@ -33,7 +34,7 @@ app = FastAPI()
 @app.on_event("startup")
 def on_startup():
     ensure_schema()
-    with Session(engine) as session:
+    with Session(get_engine()) as session:
         create_default_users(session)
 
 

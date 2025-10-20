@@ -15,8 +15,8 @@ def _engine():
 
 
 def _session(engine, monkeypatch):
-    monkeypatch.setattr(database, "engine", engine, raising=False)
-    monkeypatch.setattr(database, "__schema_ok", False, raising=False)
+    monkeypatch.setattr(database, "get_engine", lambda: engine, raising=False)
+    monkeypatch.setattr(database, "_schema_checked_urls", set(), raising=False)
     gen = database.get_session()
     session = next(gen)
     return session, gen

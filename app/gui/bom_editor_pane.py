@@ -22,9 +22,10 @@ from __future__ import annotations
 
 
 
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 
 from pathlib import Path
+import uuid
 
 
 
@@ -94,7 +95,16 @@ from .. import services
 
 from ..services.datasheets import get_local_open_path
 
-from ..config import DATA_ROOT, PDF_VIEWER, PDF_VIEWER_PATH, PDF_OPEN_DEBUG, get_complex_editor_settings, get_viva_export_settings, LOG_DIR
+from ..config import (
+    DATA_ROOT,
+    PDF_VIEWER,
+    PDF_VIEWER_PATH,
+    PDF_OPEN_DEBUG,
+    get_ce_app_exe,
+    get_complex_editor_settings,
+    get_viva_export_settings,
+    LOG_DIR,
+)
 import subprocess, shutil, time, os
 
 from datetime import datetime
@@ -104,6 +114,7 @@ from ..logic.prefix_macros import load_prefix_macros, reload_prefix_macros
 from . import state as app_state
 from .widgets.complex_panel import ComplexPanel
 from ..services.export_viva import VivaExportError, VivaExportResult
+from ..integration.ce_supervisor import CESupervisor
 
 
 
@@ -113,6 +124,14 @@ PartIdRole = Qt.ItemDataRole.UserRole + 1
 ModeRole = Qt.ItemDataRole.UserRole + 2  # stores 'active'/'passive'/None in AP column for delegate
 
 DatasheetRole = Qt.ItemDataRole.UserRole + 3
+
+_CE_SUPERVISOR: Optional[CESupervisor] = None
+
+def _get_ce_supervisor() -> CESupervisor:
+    global _CE_SUPERVISOR
+    if _CE_SUPERVISOR is None:
+        _CE_SUPERVISOR = CESupervisor(get_ce_app_exe())
+    return _CE_SUPERVISOR
 
 """
 
@@ -3423,10 +3442,30 @@ QTableView::item:selected:hover {
         export_dir = self._select_viva_export_directory()
         if export_dir is None:
             return
-        result = self._perform_viva_export(Path(export_dir), table_rows)
+        export_path = Path(export_dir)
+        result = self._perform_viva_export(export_path, table_rows)
         if result is None:
             return
+        trace_id = str(result.manifest.get("trace_id") or uuid.uuid4())
+        mdb_name = str(result.manifest.get("mdb_name") or "bom_complexes.mdb")
+        supervisor = _get_ce_supervisor()
+        ready, info = supervisor.ensure_ready(trace_id) if supervisor else (True, {"status": "READY"})
         self._show_viva_export_success(result)
+        if not ready:
+            ce_result = {
+                "status": info.get("status", "RETRY_LATER"),
+                "trace_id": trace_id,
+                "export_path": None,
+                "exported_count": 0,
+                "missing_count": 0,
+                "report_path": None,
+                "detail": info.get("detail", ""),
+            }
+            self._show_ce_export_summary(ce_result)
+            return
+        ce_result = self._run_ce_export(export_path, table_rows, mdb_name, trace_id=trace_id)
+        if ce_result is not None:
+            self._show_ce_export_summary(ce_result)
 
     def _select_viva_export_directory(self) -> Optional[str]:
         settings = get_viva_export_settings() or {}
@@ -3455,6 +3494,35 @@ QTableView::item:selected:hover {
                 )
             except VivaExportError as exc:
                 return self._handle_viva_export_error(export_dir, table_rows, exc)
+
+    def _run_ce_export(
+        self,
+        viva_export_dir: Path,
+        table_rows: list[dict],
+        mdb_name: str,
+        *,
+        trace_id: str,
+    ) -> Optional[dict[str, Any]]:
+        ce_dir = viva_export_dir / "CE"
+        try:
+            ce_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self._show_error("Complex Editor Export", f"Unable to prepare CE export folder:\n{exc}")
+            return None
+        with app_state.get_session() as session:
+            try:
+                return services.export_bom_to_ce_bridge(
+                    session,
+                    self._assembly_id,
+                    bom_rows=table_rows,
+                    export_dir=ce_dir,
+                    mdb_name=mdb_name,
+                    trace_id=trace_id,
+                )
+            except Exception as exc:
+                logger.exception("Complex Editor export failed", exc_info=True)
+                self._show_error("Complex Editor Export", str(exc))
+                return None
 
     def _handle_viva_export_error(
         self,
@@ -3553,12 +3621,6 @@ QTableView::item:selected:hover {
             f"BOM TXT: {result.txt_path}",
             f"Manifest: {result.manifest_path}",
         ]
-        if result.ce_diagnostics_path:
-            summary_lines.append(f"CE diagnostics: {result.ce_diagnostics_path}")
-        if result.mdb_path:
-            summary_lines.insert(1, f"Complex MDB: {result.mdb_path}")
-        else:
-            summary_lines.insert(1, "Complex MDB: not generated")
         details_lines: List[str] = []
         if result.warnings:
             details_lines.extend(result.warnings)
@@ -3598,6 +3660,79 @@ QTableView::item:selected:hover {
                 continue
             if "Open folder" in label:
                 self._open_path_in_explorer(export_dir)
+                continue
+            break
+
+    def _show_ce_export_summary(self, ce_result: dict[str, Any]) -> None:
+        status_raw = str(ce_result.get("status") or "").upper()
+        status_messages = {
+            "SUCCESS": "Complex Editor export completed.",
+            "PARTIAL_SUCCESS": "Complex Editor export completed with warnings.",
+            "FAILED_INPUT": "Complex Editor export blocked due to input issues.",
+            "FAILED_BACKEND": "Complex Editor export failed.",
+            "RETRY_LATER": "Complex Editor export deferred.",
+            "RETRY_WITH_BACKOFF": "Complex Editor bridge unavailable; retry later.",
+        }
+        icon = (
+            QMessageBox.Icon.Information
+            if status_raw in {"SUCCESS", "PARTIAL_SUCCESS"}
+            else QMessageBox.Icon.Warning
+        )
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Complex Editor Export")
+        msg.setIcon(icon)
+        msg.setText(status_messages.get(status_raw, f"Complex Editor export status: {status_raw or 'UNKNOWN'}"))
+
+        details: List[str] = []
+        exported_count = ce_result.get("exported_count")
+        if isinstance(exported_count, int):
+            details.append(f"Exported components: {exported_count}")
+        missing_count = ce_result.get("missing_count")
+        if isinstance(missing_count, int) and missing_count:
+            details.append(f"Reported rows: {missing_count}")
+
+        export_path = ce_result.get("export_path")
+        report_path = ce_result.get("report_path")
+        trace_id = ce_result.get("trace_id")
+        detail_text = ce_result.get("detail")
+
+        if export_path:
+            details.append(f"Export path: {export_path}")
+        if report_path:
+            details.append(f"Report: {report_path}")
+        if trace_id:
+            details.append(f"Trace ID: {trace_id}")
+        if detail_text:
+            details.append(str(detail_text))
+
+        msg.setInformativeText("\n".join(details) if details else "No additional details.")
+
+        open_folder_button = None
+        open_report_button = None
+        if export_path:
+            open_folder_button = msg.addButton("Open CE Folder", QMessageBox.ButtonRole.ActionRole)
+        if report_path:
+            open_report_button = msg.addButton("Open Report", QMessageBox.ButtonRole.ActionRole)
+        msg.addButton(QMessageBox.StandardButton.Close)
+
+        while True:
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked is None:
+                break
+            if open_folder_button and clicked is open_folder_button:
+                try:
+                    target = Path(str(export_path))
+                    folder = target if target.is_dir() else target.parent
+                    self._open_path_in_explorer(folder)
+                except Exception:
+                    self._show_error("Open CE Folder", "Unable to open the CE export folder.")
+                continue
+            if open_report_button and clicked is open_report_button:
+                try:
+                    self._open_path_in_explorer(Path(str(report_path)))
+                except Exception:
+                    self._show_error("Open Report", "Unable to open the CE report.")
                 continue
             break
 

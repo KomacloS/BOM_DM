@@ -62,6 +62,7 @@ from .parts import (
     clear_part_datasheet,
 )
 from .export_viva import build_viva_groups, write_viva_txt, perform_viva_export
+from .bom_to_ce_export import export_bom_to_ce_bridge
 from .datasheets import (
     DATASHEET_STORE,
     sha256_of_file,
@@ -107,6 +108,7 @@ __all__ = [
     "build_viva_groups",
     "write_viva_txt",
     "perform_viva_export",
+    "export_bom_to_ce_bridge",
     "DATASHEET_STORE",
     "sha256_of_file",
     "canonical_path_for_hash",

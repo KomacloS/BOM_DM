@@ -11,7 +11,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 import pytest
 from requests import exceptions as req_exc
 
-from app.integration import ce_bridge_client
+from app.integration import ce_bridge_client, ce_bridge_transport
 
 
 class DummyResponse:
@@ -76,9 +76,8 @@ def _stable_config(monkeypatch):
         host="127.0.0.1",
         port=8765,
     )
+    ce_bridge_transport.reset_session()
     monkeypatch.setattr(ce_bridge_client, "_load_bridge_config", lambda: config)
-    monkeypatch.setattr(ce_bridge_client, "_SESSION", None, raising=False)
-    monkeypatch.setattr(ce_bridge_client, "_SESSION_BASE", None, raising=False)
     monkeypatch.setattr(ce_bridge_client, "_PREFLIGHT_CACHE", None, raising=False)
     monkeypatch.setattr(ce_bridge_client, "_ORIGINAL_PREFLIGHT", original_preflight, raising=False)
 
@@ -91,7 +90,7 @@ def _stable_config(monkeypatch):
 
 def test_healthcheck_success(monkeypatch):
     session = FakeSession(DummyResponse(200, {"status": "ok"}))
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
 
     payload = ce_bridge_client.healthcheck()
     assert payload == {"status": "ok"}
@@ -100,7 +99,7 @@ def test_healthcheck_success(monkeypatch):
 
 def test_search_complexes_filters_non_dict(monkeypatch):
     session = FakeSession(DummyResponse(200, [{"id": "1"}, "bad", {"id": "2", "extra": True}]))
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
 
     results = ce_bridge_client.search_complexes("PN123", limit=10)
     assert results == [{"id": "1"}, {"id": "2", "extra": True}]
@@ -108,7 +107,7 @@ def test_search_complexes_filters_non_dict(monkeypatch):
 
 def test_get_complex_auth_error(monkeypatch):
     session = FakeSession(DummyResponse(401, {"detail": "nope"}))
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
 
     with pytest.raises(ce_bridge_client.CEAuthError):
         ce_bridge_client.get_complex("abc")
@@ -128,7 +127,7 @@ def test_create_complex_cancelled(monkeypatch):
 
 def test_request_includes_bearer(monkeypatch):
     session = FakeSession(DummyResponse(200, []))
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
 
     ce_bridge_client.search_complexes("PN123", limit=5)
     assert session.calls
@@ -147,7 +146,7 @@ def test_network_errors_raise(monkeypatch):
 
         return _Session()
 
-    monkeypatch.setattr(ce_bridge_client, "_session_for", _raising_session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", _raising_session)
 
     with pytest.raises(ce_bridge_client.CENetworkError):
         ce_bridge_client.search_complexes("PN")
@@ -157,7 +156,7 @@ def test_preflight_headless_allows_flow(monkeypatch, _stable_config):
     headless_state = {"ready": True, "wizard_available": False}
     session = FakeSession(DummyResponse(200, headless_state))
     monkeypatch.setattr(ce_bridge_client, "_preflight", ce_bridge_client._ORIGINAL_PREFLIGHT)
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
     monkeypatch.setattr(ce_bridge_client, "record_state_snapshot", lambda payload: None)
     monkeypatch.setattr(ce_bridge_client, "record_bridge_action", lambda text: None)
     monkeypatch.setattr(ce_bridge_client, "record_health_detail", lambda detail: None)
@@ -176,7 +175,7 @@ def test_preflight_owned_headless_restarts(monkeypatch, _stable_config):
     ]
     session = FakeSession(*responses)
     monkeypatch.setattr(ce_bridge_client, "_preflight", ce_bridge_client._ORIGINAL_PREFLIGHT)
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
     monkeypatch.setattr(ce_bridge_client, "record_state_snapshot", lambda payload: None)
     monkeypatch.setattr(ce_bridge_client, "record_bridge_action", lambda text: None)
     monkeypatch.setattr(ce_bridge_client, "record_health_detail", lambda detail: None)
@@ -214,7 +213,7 @@ def test_preflight_timeout_includes_last_error(monkeypatch, _stable_config):
 
     session = LoopSession()
     monkeypatch.setattr(ce_bridge_client, "_preflight", ce_bridge_client._ORIGINAL_PREFLIGHT)
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
     monkeypatch.setattr(ce_bridge_client, "record_state_snapshot", lambda payload: None)
     monkeypatch.setattr(ce_bridge_client, "record_bridge_action", lambda text: None)
     monkeypatch.setattr(ce_bridge_client, "record_health_detail", lambda detail: None)
@@ -262,7 +261,7 @@ def test_add_aliases_conflict(monkeypatch, _stable_config):
 
 def test_open_complex_success(monkeypatch, _stable_config):
     session = FakeSession(DummyResponse(200, {}))
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
     monkeypatch.setattr(
         ce_bridge_client,
         "_preflight",
@@ -285,7 +284,7 @@ def test_open_complex_success(monkeypatch, _stable_config):
 
 def test_open_complex_stale(monkeypatch, _stable_config):
     session = FakeSession(DummyResponse(404, {}))
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
     monkeypatch.setattr(
         ce_bridge_client,
         "_preflight",
@@ -297,7 +296,7 @@ def test_open_complex_stale(monkeypatch, _stable_config):
 
 def test_open_complex_busy(monkeypatch, _stable_config):
     session = FakeSession(DummyResponse(409, {"reason": "wizard busy"}))
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
     monkeypatch.setattr(
         ce_bridge_client,
         "_preflight",
@@ -319,7 +318,7 @@ def test_open_complex_headless_retry(monkeypatch, _stable_config):
         DummyResponse(503, {"detail": "wizard unavailable (headless)"}),
         DummyResponse(200, {}),
     )
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
     monkeypatch.setattr(
         ce_bridge_client,
         "_preflight",
@@ -355,7 +354,7 @@ def test_open_complex_already_open(monkeypatch, _stable_config):
     def _fail_session(_base):
         raise AssertionError("session should not be used when already focused")
 
-    monkeypatch.setattr(ce_bridge_client, "_session_for", _fail_session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", _fail_session)
     result = ce_bridge_client.open_complex(42, status_callback=lambda _: None)
     assert result is True
     assert bring_calls
@@ -363,7 +362,7 @@ def test_open_complex_already_open(monkeypatch, _stable_config):
 
 def test_open_complex_auth_error_includes_base(monkeypatch, _stable_config):
     session = FakeSession(DummyResponse(401, {}))
-    monkeypatch.setattr(ce_bridge_client, "_session_for", lambda _base: session)
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda _base=None: session)
     monkeypatch.setattr(
         ce_bridge_client,
         "_preflight",

@@ -6,7 +6,7 @@ import types
 import pytest
 import requests
 
-from app.integration import ce_bridge_manager
+from app.integration import ce_bridge_manager, ce_bridge_transport
 from app.integration.ce_bridge_diagnostics import mask_token
 
 
@@ -60,12 +60,16 @@ def _reset_bridge_state(monkeypatch):
     ce_bridge_manager._BRIDGE_IS_LOCALHOST = False
 
 
-def test_ensure_skips_when_bridge_running(monkeypatch):
+def test_ensure_skips_when_bridge_running(monkeypatch, tmp_path):
+    exe = tmp_path / "complex_editor.exe"
+    exe.write_text("echo")
+    if os.name != "nt":
+        exe.chmod(0o755)
     settings = {
         "ui_enabled": True,
         "auto_start_bridge": True,
         "auto_stop_bridge_on_exit": False,
-        "exe_path": "dummy.exe",
+        "exe_path": str(exe),
         "config_path": "",
         "bridge": {
             "enabled": True,
@@ -76,7 +80,18 @@ def test_ensure_skips_when_bridge_running(monkeypatch):
     }
 
     monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
-    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: _response(200))
+
+    class SessionStub:
+        def __init__(self):
+            self.calls = []
+            self.trust_env = False
+
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return _response(200)
+
+    session_stub = SessionStub()
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda base=None: session_stub)
 
     popen_called = False
 
@@ -126,15 +141,19 @@ def test_ensure_spawns_when_unhealthy(monkeypatch, tmp_path):
 
     calls = []
 
-    def fake_get(url, headers=None, timeout=None):
-        calls.append((url, headers))
-        if len(calls) == 1:
-            raise requests.exceptions.ConnectionError("refused")
-        if len(calls) == 2:
-            return _response(503)
-        return _response(200)
+    class SessionStub:
+        def __init__(self):
+            self.trust_env = False
 
-    monkeypatch.setattr(requests, "get", fake_get)
+        def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            if len(calls) == 1:
+                raise requests.exceptions.ConnectionError("refused")
+            if len(calls) == 2:
+                return _response(503)
+            return _response(200)
+
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda base=None: SessionStub())
 
     dummy_proc = DummyProcess()
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: dummy_proc)
@@ -188,13 +207,17 @@ def test_ensure_timeout_records_diagnostics(monkeypatch, tmp_path):
 
     calls = []
 
-    def fake_get(url, headers=None, timeout=None):
-        calls.append((url, headers))
-        if len(calls) == 1:
-            raise requests.exceptions.ConnectionError("refused")
-        return _response(503)
+    class SessionStub:
+        def __init__(self):
+            self.trust_env = False
 
-    monkeypatch.setattr(requests, "get", fake_get)
+        def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            if len(calls) == 1:
+                raise requests.exceptions.ConnectionError("refused")
+            return _response(503)
+
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda base=None: SessionStub())
     dummy_proc = DummyProcess()
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: dummy_proc)
     monkeypatch.setattr(time, "sleep", lambda _s: None)
@@ -235,7 +258,7 @@ def test_ensure_rejects_non_executable(monkeypatch, tmp_path):
     }
 
     monkeypatch.setattr(ce_bridge_manager.config, "get_complex_editor_settings", lambda: settings)
-    monkeypatch.setattr(requests, "get", lambda *a, **kw: _response(503))
+    monkeypatch.setattr(ce_bridge_transport, "get_session", lambda base=None: types.SimpleNamespace(trust_env=False, get=lambda url, **kwargs: _response(503)))
 
     with pytest.raises(ce_bridge_manager.CEBridgeError) as exc:
         ce_bridge_manager.ensure_ce_bridge_ready()

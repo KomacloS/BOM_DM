@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
-import requests
 from requests import exceptions as req_exc
 
 from app import config
+from app.integration import ce_bridge_transport
 from .ce_bridge_diagnostics import (
     CEBridgeDiagnostics,
     effective_probe_host,
@@ -67,12 +67,11 @@ def record_health_detail(detail: Optional[str]) -> None:
 
 
 def _probe_bridge(base_url: str, token: str, timeout: int) -> Tuple[str, Optional[str]]:
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    session = ce_bridge_transport.get_session(base_url)
+    headers = ce_bridge_transport.build_headers(token, None)
     url = urljoin(base_url.rstrip("/") + "/", "health")
     try:
-        response = requests.get(url, headers=headers, timeout=timeout)
+        response = session.get(url, headers=headers, timeout=timeout)
     except (req_exc.Timeout, req_exc.ConnectionError) as exc:
         return "not_running", short_exc(exc)
     except req_exc.RequestException as exc:  # pragma: no cover - rare
@@ -288,14 +287,10 @@ def stop_ce_bridge_if_started(*, force: bool = False) -> None:
     if not force and not _BRIDGE_AUTO_STOP:
         return
 
-    session: Optional[requests.Session] = None
     shutdown_allowed = False
     if _BRIDGE_BASE_URL:
-        session = requests.Session()
-        session.trust_env = False
-        headers = {"Accept": "application/json"}
-        if _BRIDGE_TOKEN:
-            headers["Authorization"] = f"Bearer {_BRIDGE_TOKEN}"
+        session = ce_bridge_transport.get_session(_BRIDGE_BASE_URL)
+        headers = ce_bridge_transport.build_headers(_BRIDGE_TOKEN, None)
 
         try:
             state_url = urljoin(_BRIDGE_BASE_URL.rstrip("/") + "/", "state")
@@ -317,16 +312,21 @@ def stop_ce_bridge_if_started(*, force: bool = False) -> None:
                     unsaved,
                     wizard_open,
                 )
-                try:
-                    session.close()
-                finally:
-                    session = None
                 return
             shutdown_allowed = True
             try:
                 admin_url = urljoin(_BRIDGE_BASE_URL.rstrip("/") + "/", "admin/shutdown")
-                headers["Content-Type"] = "application/json"
-                response = session.post(admin_url, headers=headers, json={}, timeout=_BRIDGE_TIMEOUT or 10.0)
+                admin_headers = ce_bridge_transport.build_headers(
+                    _BRIDGE_TOKEN,
+                    None,
+                    content_type="application/json",
+                )
+                response = session.post(
+                    admin_url,
+                    headers=admin_headers,
+                    json={},
+                    timeout=_BRIDGE_TIMEOUT or 10.0,
+                )
                 if 200 <= response.status_code < 300:
                     logger.info("Requested Complex Editor shutdown via admin API")
                     record_bridge_action("Issued /admin/shutdown request before stopping bridge")
@@ -386,11 +386,6 @@ def stop_ce_bridge_if_started(*, force: bool = False) -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except Exception:  # pragma: no cover - best effort
-            pass
-    if session is not None:
-        try:
-            session.close()
         except Exception:  # pragma: no cover - best effort
             pass
     _BRIDGE_PROCESS = None

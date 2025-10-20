@@ -13,6 +13,7 @@ from requests import Response
 from requests import exceptions as req_exc
 
 from app.config import get_complex_editor_settings, get_viva_export_settings
+from app.integration import ce_bridge_transport
 from app.integration.ce_bridge_manager import (
     CEBridgeError,
     bridge_owned_for_url,
@@ -104,8 +105,6 @@ class _PreflightCache:
     state: Dict[str, Any]
 
 
-_SESSION: Optional[requests.Session] = None
-_SESSION_BASE: Optional[str] = None
 _PREFLIGHT_CACHE: Optional[_PreflightCache] = None
 
 CACHE_TTL = 5.0
@@ -171,30 +170,6 @@ def _load_bridge_config() -> _BridgeConfig:
     )
 
 
-def _session_for(base_url: str) -> requests.Session:
-    global _SESSION, _SESSION_BASE
-    if _SESSION is None or _SESSION_BASE != base_url:
-        if _SESSION is not None:
-            try:
-                _SESSION.close()
-            except Exception:  # pragma: no cover - defensive
-                pass
-        session = requests.Session()
-        session.trust_env = False
-        _SESSION = session
-        _SESSION_BASE = base_url
-    return _SESSION
-
-
-def _build_headers(token: str, *, json_body: bool = False) -> Dict[str, str]:
-    headers = {"Accept": "application/json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    if json_body:
-        headers["Content-Type"] = "application/json"
-    return headers
-
-
 def _url(base_url: str, path: str) -> str:
     return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
 
@@ -249,6 +224,7 @@ def _preflight(
     require_ui: bool = False,
     status_callback: Optional[StatusCallback] = None,
     allow_cached: bool = True,
+    trace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     global _PREFLIGHT_CACHE
     if require_ui and not config.ui_enabled and config.is_local:
@@ -259,8 +235,8 @@ def _preflight(
     if allow_cached and cache and cache.base_url == config.base_url and cache.expires_at > now:
         return cache.state
 
-    session = _session_for(config.base_url)
-    headers = _build_headers(config.token)
+    session = ce_bridge_transport.get_session(config.base_url)
+    headers = ce_bridge_transport.build_headers(config.token, trace_id)
     state_url = _url(config.base_url, "state")
     selftest_url = _url(config.base_url, "selftest")
     health_url = _url(config.base_url, "health")
@@ -383,15 +359,21 @@ def _perform_request(
     require_ui: bool = False,
     status_callback: Optional[StatusCallback] = None,
     allow_cached: bool = True,
+    trace_id: Optional[str] = None,
 ) -> Tuple[Response, Dict[str, Any]]:
     state = _preflight(
         config,
         require_ui=require_ui,
         status_callback=status_callback,
         allow_cached=allow_cached,
+        trace_id=trace_id,
     )
-    session = _session_for(config.base_url)
-    headers = _build_headers(config.token, json_body=json_body is not None)
+    session = ce_bridge_transport.get_session(config.base_url)
+    headers = ce_bridge_transport.build_headers(
+        config.token,
+        trace_id,
+        content_type="application/json" if json_body is not None else None,
+    )
     url = _url(config.base_url, path)
     try:
         response = session.request(
@@ -428,8 +410,8 @@ def _raise_server_error(
     response: Response,
     state: Optional[Dict[str, Any]] = None,
 ) -> None:
-    session = _session_for(config.base_url)
-    headers = _build_headers(config.token)
+    session = ce_bridge_transport.get_session(config.base_url)
+    headers = ce_bridge_transport.build_headers(config.token, None)
     health_url = _url(config.base_url, "health")
     reason = _fetch_health_reason(session, health_url, headers, config.timeout)
     if not reason and state and isinstance(state, dict):
@@ -457,8 +439,8 @@ def _wait_for_wizard_close(
     *,
     status_callback: Optional[StatusCallback] = None,
 ) -> None:
-    session = _session_for(config.base_url)
-    headers = _build_headers(config.token)
+    session = ce_bridge_transport.get_session(config.base_url)
+    headers = ce_bridge_transport.build_headers(config.token, None)
     state_url = _url(config.base_url, "state")
     deadline = time.monotonic() + _handshake_budget(config.timeout)
     announced = False
@@ -565,8 +547,12 @@ def open_complex(
     if status_callback:
         status_callback("Opening in Complex Editor...")
 
-    session = _session_for(config.base_url)
-    headers = _build_headers(config.token, json_body=True)
+    session = ce_bridge_transport.get_session(config.base_url)
+    headers = ce_bridge_transport.build_headers(
+        config.token,
+        None,
+        content_type="application/json",
+    )
     url = _url(config.base_url, f"complexes/{ce_id}/open")
     try:
         response = session.post(
@@ -644,8 +630,8 @@ def _bring_ce_to_front(config: _BridgeConfig) -> None:
         pass
 
 def _wait_for_focus_or_wizard(config: _BridgeConfig, ce_id: str | int, *, timeout: float = 5.0) -> None:
-    session = _session_for(config.base_url)
-    headers = _build_headers(config.token)
+    session = ce_bridge_transport.get_session(config.base_url)
+    headers = ce_bridge_transport.build_headers(config.token, None)
     state_url = _url(config.base_url, "state")
     deadline = time.monotonic() + timeout
     target_id: Optional[int]
@@ -698,6 +684,7 @@ def wait_until_ready(
     *,
     require_ui: bool = False,
     allow_cached: bool = True,
+    trace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Ensure the CE bridge is ready and return the latest state payload."""
     config = _load_bridge_config()
@@ -706,11 +693,41 @@ def wait_until_ready(
         require_ui=require_ui,
         status_callback=None,
         allow_cached=allow_cached,
+        trace_id=trace_id,
     )
-def healthcheck() -> Dict[str, Any]:
+
+
+def resolve_bridge_connection() -> tuple[str, str, float]:
+    """Return the base URL, token, and timeout for the CE bridge."""
     config = _load_bridge_config()
-    session = _session_for(config.base_url)
-    headers = _build_headers(config.token)
+    return config.base_url, config.token, config.timeout
+
+
+def coerce_comp_id(value: Any) -> Optional[int]:
+    """Convert a value to a positive integer Complex Editor component id."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    try:
+        num = int(text)
+    except (TypeError, ValueError):
+        return None
+    if num <= 0:
+        return None
+    return num
+
+
+def healthcheck(trace_id: Optional[str] = None) -> Dict[str, Any]:
+    config = _load_bridge_config()
+    session = ce_bridge_transport.get_session(config.base_url)
+    headers = ce_bridge_transport.build_headers(config.token, trace_id)
     url = _url(config.base_url, "health")
     try:
         response = session.get(url, headers=headers, timeout=config.timeout)
@@ -728,13 +745,19 @@ def healthcheck() -> Dict[str, Any]:
     return payload
 
 
-def search_complexes(pn: str, limit: int = 20) -> List[Dict[str, Any]]:
+def search_complexes(
+    pn: str,
+    limit: int = 20,
+    *,
+    trace_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     config = _load_bridge_config()
     response, state = _perform_request(
         config,
         "GET",
         "/complexes/search",
         params={"pn": pn, "limit": max(1, min(int(limit), 200))},
+        trace_id=trace_id,
     )
     if response.status_code >= 500:
         _raise_server_error(config, response, state)
@@ -749,19 +772,18 @@ def export_complexes_mdb(
     comp_ids: Sequence[str | int],
     out_dir: str,
     mdb_name: str,
+    trace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     config = _load_bridge_config()
     if not comp_ids:
         raise ValueError("comp_ids must contain at least one Complex Editor id")
     normalized_ids: List[int] = []
     for cid in comp_ids:
-        text = str(cid).strip()
-        if not text:
+        coerced = coerce_comp_id(cid)
+        if coerced is None:
             continue
-        try:
-            normalized_ids.append(int(text))
-        except ValueError as exc:  # pragma: no cover - defensive
-            raise ValueError(f"Invalid Complex Editor id: {cid}") from exc
+        if coerced not in normalized_ids:
+            normalized_ids.append(coerced)
     if not normalized_ids:
         raise ValueError("comp_ids must contain at least one Complex Editor id")
     resolved_dir = Path(out_dir).expanduser().resolve()
@@ -782,6 +804,7 @@ def export_complexes_mdb(
         "POST",
         "/exports/mdb",
         json_body=body,
+        trace_id=trace_id,
     )
     payload = _json_from_response(response)
     if 200 <= response.status_code < 300:
