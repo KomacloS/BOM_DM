@@ -45,21 +45,6 @@ class _ReportRow:
     reason: str
 
 
-def _coerce_comp_id(value: object) -> Optional[int]:
-    try:
-        if value is None:
-            return None
-        if isinstance(value, int):
-            return value if value > 0 else None
-        text = str(value).strip()
-        if not text:
-            return None
-        num = int(text)
-        return num if num > 0 else None
-    except (TypeError, ValueError):
-        return None
-
-
 def _candidate_from_row(
     bom: BOMItem,
     part: Optional[Part],
@@ -92,7 +77,7 @@ def _candidate_from_row(
     if raw_comp_id is None and link is not None:
         raw_comp_id = getattr(link, "ce_complex_id", None)
 
-    comp_id = _coerce_comp_id(raw_comp_id)
+    comp_id = ce_bridge_client.coerce_comp_id(raw_comp_id)
 
     return _CandidateRow(
         bom_id=int(bom.assembly_id),
@@ -169,7 +154,7 @@ def _maybe_resolve_component_map(
     mapping: Dict[str, int] = {}
     for pn_value, comp_value in results:
         pn_text = str(pn_value).strip() if pn_value is not None else ""
-        comp_id = _coerce_comp_id(comp_value)
+        comp_id = ce_bridge_client.coerce_comp_id(comp_value)
         if pn_text and comp_id:
             mapping[pn_text] = comp_id
     resolved: List[_CandidateRow] = []
@@ -188,13 +173,6 @@ def _generate_job_names(trace_id: str, timestamp: Optional[datetime] = None) -> 
     short_trace = trace_id.replace("-", "")[:4].lower()
     base = f"bom_{ts}_{short_trace}"
     return f"{base}.mdb", f"{base}_missing.csv"
-
-
-def _build_headers(token: str, trace_id: str) -> Dict[str, str]:
-    headers = ce_bridge_transport.build_headers(token)
-    headers["X-Trace-Id"] = trace_id
-    headers.setdefault("Content-Type", "application/json")
-    return headers
 
 
 def _write_report(path: Path, rows: Sequence[_ReportRow]) -> None:
@@ -314,7 +292,11 @@ def export_bom_to_ce_bridge(
 
     base_url, token, timeout = ce_bridge_client.resolve_bridge_connection()
     session_http = ce_bridge_transport.get_session()
-    headers = _build_headers(token, trace_id)
+    headers = ce_bridge_transport.build_headers(
+        token,
+        trace_id,
+        content_type="application/json",
+    )
     health_url = f"{base_url.rstrip('/')}/admin/health"
 
     try:
@@ -383,7 +365,7 @@ def export_bom_to_ce_bridge(
 
     def _extend_report(ids: Iterable[object], reason: str) -> None:
         for item in ids:
-            comp_id = _coerce_comp_id(item)
+            comp_id = ce_bridge_client.coerce_comp_id(item)
             if comp_id and comp_id in comp_map:
                 for row in comp_map[comp_id]:
                     report_rows.append(

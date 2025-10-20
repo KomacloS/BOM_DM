@@ -697,3 +697,20 @@ def open_complex(
     if bring_front:
         bring_to_front()
     return state_payload
+def coerce_comp_id(value: object) -> Optional[int]:
+    """Return ``value`` normalised to a positive integer Complex ID."""
+
+    try:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        text = str(value).strip()
+        if not text:
+            return None
+        num = int(text)
+        return num if num > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
