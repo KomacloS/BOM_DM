@@ -82,6 +82,7 @@ from .export_viva import (
     sanitize_token,
     write_viva_txt,
 )
+from .bom_to_ce_export import export_bom_to_ce_bridge
 from .datasheets import (
     DATASHEET_STORE,
     sha256_of_file,
@@ -139,6 +140,7 @@ __all__ = [
     "perform_viva_export",
     "sanitize_token",
     "write_viva_txt",
+    "export_bom_to_ce_bridge",
     "DATASHEET_STORE",
     "sha256_of_file",
     "canonical_path_for_hash",

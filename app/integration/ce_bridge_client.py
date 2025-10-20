@@ -141,6 +141,12 @@ def _resolve_bridge_config() -> tuple[str, str, float]:
     return base_url, token, timeout
 
 
+def resolve_bridge_connection() -> tuple[str, str, float]:
+    """Return the configured bridge connection tuple ``(base_url, token, timeout)``."""
+
+    return _resolve_bridge_config()
+
+
 def _request(
     method: str,
     endpoint: str,
