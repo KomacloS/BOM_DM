@@ -6,6 +6,11 @@ from sqlmodel import SQLModel, create_engine, Session
 import importlib
 
 import app.models as models
+
+@pytest.fixture(autouse=True)
+def _mock_ce_diagnostics(monkeypatch):
+    monkeypatch.setattr("app.services.export_viva.ce_bridge_manager.get_last_ce_bridge_diagnostics", lambda: None)
+
 from app.models import Part
 from app.domain.complex_linker import ComplexLink
 from app.integration import ce_bridge_client

@@ -14,7 +14,7 @@ from sqlmodel import Session, select
 
 from ..models import Assembly, BOMItem, Customer, Part, Project
 from ..domain.complex_linker import ComplexLink
-from ..integration import ce_bridge_client
+from ..integration import ce_bridge_client, ce_bridge_manager
 from ..integration.ce_bridge_client import CEAuthError, CEExportError, CENetworkError, CENotFound
 from ..config import get_viva_export_settings, save_viva_export_settings
 
@@ -35,6 +35,7 @@ class VivaExportResult:
     trace_id: Optional[str]
     ce_export_path: Optional[str]
     diagnostics_path: Optional[Path]
+    ce_diagnostics_path: Optional[Path]
     manifest: Dict[str, Any]
 
 
@@ -50,6 +51,7 @@ class VivaExportError(Exception):
         unresolved_pns: Optional[List[str]] = None,
         trace_id: Optional[str] = None,
         diagnostics_path: Optional[Path] = None,
+        ce_diagnostics_path: Optional[Path] = None,
         suggestions: Optional[List[str]] = None,
     ) -> None:
         super().__init__(message)
@@ -58,6 +60,7 @@ class VivaExportError(Exception):
         self.unresolved_pns = unresolved_pns or []
         self.trace_id = trace_id
         self.diagnostics_path = diagnostics_path
+        self.ce_diagnostics_path = ce_diagnostics_path
         self.suggestions = suggestions or []
 
 
@@ -270,6 +273,33 @@ def _pick_exact_complex_id(matches: Sequence[Dict[str, Any]], pn: str) -> Option
                 return None
     return None
 
+
+
+def _write_ce_diagnostics(export_dir: Path) -> Optional[Path]:
+    try:
+        diagnostics = ce_bridge_manager.get_last_ce_bridge_diagnostics()
+    except Exception:
+        diagnostics = None
+    if diagnostics is None:
+        return None
+    try:
+        raw_text = diagnostics.to_text()
+    except Exception as exc:
+        raw_text = f"<failed to render diagnostics: {exc}>"
+    replacements = (
+        (chr(0xFEFF), ""),
+        (chr(0xFFFD), "?"),
+        (chr(0x2013), "-"),
+        (chr(0x2014), "-"),
+        (chr(13) + chr(10), chr(10)),
+        (chr(13), chr(10)),
+    )
+    cleaned = raw_text
+    for before, after in replacements:
+        cleaned = cleaned.replace(before, after)
+    path_out = export_dir / "ce_bridge_diagnostics.txt"
+    path_out.write_text(cleaned, encoding="utf-8")
+    return path_out
 
 def _write_json_file(path: Path, data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -550,12 +580,14 @@ def perform_viva_export(
         "ce_bridge_url": "",
         "trace_id": None,
         "resolved_from_pn": sorted(resolved_part_numbers),
+        "ce_diagnostics_path": None,
     }
 
     bridge_context: Dict[str, Any] = {}
     ce_trace_id: Optional[str] = None
     ce_export_path: Optional[str] = None
     mdb_path: Optional[Path] = None
+    ce_diagnostics_path: Optional[Path] = None
 
     if export_ids_final:
         try:
@@ -569,7 +601,7 @@ def perform_viva_export(
             if not settings.get("viva_export_base_dir"):
                 save_kwargs["viva_export_base_dir"] = str(export_dir)
             save_viva_export_settings(**save_kwargs)
-            raise VivaExportError(str(exc), reason="bridge_unavailable", missing_rows=missing_rows_final, unresolved_pns=unresolved_pns) from exc
+            raise VivaExportError(str(exc), reason="bridge_unavailable", missing_rows=missing_rows_final, unresolved_pns=unresolved_pns, ce_diagnostics_path=ce_diagnostics_path) from exc
         manifest_data["ce_bridge_url"] = bridge_context.get("base_url", "")
         try:
             bridge_state = ce_bridge_client.wait_until_ready()
@@ -582,19 +614,22 @@ def perform_viva_export(
             if not settings.get("viva_export_base_dir"):
                 save_kwargs["viva_export_base_dir"] = str(export_dir)
             save_viva_export_settings(**save_kwargs)
-            raise VivaExportError(str(exc), reason="bridge_unavailable", missing_rows=missing_rows_final, unresolved_pns=unresolved_pns) from exc
+            raise VivaExportError(str(exc), reason="bridge_unavailable", missing_rows=missing_rows_final, unresolved_pns=unresolved_pns, ce_diagnostics_path=ce_diagnostics_path) from exc
         try:
             payload = ce_bridge_client.export_complexes_mdb(
                 comp_ids=export_ids_final,
                 out_dir=str(export_dir),
                 mdb_name=mdb_name,
             )
+            ce_diagnostics_path = _write_ce_diagnostics(export_dir)
         except CEExportError as exc:
             message, reason_code, suggestions = _map_ce_error(exc)
             ce_trace_id = exc.trace_id
             manifest_data["status"] = "error"
             manifest_data["trace_id"] = ce_trace_id
-            manifest_data["ce_bridge_version"] = str(bridge_state.get("version") or bridge_state.get("build") or "")
+            if ce_diagnostics_path is not None:
+                manifest_data["ce_diagnostics_path"] = ce_diagnostics_path.as_posix()
+                manifest_data["ce_bridge_version"] = str(bridge_state.get("version") or bridge_state.get("build") or "")
             manifest_data["ce_bridge_url"] = bridge_context.get("base_url", "")
             manifest_data["warnings"].append(message)
             if suggestions:
@@ -603,6 +638,9 @@ def perform_viva_export(
             payload_body = exc.payload if isinstance(exc.payload, dict) else {"payload": exc.payload}
             _write_json_file(diagnostics_path, payload_body)
             manifest_data["ce_response_path"] = diagnostics_path.as_posix()
+            ce_diagnostics_path = _write_ce_diagnostics(export_dir)
+            if ce_diagnostics_path is not None:
+                manifest_data["ce_diagnostics_path"] = ce_diagnostics_path.as_posix()
             _write_json_file(manifest_path, manifest_data)
             save_kwargs = {"last_export_path": str(export_dir)}
             settings = get_viva_export_settings()
@@ -616,6 +654,7 @@ def perform_viva_export(
                 unresolved_pns=unresolved_pns,
                 trace_id=ce_trace_id,
                 diagnostics_path=diagnostics_path,
+                ce_diagnostics_path=ce_diagnostics_path,
                 suggestions=suggestions,
             ) from exc
         except CENotFound as exc:
@@ -623,6 +662,9 @@ def perform_viva_export(
             manifest_data["status"] = "error"
             manifest_data["warnings"].append(detail)
             manifest_data["warnings"].append("Update Complex Editor or enable the bridge exporter feature, then retry.")
+            ce_diagnostics_path = _write_ce_diagnostics(export_dir)
+            if ce_diagnostics_path is not None:
+                manifest_data["ce_diagnostics_path"] = ce_diagnostics_path.as_posix()
             manifest_data["ce_bridge_url"] = bridge_context.get("base_url", "")
             manifest_data["ce_bridge_version"] = str(bridge_state.get("version") or bridge_state.get("build") or "")
             _write_json_file(manifest_path, manifest_data)
@@ -636,6 +678,7 @@ def perform_viva_export(
                 reason="endpoint_missing",
                 missing_rows=missing_rows_final,
                 unresolved_pns=unresolved_pns,
+                ce_diagnostics_path=ce_diagnostics_path,
                 suggestions=[
                     "Update Complex Editor or enable the bridge exporter feature, then retry."
                 ],
@@ -643,6 +686,9 @@ def perform_viva_export(
         except (CEAuthError, CENetworkError) as exc:
             manifest_data["status"] = "error"
             manifest_data["warnings"].append(str(exc))
+            ce_diagnostics_path = _write_ce_diagnostics(export_dir)
+            if ce_diagnostics_path is not None:
+                manifest_data["ce_diagnostics_path"] = ce_diagnostics_path.as_posix()
             manifest_data["ce_bridge_url"] = bridge_context.get("base_url", "")
             manifest_data["ce_bridge_version"] = str(bridge_state.get("version") or bridge_state.get("build") or "")
             _write_json_file(manifest_path, manifest_data)
@@ -651,7 +697,7 @@ def perform_viva_export(
             if not settings.get("viva_export_base_dir"):
                 save_kwargs["viva_export_base_dir"] = str(export_dir)
             save_viva_export_settings(**save_kwargs)
-            raise VivaExportError(str(exc), reason="bridge_unavailable", missing_rows=missing_rows_final, unresolved_pns=unresolved_pns) from exc
+            raise VivaExportError(str(exc), reason="bridge_unavailable", missing_rows=missing_rows_final, unresolved_pns=unresolved_pns, ce_diagnostics_path=ce_diagnostics_path) from exc
 
         manifest_data["ce_bridge_version"] = str(payload.get("bridge_version") or bridge_state.get("version") or "")
         trace_id_raw = payload.get("trace_id")
@@ -679,6 +725,8 @@ def perform_viva_export(
         manifest_data["mdb_name"] = mdb_path.name
         manifest_data["export_path"] = ce_export_path
         manifest_data["trace_id"] = ce_trace_id
+        if ce_diagnostics_path is not None:
+            manifest_data["ce_diagnostics_path"] = ce_diagnostics_path.as_posix()
     else:
         try:
             bridge_context = ce_bridge_client.get_bridge_context()
@@ -707,6 +755,7 @@ def perform_viva_export(
         trace_id=manifest_data.get("trace_id"),
         ce_export_path=manifest_data.get("export_path"),
         diagnostics_path=diagnostics_path,
+        ce_diagnostics_path=ce_diagnostics_path,
         manifest=manifest_data,
     )
 
