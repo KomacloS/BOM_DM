@@ -156,6 +156,30 @@ See [docs/ce_bridge_communication.md](docs/ce_bridge_communication.md) for a
 detailed narrative of the handshake and its integration points across the
 application.
 
+### BOM to VIVA ➜ Complex Editor export
+
+Triggering **Export for VIVA** now also runs the BOM→CE workflow implemented in
+`app/services/bom_to_ce_export.py`. The exporter gathers all fitted BOM lines
+with the **Complex** test method, resolves Complex IDs via `ComplexLink` (and
+optionally `ce_component_map`), and then calls the CE Bridge to build a Microsoft
+Access `.mdb` plus a CSV report of skipped rows.
+
+Artifacts are written next to the VIVA files under a dedicated `CE/` folder. The
+summary surfaced in the GUI mirrors the service response:
+
+- `SUCCESS` – all requested complexes were exported. Message shows the MDB path
+  (click **Open CE Folder** to jump to it).
+- `PARTIAL_SUCCESS` – some rows were skipped (`not_linked_in_CE`,
+  `not_found_in_CE`, or `unlinked_data_in_CE`). The GUI prompts to open the
+  report CSV.
+- `FAILED_INPUT` / `FAILED_BACKEND` – failure details are displayed and any
+  generated report can be opened directly.
+- `RETRY_LATER` / `RETRY_WITH_BACKOFF` – the bridge is temporarily unavailable;
+  retry after the reported condition clears.
+
+Each run includes a `trace_id`; operators can fetch correlated CE Bridge logs
+via `GET /admin/logs/{trace_id}` when authentication is configured.
+
 ## Datasheet Search & AI Rerank
 
 The GUI can search the web for datasheet PDFs and optionally use an AI model

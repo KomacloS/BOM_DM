@@ -1952,7 +1952,32 @@ QTableView::item:selected:hover {
                     self._show_export_error(str(exc))
                     return
                 else:
-                    self._finalize_viva_success(result, base_root)
+                    ce_summary: Optional[Dict[str, object]] = None
+                    ce_folder = result.paths.folder / "CE"
+                    try:
+                        ce_summary = services.export_bom_to_ce_bridge(
+                            session,
+                            self._assembly_id,
+                            out_dir=ce_folder,
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logging.exception(
+                            "Complex Editor export crashed: assembly=%s", self._assembly_id
+                        )
+                        ce_summary = {
+                            "status": "FAILED_BACKEND",
+                            "trace_id": "",
+                            "export_path": str(ce_folder),
+                            "exported_count": 0,
+                            "missing_count": 0,
+                            "report_path": "",
+                            "detail": f"Unexpected error running Complex Editor export: {exc}",
+                        }
+                    self._finalize_viva_success(
+                        result,
+                        base_root,
+                        ce_summary=ce_summary,
+                    )
                     return
 
     def _export_excel(self) -> None:  # pragma: no cover - UI glue
@@ -2132,6 +2157,79 @@ QTableView::item:selected:hover {
         if box.clickedButton() == open_button:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(paths.folder)))
 
+    def _show_ce_export_summary(self, summary: Dict[str, object]) -> None:
+        status = str(summary.get("status") or "").strip()
+        if not status:
+            return
+        exported = int(summary.get("exported_count") or 0)
+        missing = int(summary.get("missing_count") or 0)
+        export_path = str(summary.get("export_path") or "").strip()
+        report_path = str(summary.get("report_path") or "").strip()
+        detail = str(summary.get("detail") or "").strip()
+        trace_id = str(summary.get("trace_id") or "").strip()
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Complex Editor export")
+        success_states = {"SUCCESS", "PARTIAL_SUCCESS"}
+        if status in success_states:
+            box.setIcon(QMessageBox.Icon.Information)
+        else:
+            box.setIcon(QMessageBox.Icon.Warning)
+
+        if status == "SUCCESS":
+            message = (
+                f"Exported {exported} complexes to {export_path}."
+                if export_path
+                else f"Exported {exported} complexes."
+            )
+        elif status == "PARTIAL_SUCCESS":
+            message = f"Exported {exported}; {missing} skipped. See report."
+        elif status in {"FAILED_INPUT", "FAILED_BACKEND"}:
+            message = detail or "Complex Editor export failed."
+        elif status in {"RETRY_LATER", "RETRY_WITH_BACKOFF"}:
+            message = detail or "Complex Editor export is temporarily unavailable."
+        else:
+            message = detail or f"Complex Editor export finished with status {status}."
+
+        details_lines: List[str] = []
+        if status not in {"SUCCESS", "PARTIAL_SUCCESS"} and detail and message != detail:
+            details_lines.append(detail)
+        if export_path:
+            details_lines.append(f"Export path: {export_path}")
+        if report_path:
+            details_lines.append(f"Report: {report_path}")
+        if trace_id:
+            details_lines.append(f"Trace ID: {trace_id}")
+        box.setText("Complex Editor export")
+        box.setInformativeText("\n".join([message] + details_lines if details_lines else [message]))
+
+        open_folder_button = None
+        open_report_button = None
+        if export_path:
+            open_folder_button = box.addButton(
+                "Open CE Folder", QMessageBox.ButtonRole.ActionRole
+            )
+        if report_path:
+            open_report_button = box.addButton(
+                "Open Report", QMessageBox.ButtonRole.ActionRole
+            )
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        if open_folder_button and clicked == open_folder_button:
+            try:
+                target = Path(export_path)
+                folder = target if target.is_dir() else target.parent
+                if folder:
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+            except Exception:
+                logging.debug("Failed to open CE folder for %s", export_path)
+        elif open_report_button and clicked == open_report_button:
+            try:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(report_path))
+            except Exception:
+                logging.debug("Failed to open CE report: %s", report_path)
+
     def _show_export_error(self, message: str) -> None:
         box = QMessageBox(self)
         box.setWindowTitle("Export failed")
@@ -2148,6 +2246,8 @@ QTableView::item:selected:hover {
         self,
         result: services.VIVAExportOutcome,
         base_root: Path,
+        *,
+        ce_summary: Optional[Dict[str, object]] = None,
     ) -> None:
         self._export_settings.setValue("last_root", str(base_root))
         try:
@@ -2168,6 +2268,16 @@ QTableView::item:selected:hover {
             warnings=result.warnings,
             manifest=manifest,
         )
+        if ce_summary:
+            logging.info(
+                "CE export summary: assembly=%s status=%s exported=%s trace_id=%s path=%s",
+                self._assembly_id,
+                ce_summary.get("status"),
+                ce_summary.get("exported_count"),
+                ce_summary.get("trace_id"),
+                ce_summary.get("export_path"),
+            )
+            self._show_ce_export_summary(ce_summary)
 
     def _prompt_unresolved_pns(self, unresolved: Sequence[str]) -> bool:
         lines = [str(pn) for pn in unresolved]
