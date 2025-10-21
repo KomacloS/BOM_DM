@@ -77,6 +77,11 @@ def _stable_config(monkeypatch):
         port=8765,
     )
     ce_bridge_transport.reset_session()
+    class _FakeSupervisor:
+        def ensure_ready(self, trace_id):
+            return True, {"status": "READY"}
+
+    monkeypatch.setattr(ce_bridge_client, "get_supervisor", lambda: _FakeSupervisor())
     monkeypatch.setattr(ce_bridge_client, "_load_bridge_config", lambda: config)
     monkeypatch.setattr(ce_bridge_client, "_PREFLIGHT_CACHE", None, raising=False)
     monkeypatch.setattr(ce_bridge_client, "_ORIGINAL_PREFLIGHT", original_preflight, raising=False)
@@ -94,7 +99,14 @@ def test_healthcheck_success(monkeypatch):
 
     payload = ce_bridge_client.healthcheck()
     assert payload == {"status": "ok"}
-    assert session.calls == [("get", "http://bridge.local/health", {"headers": {"Accept": "application/json", "Authorization": "Bearer token-123"}, "timeout": 5.0})]
+    assert len(session.calls) == 1
+    call = session.calls[0]
+    assert call[0] == "get"
+    assert call[1] == "http://bridge.local/admin/health"
+    headers = call[2]["headers"]
+    assert headers["Authorization"] == "Bearer token-123"
+    assert headers["X-Trace-Id"]
+    assert call[2]["timeout"] == 5.0
 
 
 def test_search_complexes_filters_non_dict(monkeypatch):

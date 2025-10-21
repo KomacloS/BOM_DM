@@ -3442,8 +3442,8 @@ QTableView::item:selected:hover {
         export_dir = self._select_viva_export_directory()
         if export_dir is None:
             return
-        export_path = Path(export_dir)
-        result = self._perform_viva_export(export_path, table_rows)
+        export_base_path = Path(export_dir)
+        result = self._perform_viva_export(export_base_path, table_rows)
         if result is None:
             return
         trace_id = str(result.manifest.get("trace_id") or uuid.uuid4())
@@ -3463,7 +3463,8 @@ QTableView::item:selected:hover {
             }
             self._show_ce_export_summary(ce_result)
             return
-        ce_result = self._run_ce_export(export_path, table_rows, mdb_name, trace_id=trace_id)
+        project_dir = Path(result.txt_path.parent)
+        ce_result = self._run_ce_export(project_dir, table_rows, mdb_name, trace_id=trace_id)
         if ce_result is not None:
             self._show_ce_export_summary(ce_result)
 
@@ -3503,7 +3504,7 @@ QTableView::item:selected:hover {
         *,
         trace_id: str,
     ) -> Optional[dict[str, Any]]:
-        ce_dir = viva_export_dir / "CE"
+        ce_dir = viva_export_dir
         try:
             ce_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:

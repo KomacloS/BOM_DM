@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('data', 'data'), ('static', 'static'), ('app/gui/icons', 'app/gui/icons'), ('migrations', 'migrations')]
 binaries = []
-hiddenimports = ['app.integration.ce_bridge_manager']
+hiddenimports = ['app.integration.ce_supervisor']
 hiddenimports += collect_submodules('requests')
 hiddenimports += collect_submodules('sqlmodel')
 hiddenimports += collect_submodules('app.integration')

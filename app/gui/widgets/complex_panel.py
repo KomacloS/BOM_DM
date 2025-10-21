@@ -27,7 +27,7 @@ from sqlmodel import select
 
 from app.domain import complex_linker
 from app.domain.complex_linker import AliasConflictError, CESelectionRequired, ComplexLink
-from app.integration import ce_bridge_client, ce_bridge_manager
+from app.integration import ce_bridge_client, ce_supervisor
 from app.integration.ce_bridge_client import CEAuthError, CENetworkError, CENotFound, CEUserCancelled
 from app.gui import state as app_state
 from app.config import get_complex_editor_settings
@@ -246,7 +246,7 @@ class ComplexPanel(QWidget):
         QApplication.processEvents()
 
     def _show_error(self, title: str, message: str, details: Optional[str] = None) -> None:
-        diag = ce_bridge_manager.get_last_ce_bridge_diagnostics()
+        diag = ce_supervisor.get_last_ce_bridge_diagnostics()
         if details is None and diag is not None:
             details = diag.to_text()
         box = QMessageBox(self)

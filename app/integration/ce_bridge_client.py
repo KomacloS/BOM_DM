@@ -11,13 +11,15 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import requests
 from requests import Response
 from requests import exceptions as req_exc
+import uuid
 
 from app.config import get_complex_editor_settings, get_viva_export_settings
 from app.integration import ce_bridge_transport
-from app.integration.ce_bridge_manager import (
+from app.integration.ce_supervisor import (
     CEBridgeError,
     bridge_owned_for_url,
     ensure_ce_bridge_ready,
+    get_supervisor,
     record_bridge_action,
     record_health_detail,
     record_state_snapshot,
@@ -108,6 +110,10 @@ class _PreflightCache:
 _PREFLIGHT_CACHE: Optional[_PreflightCache] = None
 
 CACHE_TTL = 5.0
+
+
+def _normalize_trace_id(trace_id: Optional[str]) -> str:
+    return (trace_id or "").strip() or uuid.uuid4().hex
 
 
 def _normalize_timeout(raw: Any, default: float = 10.0) -> float:
@@ -239,7 +245,7 @@ def _preflight(
     headers = ce_bridge_transport.build_headers(config.token, trace_id)
     state_url = _url(config.base_url, "state")
     selftest_url = _url(config.base_url, "selftest")
-    health_url = _url(config.base_url, "health")
+    health_url = _url(config.base_url, "admin/health")
 
     deadline = now + _handshake_budget(config.timeout)
     next_selftest = now
@@ -361,17 +367,32 @@ def _perform_request(
     allow_cached: bool = True,
     trace_id: Optional[str] = None,
 ) -> Tuple[Response, Dict[str, Any]]:
+    active_trace = _normalize_trace_id(trace_id)
+    try:
+        supervisor = get_supervisor()
+    except Exception as exc:
+        logger.warning("Failed to acquire CE supervisor: %s", exc)
+        supervisor = None
+    if supervisor is not None:
+        ready, info = supervisor.ensure_ready(active_trace)
+        if not ready:
+            detail = str(info.get("detail") or info.get("status") or "Complex Editor bridge not ready.").strip()
+            status = str(info.get("status") or "UNKNOWN").strip()
+            message = detail or "Complex Editor bridge not ready."
+            if status and status not in message:
+                message = f"{message} (status={status})"
+            raise CENetworkError(message)
     state = _preflight(
         config,
         require_ui=require_ui,
         status_callback=status_callback,
         allow_cached=allow_cached,
-        trace_id=trace_id,
+        trace_id=active_trace,
     )
     session = ce_bridge_transport.get_session(config.base_url)
     headers = ce_bridge_transport.build_headers(
         config.token,
-        trace_id,
+        active_trace,
         content_type="application/json" if json_body is not None else None,
     )
     url = _url(config.base_url, path)
@@ -411,8 +432,9 @@ def _raise_server_error(
     state: Optional[Dict[str, Any]] = None,
 ) -> None:
     session = ce_bridge_transport.get_session(config.base_url)
-    headers = ce_bridge_transport.build_headers(config.token, None)
-    health_url = _url(config.base_url, "health")
+    probe_trace = _normalize_trace_id(None)
+    headers = ce_bridge_transport.build_headers(config.token, probe_trace)
+    health_url = _url(config.base_url, "admin/health")
     reason = _fetch_health_reason(session, health_url, headers, config.timeout)
     if not reason and state and isinstance(state, dict):
         state_reason = state.get("last_ready_error")
@@ -440,7 +462,8 @@ def _wait_for_wizard_close(
     status_callback: Optional[StatusCallback] = None,
 ) -> None:
     session = ce_bridge_transport.get_session(config.base_url)
-    headers = ce_bridge_transport.build_headers(config.token, None)
+    poll_trace = _normalize_trace_id(None)
+    headers = ce_bridge_transport.build_headers(config.token, poll_trace)
     state_url = _url(config.base_url, "state")
     deadline = time.monotonic() + _handshake_budget(config.timeout)
     announced = False
@@ -530,12 +553,28 @@ def open_complex(
     mode: str = "edit",
 ) -> bool:
     config = _load_bridge_config()
+    active_trace = _normalize_trace_id(None)
+    try:
+        supervisor = get_supervisor()
+    except Exception as exc:
+        logger.warning("Failed to acquire CE supervisor for open_complex: %s", exc)
+        supervisor = None
+    if supervisor is not None:
+        ready, info = supervisor.ensure_ready(active_trace)
+        if not ready:
+            detail = str(info.get("detail") or info.get("status") or "Complex Editor bridge not ready.").strip()
+            status = str(info.get("status") or "UNKNOWN").strip()
+            message = detail or "Complex Editor bridge not ready."
+            if status and status not in message:
+                message = f"{message} (status={status})"
+            raise CENetworkError(message)
     record_bridge_action(f"Open request for Complex {ce_id}")
     state = _preflight(
         config,
         require_ui=True,
         status_callback=status_callback,
         allow_cached=allow_cached,
+        trace_id=active_trace,
     )
     if _state_has_focus(state, ce_id):
         record_bridge_action(f"Complex {ce_id} already focused; bringing to front")
@@ -550,7 +589,7 @@ def open_complex(
     session = ce_bridge_transport.get_session(config.base_url)
     headers = ce_bridge_transport.build_headers(
         config.token,
-        None,
+        active_trace,
         content_type="application/json",
     )
     url = _url(config.base_url, f"complexes/{ce_id}/open")
@@ -631,7 +670,8 @@ def _bring_ce_to_front(config: _BridgeConfig) -> None:
 
 def _wait_for_focus_or_wizard(config: _BridgeConfig, ce_id: str | int, *, timeout: float = 5.0) -> None:
     session = ce_bridge_transport.get_session(config.base_url)
-    headers = ce_bridge_transport.build_headers(config.token, None)
+    poll_trace = _normalize_trace_id(None)
+    headers = ce_bridge_transport.build_headers(config.token, poll_trace)
     state_url = _url(config.base_url, "state")
     deadline = time.monotonic() + timeout
     target_id: Optional[int]
@@ -688,12 +728,13 @@ def wait_until_ready(
 ) -> Dict[str, Any]:
     """Ensure the CE bridge is ready and return the latest state payload."""
     config = _load_bridge_config()
+    active_trace = _normalize_trace_id(trace_id)
     return _preflight(
         config,
         require_ui=require_ui,
         status_callback=None,
         allow_cached=allow_cached,
-        trace_id=trace_id,
+        trace_id=active_trace,
     )
 
 
@@ -725,21 +766,23 @@ def coerce_comp_id(value: Any) -> Optional[int]:
 
 
 def healthcheck(trace_id: Optional[str] = None) -> Dict[str, Any]:
-    config = _load_bridge_config()
-    session = ce_bridge_transport.get_session(config.base_url)
-    headers = ce_bridge_transport.build_headers(config.token, trace_id)
-    url = _url(config.base_url, "health")
+    base_url, token, timeout = resolve_bridge_connection()
+    session = ce_bridge_transport.get_session(base_url)
+    trace = _normalize_trace_id(trace_id)
+    headers = ce_bridge_transport.build_headers(token, trace_id=trace)
+    url = urljoin(base_url.rstrip("/") + "/", "admin/health")
     try:
-        response = session.get(url, headers=headers, timeout=config.timeout)
-    except (req_exc.Timeout, req_exc.ConnectTimeout, req_exc.ConnectionError) as exc:
-        raise CENetworkError("Cannot reach Complex Editor bridge") from exc
+        resp = session.get(url, headers=headers, timeout=timeout)
     except req_exc.RequestException as exc:
-        raise CENetworkError("Unexpected bridge communication error") from exc
-    if response.status_code in (401, 403):
+        raise CENetworkError("Cannot reach Complex Editor bridge") from exc
+    if resp.status_code in (401, 403):
         raise CEAuthError("Invalid/expired CE bridge token; update the token in settings.")
-    if not response.ok:
-        _raise_server_error(config, response)
-    payload = _json_from_response(response)
+    try:
+        resp.raise_for_status()
+    except req_exc.HTTPError as exc:
+        raise CENetworkError(f"Complex Editor bridge returned HTTP {resp.status_code}") from exc
+    payload: Any
+    payload = resp.json() if resp.content else {}
     if not isinstance(payload, dict):
         raise CENetworkError("Unexpected payload from health endpoint")
     return payload

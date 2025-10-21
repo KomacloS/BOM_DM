@@ -113,7 +113,7 @@ args=(
   --collect-submodules requests
   --collect-submodules sqlmodel
   --collect-submodules app.integration
-  --hidden-import app.integration.ce_bridge_manager
+  --hidden-import app.integration.ce_supervisor
   app/gui/__main__.py
 )
 [[ -f icon.ico ]] && args+=( --icon icon.ico )

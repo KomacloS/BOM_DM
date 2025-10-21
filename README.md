@@ -177,3 +177,4 @@ On Windows PowerShell, replace `export VAR=value` with `$env:VAR = "value"`.
 - If the bridge reports `headless: true` and exports are blocked, BOM_DB will launch the CE desktop UI from `CE_APP_EXE` (environment variable) or `[complex_editor].app_exe_path` in `settings.toml`.
 - The app polls `/admin/health` until exports are allowed (up to ~30s) and then performs the MDB export with a single summary dialog.
 - When BOM_DB exits it only shuts down the CE process that it started (via `/admin/shutdown`, falling back to terminate/kill if needed).
+- To enable headless exports in production builds of the CE bridge, set `CE_ALLOW_HEADLESS_EXPORTS=1` in the environment (or start the bridge with `--allow-headless-exports`). Settings ▸ Test Bridge will show `Headless: true (allow: true)` when configured correctly.

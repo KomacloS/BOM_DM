@@ -19,7 +19,7 @@ from ..models import Assembly, BOMItem, Part, PartType
 from ..config import DATASHEETS_DIR, get_complex_editor_settings
 from ..domain.complex_linker import auto_link_by_pn
 from ..integration.ce_bridge_client import CENetworkError
-from ..integration.ce_bridge_manager import CEBridgeError, ensure_ce_bridge_ready
+from ..integration.ce_supervisor import CEBridgeError, ensure_ce_bridge_ready
 
 
 logger = logging.getLogger(__name__)

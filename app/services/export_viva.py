@@ -316,20 +316,28 @@ def perform_viva_export(
     strict: bool = True,
 ) -> VivaExportResult:
     rows_from_gui = [dict(row) for row in bom_rows]
-    export_dir = _ensure_export_directory(base_dir)
+    export_base_dir = _ensure_export_directory(base_dir)
     diagnostics_path: Optional[Path] = None
 
     assembly, project, customer = _load_bom_entities(session, assembly_id)
     bom_name = _compose_bom_name(assembly, project, customer)
     base_filename = _sanitize_filename_component(bom_name, f"BOM_{assembly.id}")
+
+    project_dir = export_base_dir / base_filename
+    project_dir.mkdir(parents=True, exist_ok=True)
+
     txt_filename = f"{base_filename} - BOM to VIVA.txt"
-    txt_path = export_dir / txt_filename
-    mdb_name = "bom_complexes.mdb"
-    if not mdb_name.lower().endswith(".mdb"):
-        mdb_name = f"{mdb_name}.mdb"
-    if len(mdb_name) > 64:
-        mdb_name = mdb_name[-64:]
-    manifest_path = export_dir / "viva_manifest.json"
+    txt_path = project_dir / txt_filename
+
+    mdb_stem = _sanitize_filename_component(base_filename, "bom_complexes")
+    mdb_name_candidate = f"{mdb_stem} - CE Export.mdb"
+    if len(mdb_name_candidate) > 64:
+        mdb_name_candidate = f"{mdb_stem}.mdb"
+    if len(mdb_name_candidate) > 64:
+        mdb_name_candidate = mdb_name_candidate[-64:]
+    mdb_name = mdb_name_candidate
+
+    manifest_path = project_dir / "viva_manifest.json"
 
     try:
         viva_rows = build_viva_groups(rows_from_gui, session, assembly_id)
@@ -414,7 +422,7 @@ def perform_viva_export(
             "assembly_rev": getattr(assembly, "rev", "") or "",
             "txt_name": txt_path.name,
             "txt_path": txt_path.as_posix(),
-            "export_folder": export_dir.as_posix(),
+            "export_folder": project_dir.as_posix(),
             "mdb_name": None,
             "export_path": None,
             "exported_comp_ids": export_ids_initial,
@@ -430,10 +438,10 @@ def perform_viva_export(
             "resolved_from_pn": [],
         }
         _write_json_file(manifest_path, manifest_data)
-        save_kwargs: Dict[str, str] = {"last_export_path": str(export_dir)}
+        save_kwargs: Dict[str, str] = {"last_export_path": str(export_base_dir)}
         settings = get_viva_export_settings()
         if not settings.get("viva_export_base_dir"):
-            save_kwargs["viva_export_base_dir"] = str(export_dir)
+            save_kwargs["viva_export_base_dir"] = str(export_base_dir)
         save_viva_export_settings(**save_kwargs)
         raise VivaExportError(
             "Link required Complex Editor records before exporting.",
@@ -476,7 +484,7 @@ def perform_viva_export(
         "assembly_rev": getattr(assembly, "rev", "") or "",
         "txt_name": txt_path.name,
         "txt_path": txt_path.as_posix(),
-        "export_folder": export_dir.as_posix(),
+        "export_folder": project_dir.as_posix(),
         "mdb_name": mdb_name if export_ids_final else None,
         "export_path": None,
         "exported_comp_ids": export_ids_final,
@@ -499,14 +507,14 @@ def perform_viva_export(
     manifest_data["export_path"] = None
     manifest_data["ce_diagnostics_path"] = None
 
-    mdb_path: Optional[Path] = None
-
     _write_json_file(manifest_path, manifest_data)
-    save_kwargs = {"last_export_path": str(export_dir)}
+    save_kwargs = {"last_export_path": str(export_base_dir)}
     settings = get_viva_export_settings()
     if not settings.get("viva_export_base_dir"):
-        save_kwargs["viva_export_base_dir"] = str(export_dir)
+        save_kwargs["viva_export_base_dir"] = str(export_base_dir)
     save_viva_export_settings(**save_kwargs)
+
+    mdb_path: Optional[Path] = project_dir / mdb_name if export_ids_final else None
 
     return VivaExportResult(
         status=manifest_data["status"],

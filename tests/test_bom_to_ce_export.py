@@ -20,7 +20,7 @@ from app.services.bom_to_ce_export import (
     STATUS_RETRY_WITH_BACKOFF,
     export_bom_to_ce_bridge,
 )
-from app.integration import ce_bridge_client, ce_bridge_transport
+from app.integration import ce_bridge_client, ce_bridge_transport, ce_bridge_manager
 from app.integration.ce_supervisor import CESupervisor
 
 
@@ -352,21 +352,35 @@ def test_ce_supervisor_launches_ui_when_headless_blocked(monkeypatch, tmp_path):
     session = _SessionStub(payloads)
     monkeypatch.setattr(ce_bridge_client, "resolve_bridge_connection", lambda: ("http://bridge.local", "token", 5.0))
     monkeypatch.setattr(ce_bridge_transport, "get_session", lambda base=None: session)
-    proc_stub = _ProcessStub()
-    called = {"count": 0}
 
-    def fake_popen(*args, **kwargs):
-        called["count"] += 1
-        return proc_stub
+    settings_dict = {
+        "ui_enabled": True,
+        "auto_start_bridge": True,
+        "exe_path": str(exe),
+        "bridge": {
+            "enabled": True,
+            "base_url": "http://bridge.local",
+            "auth_token": "token",
+            "request_timeout_seconds": 5,
+        },
+    }
+    monkeypatch.setattr("app.integration.ce_supervisor.config.get_complex_editor_settings", lambda: settings_dict)
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    ensure_calls = []
+
+    def fake_ensure(timeout_seconds=4.0, *, require_ui=False):
+        ensure_calls.append((timeout_seconds, require_ui))
+
+    monkeypatch.setattr(ce_bridge_manager, "ensure_ce_bridge_ready", fake_ensure)
+    monkeypatch.setattr(ce_bridge_manager, "bridge_owned_for_url", lambda base: False)
+    monkeypatch.setattr(ce_bridge_manager, "restart_bridge_with_ui", lambda timeout: (_ for _ in ()).throw(AssertionError("should not restart")))
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not spawn UI directly")))
+
     supervisor = CESupervisor(app_exe=exe, poll_timeout_s=1.0, poll_interval_s=0.05)
     ok, info = supervisor.ensure_ready("trace-id")
     assert ok is True
     assert info["status"] == "READY"
-    assert called["count"] == 1
-
-
+    assert ensure_calls == [(5.0, True)]
 def test_ce_supervisor_times_out_and_returns_retry_later(monkeypatch):
     payload = {"ready": True, "headless": True, "allow_headless": False, "detail": "blocked"}
     session = _SessionStub([payload] * 10)

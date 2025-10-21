@@ -80,8 +80,8 @@ The POST body sent to `POST /exports/mdb` looks like:
 ```json
 {
   "comp_ids": [101, 202, 303],
-  "out_dir": "C:/path/to/export/CE",
-  "mdb_name": "bom_complexes.mdb"
+  "out_dir": "C:/path/to/export/Customer - Project",
+  "mdb_name": "Customer - Project - CE Export.mdb"
 }
 ```
 
@@ -126,7 +126,7 @@ reason string (`not_linked_in_CE`, `not_found_in_CE`, `unlinked_data_in_CE`).
 `app/gui/bom_editor_pane.py` drives the UX:
 
 1. Perform the VIVA export as before, then call `_run_ce_export` to invoke the
-   bridge workflow with output folder `<viva_export>/CE/`.
+   bridge workflow with output folder `<viva_export>/<project-name>/`.
 2. Display the CE summary dialog (`_show_ce_export_summary`) with:
    * Overall status (“completed”, “deferred”, “failed”…)
    * Export count and report path if available

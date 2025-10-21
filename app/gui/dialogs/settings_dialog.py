@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
 import shutil
 import sys
 import tempfile
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urljoin
 
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -28,12 +30,10 @@ from sqlalchemy.engine import make_url
 from ... import config
 from ...ai_agents import apply_env_from_agents
 from ...database import ensure_schema
-from ...integration import ce_bridge_client
+from ...integration import ce_bridge_client, ce_bridge_transport
+from ...integration.ce_bridge_client import CEAuthError, CENetworkError
 from ...integration.ce_bridge_diagnostics import CEBridgeDiagnostics
-from ...integration.ce_bridge_manager import (
-    ensure_ce_bridge_ready,
-    get_last_ce_bridge_diagnostics,
-)
+from ...integration.ce_supervisor import get_last_ce_bridge_diagnostics, get_supervisor
 
 
 class SettingsDialog(QDialog):
@@ -277,6 +277,7 @@ class SettingsDialog(QDialog):
             "ui_enabled": self.ce_ui_enabled_check.isChecked(),
         }
 
+
     def _test_ce_bridge(self) -> None:
         ce_values = self._collect_ce_settings()
         try:
@@ -295,9 +296,62 @@ class SettingsDialog(QDialog):
         except Exception as exc:
             QMessageBox.critical(self, "Complex Editor", f"Failed to save settings: {exc}")
             return
+
         try:
-            ensure_ce_bridge_ready()
-            payload = ce_bridge_client.healthcheck()
+            base_url, token, timeout = ce_bridge_client.resolve_bridge_connection()
+        except Exception as exc:
+            QMessageBox.critical(self, "Complex Editor", f"Invalid Complex Editor settings: {exc}")
+            return
+
+        trace_id = uuid.uuid4().hex
+        payload: dict[str, object] = {}
+        status_code = 0
+
+        supervisor_ready = True
+        supervisor_info: dict[str, object] = {"status": "READY"}
+        try:
+            supervisor = get_supervisor()
+        except Exception as sup_exc:
+            supervisor_ready = False
+            supervisor_info = {"status": "error", "detail": str(sup_exc)}
+        else:
+            supervisor_ready, supervisor_info = supervisor.ensure_ready(trace_id)
+
+        if not supervisor_ready:
+            detail_text = str(supervisor_info.get("detail") or supervisor_info.get("status") or "").strip()
+            if "executable path is not configured" in detail_text.lower():
+                QMessageBox.critical(
+                    self,
+                    "Complex Editor",
+                    "Complex Editor executable path is not configured. Set it in Settings -> Complex Editor -> Executable.",
+                )
+                return
+
+        try:
+            session = ce_bridge_transport.get_session(base_url)
+            headers = ce_bridge_transport.build_headers(token, trace_id=trace_id)
+            health_url = urljoin(base_url.rstrip("/") + "/", "admin/health")
+            try:
+                response = session.get(health_url, headers=headers, timeout=timeout)
+            except Exception as exc:
+                raise CENetworkError("Cannot reach Complex Editor bridge") from exc
+            status_code = response.status_code
+            if status_code in (401, 403):
+                raise CEAuthError("Invalid/expired CE bridge token; update the token in settings.")
+            try:
+                payload = response.json() if response.content else {}
+            except ValueError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+        except (CEAuthError, CENetworkError) as exc:
+            diagnostics = getattr(exc, "diagnostics", None)
+            if diagnostics is None:
+                diagnostics = get_last_ce_bridge_diagnostics()
+            if diagnostics is None:
+                diagnostics = self._build_bridge_diagnostics_fallback(exc)
+            self._show_bridge_failure_dialog(exc, diagnostics)
+            return
         except Exception as exc:
             diagnostics = getattr(exc, "diagnostics", None)
             if diagnostics is None:
@@ -306,8 +360,50 @@ class SettingsDialog(QDialog):
                 diagnostics = self._build_bridge_diagnostics_fallback(exc)
             self._show_bridge_failure_dialog(exc, diagnostics)
             return
-        status = payload.get("status") if isinstance(payload, dict) else payload
-        QMessageBox.information(self, "Complex Editor", f"Bridge OK: {status}")
+
+        ready_flag = bool(payload.get("ready"))
+        headless_flag = bool(payload.get("headless"))
+        allow_headless = bool(payload.get("allow_headless", True))
+        reason_value = (
+            payload.get("reason")
+            or payload.get("detail")
+            or supervisor_info.get("detail")
+            or supervisor_info.get("status")
+            or ""
+        )
+        reason_text = str(reason_value).strip()
+        if not reason_text:
+            if status_code >= 400:
+                reason_text = f"HTTP {status_code}"
+            else:
+                reason_text = "OK" if ready_flag else "No reason provided"
+        bridge_trace = payload.get("trace_id")
+        lines = [
+            f"Ready: {ready_flag}",
+            f"Headless: {headless_flag} (allow: {allow_headless})",
+            f"Reason: {reason_text}",
+        ]
+        if isinstance(bridge_trace, str) and bridge_trace.strip():
+            lines.append(f"Bridge Trace: {bridge_trace.strip()}")
+        lines.append(f"Request Trace: {trace_id}")
+        if status_code >= 400:
+            lines.append(f"HTTP Status: {status_code}")
+        supervisor_status = str(supervisor_info.get("status") or "").strip()
+        if supervisor_status and supervisor_status.upper() != "READY":
+            sup_detail = str(supervisor_info.get("detail") or "").strip()
+            sup_line = f"Supervisor Status: {supervisor_status}"
+            if sup_detail:
+                sup_line = f"{sup_line} ({sup_detail})"
+            lines.append(sup_line)
+        outcome = str(supervisor_info.get("outcome") or "").strip().lower()
+        if outcome == "timeout" and headless_flag and not allow_headless:
+            lines.append("")
+            lines.append("We tried to launch Complex Editor automatically; if you prefer to stay headless, set CE_ALLOW_HEADLESS_EXPORTS=1.")
+        message = "\n".join(lines)
+        if ready_flag:
+            QMessageBox.information(self, "Complex Editor", message)
+        else:
+            QMessageBox.warning(self, "Complex Editor", message)
 
     def _build_bridge_diagnostics_fallback(self, exc: Exception) -> CEBridgeDiagnostics:
         diagnostics = CEBridgeDiagnostics()

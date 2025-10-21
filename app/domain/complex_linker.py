@@ -22,7 +22,7 @@ from app.integration.ce_bridge_client import (
     open_complex,
     search_complexes,
 )
-from app.integration.ce_bridge_manager import record_bridge_action
+from app.integration.ce_supervisor import record_bridge_action
 
 logger = logging.getLogger(__name__)
 
