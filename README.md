@@ -145,16 +145,14 @@ debug actions.
 
 ## Complex Editor bridge communication
 
-The GUI's Complex Editor integrations now perform a preflight readiness
-handshake before any other API calls. The handshake uses a shared
-proxy-bypassing HTTP session, always attaches the configured bearer token, and
-polls `/state` and `/selftest` until the bridge reports `ready == true`. If the
-bridge takes too long, the helper surfaces the latest reason gathered from
-`/state` or `/health` (for example `mdb_unavailable`).
+The GUI's Complex Editor integrations perform a preflight readiness handshake
+before any other API calls. The handshake uses a shared proxy-bypassing HTTP
+session, always attaches the configured bearer token, and polls `/admin/health`
+until the bridge reports `ready == true`. If the bridge takes too long, the
+helper surfaces the latest reason reported by that endpoint.
 
-See [docs/ce_bridge_communication.md](docs/ce_bridge_communication.md) for a
-detailed narrative of the handshake and its integration points across the
-application.
+See [docs/ce_activation.md](docs/ce_activation.md) for a detailed narrative of
+the activation flow and its integration points across the application.
 
 ### BOM to VIVA ➜ Complex Editor export
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import datetime
 import shutil
+import uuid
 import sys
 import tempfile
 import traceback
 from pathlib import Path
+from urllib.parse import urljoin
 
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (
@@ -291,35 +293,49 @@ class SettingsDialog(QDialog):
             QMessageBox.critical(self, "Complex Editor", f"Failed to save settings: {exc}")
             return
         try:
-            from ...integration.ce_bridge_manager import ensure_ce_bridge_ready
+            from ...integration.ce_supervisor import ensure_ready
             from ...integration import ce_bridge_client, ce_bridge_transport
 
-            ensure_ce_bridge_ready()
-            settings = config.get_complex_editor_settings()
-            bridge_cfg = settings.get("bridge", {}) if isinstance(settings, dict) else {}
-            base_url = str(
-                bridge_cfg.get("base_url") or ce_values["bridge_base_url"]
+            ensure_ready()
+            base_url, token, timeout = ce_bridge_client.resolve_bridge_connection()
+            trace_id = uuid.uuid4().hex
+            session = ce_bridge_transport.get_session()
+            headers = ce_bridge_transport.build_headers(token, trace_id=trace_id)
+            try:
+                request_timeout = float(timeout or 10)
+            except (TypeError, ValueError):
+                request_timeout = 10.0
+            health_url = urljoin(base_url.rstrip("/") + "/", "admin/health")
+            response = session.get(
+                health_url,
+                headers=headers,
+                timeout=request_timeout,
             )
-            token = str(
-                bridge_cfg.get("auth_token") or ce_values["bridge_auth_token"]
-            )
-            timeout = float(
-                bridge_cfg.get("request_timeout_seconds")
-                or ce_values["bridge_request_timeout_seconds"]
-                or 10
-            )
-            ce_bridge_transport.preflight_ready(
-                base_url,
-                token,
-                request_timeout_s=timeout,
-            )
-            payload = ce_bridge_client.healthcheck()
+            response.raise_for_status()
+            if response.content:
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = {}
+            else:
+                payload = {}
         except Exception as exc:
             diagnostics_text = self._diagnostics_text_from_exception(exc)
+            hint = ""
+            diagnostics = getattr(exc, "diagnostics", None)
+            if diagnostics is not None:
+                outcome = getattr(diagnostics, "outcome", "")
+                headless = getattr(diagnostics, "headless", None)
+                allow_headless = getattr(diagnostics, "allow_headless", None)
+                if outcome == "timeout" and headless and allow_headless is False:
+                    hint = (
+                        "\n\nWe tried to launch Complex Editor automatically; "
+                        "if you prefer to stay headless, set CE_ALLOW_HEADLESS_EXPORTS=1."
+                    )
             message = QMessageBox(
                 QMessageBox.Icon.Warning,
                 "Complex Editor",
-                f"Bridge test failed: {exc}",
+                f"Bridge test failed: {exc}{hint}",
                 parent=self,
             )
             details_button = None
@@ -333,21 +349,19 @@ class SettingsDialog(QDialog):
             return
         info_lines = []
         if isinstance(payload, dict):
-            status = str(payload.get("status") or payload.get("state") or "ok")
-            info_lines.append(f"Status: {status}")
-            details_map = [
-                ("Version", payload.get("version")),
-                ("Host", payload.get("host")),
-                ("Port", payload.get("port")),
-                ("Auth", payload.get("auth")),
-                ("Database", payload.get("db_path") or payload.get("database")),
-            ]
-            for label, value in details_map:
-                if value is None or value == "":
-                    continue
-                info_lines.append(f"{label}: {value}")
+            ready = payload.get("ready")
+            headless = payload.get("headless")
+            allow_headless = payload.get("allow_headless")
+            info_lines.append(f"Ready: {ready}")
+            info_lines.append(f"Headless: {headless} (allow: {allow_headless})")
+            status = payload.get("reason") or payload.get("detail") or payload.get("status")
+            if status:
+                info_lines.append(f"Reason: {status}")
+            if payload.get("trace_id"):
+                info_lines.append(f"Bridge Trace: {payload.get('trace_id')}")
         else:
             info_lines.append(f"Status: {payload}")
+        info_lines.append(f"Request Trace: {trace_id}")
         QMessageBox.information(
             self,
             "Complex Editor",

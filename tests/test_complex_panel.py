@@ -39,8 +39,8 @@ def test_complex_panel_search_and_attach(monkeypatch, qapp):
         lambda: _settings_stub(),
     )
     monkeypatch.setattr(
-        "app.integration.ce_bridge_client.ensure_ce_bridge_ready",
-        lambda: None,
+        "app.integration.ce_bridge_client.ensure_ready",
+        lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(
         "app.integration.ce_bridge_client.is_preflight_recent",

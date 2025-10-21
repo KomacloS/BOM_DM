@@ -12,7 +12,7 @@ from app.integration.ce_bridge_client import (
     CEUserCancelled,
     CEWizardUnavailable,
 )
-from app.integration.ce_bridge_manager import CEBridgeError
+from app.integration.ce_supervisor import CEBridgeError
 from app.models import Part, PartTestAssignment, TestMethod
 
 

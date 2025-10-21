@@ -12,7 +12,7 @@ from datetime import datetime
 from ..config import LOG_DIR, TRACEBACK_LOG_PATH
 
 from ..ai_agents import apply_env_from_agents
-from ..integration.ce_bridge_manager import stop_ce_bridge_if_started
+from ..integration.ce_supervisor import stop_ce_bridge_if_started
 
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (

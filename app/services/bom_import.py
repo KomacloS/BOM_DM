@@ -19,7 +19,7 @@ from ..models import Assembly, BOMItem, Part, PartType
 from ..config import DATASHEETS_DIR, get_complex_editor_settings
 from ..domain.complex_linker import auto_link_by_pn
 from ..integration.ce_bridge_client import CENetworkError
-from ..integration.ce_bridge_manager import CEBridgeError, ensure_ce_bridge_ready
+from ..integration.ce_supervisor import CEBridgeError, ensure_ready
 
 
 logger = logging.getLogger(__name__)
@@ -217,7 +217,7 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
     auto_link_enabled = bool(bridge_cfg.get('enabled')) if isinstance(bridge_cfg, dict) else False
     if auto_link_enabled:
         try:
-            ensure_ce_bridge_ready()
+            ensure_ready()
         except CEBridgeError as exc:
             logger.debug('Complex Editor bridge unavailable before import auto-link: %s', exc)
             auto_link_enabled = False

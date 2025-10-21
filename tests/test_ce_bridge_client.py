@@ -54,7 +54,11 @@ def _fixed_settings(monkeypatch):
         "note_or_link": "",
     }
     monkeypatch.setattr(ce_bridge_client, "get_complex_editor_settings", lambda: settings)
-    monkeypatch.setattr(ce_bridge_client, "ensure_ce_bridge_ready", lambda: None)
+    monkeypatch.setattr(
+        ce_bridge_client,
+        "ensure_ready",
+        lambda *args, **kwargs: None,
+    )
     session = DummySession()
     monkeypatch.setattr(ce_bridge_transport, "get_session", lambda: session)
     monkeypatch.setattr(ce_bridge_transport, "is_preflight_recent", lambda max_age_s=5.0: True)
@@ -177,6 +181,7 @@ def test_request_includes_bearer(monkeypatch):
     ce_bridge_client.healthcheck()
     headers = session.last_call.get("headers") if session.last_call else {}
     assert headers and headers["Authorization"] == "Bearer token-123"
+    assert "X-Trace-Id" in headers and headers["X-Trace-Id"]
 
 
 def test_network_errors_raise(monkeypatch):
