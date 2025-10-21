@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -9,7 +10,7 @@ from requests import Response
 from requests import exceptions as req_exc
 
 from app.config import get_complex_editor_settings, get_viva_export_settings
-from app.integration.ce_bridge_manager import CEBridgeError, ensure_ce_bridge_ready
+from app.integration.ce_supervisor import CEBridgeError, ensure_ready
 from app.integration import ce_bridge_transport
 
 logger = logging.getLogger(__name__)
@@ -154,9 +155,11 @@ def _request(
     params: Optional[Dict[str, Any]] = None,
     json_body: Optional[Dict[str, Any]] = None,
     allow_conflict: bool = False,
+    trace_id: Optional[str] = None,
 ) -> Response:
+    active_trace = (trace_id or "").strip() or uuid.uuid4().hex
     try:
-        ensure_ce_bridge_ready()
+        ensure_ready(trace_id=active_trace)
     except CEBridgeError as exc:
         raise CENetworkError(str(exc)) from exc
     base_url, token, timeout = _resolve_bridge_config()
@@ -167,11 +170,15 @@ def _request(
                 base_url,
                 token,
                 request_timeout_s=float(timeout),
+                trace_id=active_trace,
             )
         except CEBridgeError as exc:
             raise CENetworkError(str(exc)) from exc
 
-    headers: Dict[str, str] = ce_bridge_transport.build_headers(token)
+    headers: Dict[str, str] = ce_bridge_transport.build_headers(
+        token,
+        trace_id=active_trace,
+    )
     session = ce_bridge_transport.get_session()
 
     url = urljoin(base_url.rstrip("/") + "/", endpoint.lstrip("/"))
@@ -235,7 +242,7 @@ def _json_from_response(response: Response) -> Any:
 
 def healthcheck() -> Dict[str, Any]:
     """Return the health status from the Complex Editor bridge."""
-    response = _request("GET", "/health")
+    response = _request("GET", "/admin/health")
     payload = _json_from_response(response)
     if not isinstance(payload, dict):  # pragma: no cover - defensive
         raise CENetworkError("Unexpected payload from health endpoint")

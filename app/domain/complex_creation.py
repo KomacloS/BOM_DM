@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional, Sequence
 
 from app.integration import ce_bridge_client
-from app.integration.ce_bridge_manager import launch_ce_wizard
+from app.integration.ce_supervisor import launch_ce_wizard
 
 logger = logging.getLogger(__name__)
 
