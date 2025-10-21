@@ -313,6 +313,11 @@ class CESupervisor:
             self._owned_proc = None
 
     def _shutdown_owned(self) -> None:
+        try:
+            stop_ce_bridge_if_started(force=True)
+        except Exception:
+            pass
+
         if not self._owned_proc:
             return
         proc = self._owned_proc
