@@ -25,8 +25,13 @@ from sqlmodel import select
 from app.config import get_complex_editor_settings
 from app.domain import complex_creation, complex_linker
 from app.domain.complex_linker import CEWizardLaunchError, ComplexLink
-from app.integration import ce_bridge_client
+from app.integration import ce_bridge_client, ce_bridge_linker
 from app.integration.ce_bridge_client import CEAuthError, CENetworkError, CENotFound
+from app.integration.ce_bridge_linker import (
+    LinkerError,
+    LinkerFeatureError,
+    LinkerInputError,
+)
 from app.gui import state as app_state
 
 logger = logging.getLogger(__name__)
@@ -337,37 +342,116 @@ class ComplexPanel(QWidget):
         self._maybe_show_preflight_message()
         self._set_busy(True)
         try:
-            results = ce_bridge_client.search_complexes(query, limit=20)
-        except CEAuthError as exc:
-            self._show_error("Authentication", str(exc))
-            results = []
-        except CENetworkError as exc:
-            self._show_error("Network", str(exc))
-            results = []
+            decision = ce_bridge_linker.select_best_match(query, limit=50)
+        except LinkerInputError as exc:
+            self._show_error("Invalid part number", str(exc))
+            self.status_label.setText(str(exc))
+            self.results_list.clear()
+            self._update_buttons_state()
+            return
+        except LinkerFeatureError as exc:
+            self._show_error("Bridge", str(exc))
+            self.status_label.setText(str(exc))
+            self.results_list.clear()
+            self._update_buttons_state()
+            return
+        except LinkerError as exc:
+            self._show_error("Search failed", str(exc))
+            self.status_label.setText(str(exc))
+            self.results_list.clear()
+            self._update_buttons_state()
+            return
         except Exception as exc:  # pragma: no cover - defensive
             self._show_error("Search failed", str(exc))
-            results = []
+            self.status_label.setText(str(exc))
+            self.results_list.clear()
+            self._update_buttons_state()
+            return
         finally:
             self._set_busy(False)
+
         self.results_list.clear()
-        for row in results:
-            if not isinstance(row, dict):
-                continue
+        best_id = decision.best.id if decision.best else None
+        best_row_index: Optional[int] = None
+        for row in decision.results:
             pn = row.get("pn") or row.get("part_number") or ""
-            ce_id = row.get("id") or row.get("ce_id") or "?"
-            aliases = ", ".join(a for a in (row.get("aliases") or []) if isinstance(a, str))
+            ce_id = str(row.get("id") or row.get("ce_id") or row.get("comp_id") or "?")
+            aliases = ", ".join(
+                a.strip()
+                for a in (row.get("aliases") or [])
+                if isinstance(a, str) and a.strip()
+            )
             db_path = row.get("db_path") or row.get("ce_db_uri") or ""
+            match_kind = str(row.get("match_kind") or "").strip()
+            reason = str(row.get("reason") or "").strip()
+            analysis = row.get("analysis") if isinstance(row.get("analysis"), dict) else {}
+            normalized_input = str(
+                analysis.get("normalized_input")
+                or row.get("normalized_input")
+                or ""
+            ).strip()
+            normalized_targets = [
+                t.strip()
+                for t in analysis.get("normalized_targets") or []
+                if isinstance(t, str) and t.strip()
+            ]
+            if not normalized_targets:
+                normalized_targets = [
+                    t.strip()
+                    for t in row.get("normalized_targets") or []
+                    if isinstance(t, str) and t.strip()
+                ]
+
             text_parts = [f"{pn}".strip(), f"(ID: {ce_id})"]
             if aliases:
                 text_parts.append(f"aliases: {aliases}")
             if db_path:
                 text_parts.append(f"db: {db_path}")
+            if match_kind:
+                text_parts.append(f"match: {match_kind}")
+            if reason:
+                text_parts.append(reason)
+            if normalized_input:
+                text_parts.append(f"norm in: {normalized_input}")
+            if normalized_targets:
+                text_parts.append(
+                    "norm targets: " + ", ".join(normalized_targets[:5])
+                    + ("…" if len(normalized_targets) > 5 else "")
+                )
+
             item = QListWidgetItem(" | ".join(text_parts), self.results_list)
             item.setData(Qt.ItemDataRole.UserRole, row)
-        if self.results_list.count():
+            if best_id and ce_id == best_id and best_row_index is None:
+                best_row_index = self.results_list.count() - 1
+
+        if best_row_index is not None:
+            self.results_list.setCurrentRow(best_row_index)
+        elif self.results_list.count():
             self.results_list.setCurrentRow(0)
+
         self._update_buttons_state()
-        self.status_label.setText(f"Found {self.results_list.count()} result(s).")
+
+        status_parts: list[str] = []
+        count = self.results_list.count()
+        status_parts.append(f"Found {count} result(s)")
+        status_parts.append(f"Trace: {decision.trace_id}")
+        if decision.needs_review:
+            status_parts.append("needs review: multiple matches share rank")
+        if decision.best:
+            best = decision.best
+            summary = f"Best: {best.pn or best.id} [{best.match_kind}]"
+            if best.reason:
+                summary += f" – {best.reason}"
+            status_parts.append(summary)
+            if best.normalized_input:
+                status_parts.append(f"normalized input: {best.normalized_input}")
+            if best.normalized_targets:
+                status_parts.append(
+                    "targets: "
+                    + ", ".join(best.normalized_targets[:5])
+                    + ("…" if len(best.normalized_targets) > 5 else "")
+                )
+        self.status_label.setText(" | ".join(status_parts))
 
     def _selected_result(self) -> Optional[Dict[str, Any]]:
         item = self.results_list.currentItem()

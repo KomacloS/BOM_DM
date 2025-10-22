@@ -8,10 +8,10 @@ from app.domain import complex_linker
 from app.domain.complex_creation import WizardLaunchResult
 from app.domain.complex_linker import CEWizardLaunchError, ComplexLink
 from app.integration.ce_bridge_client import (
-    CENetworkError,
     CEUserCancelled,
     CEWizardUnavailable,
 )
+from app.integration.ce_bridge_linker import LinkCandidate, LinkerDecision, LinkerError
 from app.integration.ce_supervisor import CEBridgeError
 from app.models import Part, PartTestAssignment, TestMethod
 
@@ -295,13 +295,27 @@ def test_create_complex_cancelled(monkeypatch, sqlite_engine):
 def test_auto_link_by_pn_success_and_network(monkeypatch):
     attached = []
 
+    decision = LinkerDecision(
+        query="PN-123",
+        trace_id="trace-1",
+        results=[],
+        best=LinkCandidate(
+            id="ce-1",
+            pn="pn-123",
+            aliases=["alt-1"],
+            match_kind="exact_pn",
+            reason="",
+            normalized_input="pn-123",
+            normalized_targets=["pn-123"],
+            raw={"id": "ce-1"},
+        ),
+        needs_review=False,
+    )
+
     monkeypatch.setattr(
-        complex_linker.ce_bridge_client,
-        "search_complexes",
-        lambda pn, limit=10: [
-            {"id": "ce-1", "pn": "pn-123", "aliases": ["alt-1"]},
-            {"id": "ce-2", "pn": "other", "aliases": []},
-        ],
+        complex_linker.ce_bridge_linker,
+        "select_best_match",
+        lambda pn, limit=10: decision,
     )
     monkeypatch.setattr(
         complex_linker,
@@ -314,10 +328,45 @@ def test_auto_link_by_pn_success_and_network(monkeypatch):
     assert attached == [(11, "ce-1")]
 
     monkeypatch.setattr(
-        complex_linker.ce_bridge_client,
-        "search_complexes",
-        lambda pn, limit=10: (_ for _ in ()).throw(CENetworkError("offline")),
+        complex_linker.ce_bridge_linker,
+        "select_best_match",
+        lambda pn, limit=10: (_ for _ in ()).throw(LinkerError("offline")),
     )
     attached.clear()
+    assert complex_linker.auto_link_by_pn(11, "PN-123") is False
+    assert attached == []
+
+
+def test_auto_link_by_pn_skips_review_needed(monkeypatch):
+    attached = []
+
+    decision = LinkerDecision(
+        query="PN-123",
+        trace_id="trace-2",
+        results=[],
+        best=LinkCandidate(
+            id="ce-1",
+            pn="pn-123",
+            aliases=["alt-1"],
+            match_kind="exact_pn",
+            reason="",
+            normalized_input="pn-123",
+            normalized_targets=["pn-123"],
+            raw={"id": "ce-1"},
+        ),
+        needs_review=True,
+    )
+
+    monkeypatch.setattr(
+        complex_linker.ce_bridge_linker,
+        "select_best_match",
+        lambda pn, limit=10: decision,
+    )
+    monkeypatch.setattr(
+        complex_linker,
+        "attach_existing_complex",
+        lambda part_id, ce_id: attached.append((part_id, ce_id)),
+    )
+
     assert complex_linker.auto_link_by_pn(11, "PN-123") is False
     assert attached == []

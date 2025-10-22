@@ -10,14 +10,14 @@ experience.
 All bridge interactions flow through four modules:
 
 - `app/integration/ce_supervisor.py` – starts and stops the bridge, polls
-  `/admin/health`, and owns the preflight and diagnostics surfaces.
+  `/health`, and owns the preflight and diagnostics surfaces.
 - `app/integration/ce_bridge_client.py` – constructs CE API calls after the
   supervisor ensures readiness. `resolve_bridge_connection()` normalises the
   base URL, bearer token, and timeouts, while `coerce_comp_id()` harmonises
   Complex IDs.
 - `app/integration/ce_bridge_transport.py` – provides the shared
   proxy-bypassing `requests.Session`, the header builder, and the
-  `/admin/health` polling logic used during preflight.
+  `/health` polling logic used during preflight.
 - `app/services/bom_to_ce_export.py` – implements the BOM→CE export workflow,
   including trace propagation and report handling.
 
@@ -79,18 +79,18 @@ update `[complex_editor.bridge].base_url`. Confirm that the port is unused with
 
 ## Headless gating and health polling
 
-The supervisor always interrogates `GET /admin/health`. The JSON payload exposes
+The supervisor always interrogates `GET /health`. The JSON payload exposes
 `ready`, `headless`, `allow_headless`, and optional `trace_id` fields. The flow:
 
-1. Call `/admin/health` using the shared session and `Authorization: Bearer`
-   header.
+1. Call `/health` using the shared session and `Authorization: Bearer` header.
 2. If `ready == true`, record the payload and return.
 3. If `headless == true` and `allow_headless == false`, the supervisor will
    launch the UI executable and continue polling.
 4. Any other non-ready payload is surfaced verbatim in the eventual
    `CEBridgeError` message.
 
-Legacy `/state`, `/selftest`, and `/health` endpoints are no longer used.
+The legacy `/admin/health` probe was replaced by `/health`; `/state` and
+`/selftest` remain available for feature discovery and exporter diagnostics.
 
 ## Launch contract
 
@@ -130,9 +130,9 @@ spawned. User-launched bridges are untouched.
 ### Settings ▸ “Test CE Bridge”
 
 `app/gui/dialogs/settings_dialog.py` defers to `ce_supervisor.ensure_ready()`.
-After readiness succeeds the dialog performs a single `GET /admin/health` using
+After readiness succeeds the dialog performs a single `GET /health` using
 `ce_bridge_transport.build_headers()` and displays the latest payload plus the
-request trace ID. This replaces the previous `/health` probe.
+request trace ID. This replaces the previous `/admin/health` probe.
 
 ### BOM→VIVA export
 
@@ -165,7 +165,7 @@ A typical workflow requires no manual intervention:
 
 ### “Exports disabled in headless mode”
 
-The `/admin/health` payload reported `headless: true` with
+The `/health` payload reported `headless: true` with
 `allow_headless: false`. The supervisor automatically starts the CE UI and
 retries; if CE still refuses headless mode, configure the environment variable
 `CE_ALLOW_HEADLESS_EXPORTS=1` (if your CE build permits) or keep the UI running
@@ -187,7 +187,7 @@ You can manually test readiness with:
 ```
 curl -H "Authorization: Bearer <token>" \
      -H "X-Trace-Id: manual-check" \
-     <base_url>/admin/health
+     <base_url>/health
 ```
 
 ### “Outdir unwritable” / “Template missing”
@@ -208,4 +208,4 @@ matches the GUI’s trace display.
 
 `tests/test_ce_supervisor.py` exercises the supervisor’s readiness flow, bridge
 spawning, fallback path, shutdown behaviour, and wizard launcher. It verifies
-that `/admin/health` is the only health endpoint used during tests.
+that `/health` is the only health endpoint used during tests.

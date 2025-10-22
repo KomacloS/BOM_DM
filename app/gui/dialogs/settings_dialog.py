@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import shutil
 import uuid
 import sys
@@ -31,6 +32,8 @@ from sqlalchemy.engine import make_url
 from ... import config
 from ...ai_agents import apply_env_from_agents
 from ...database import ensure_schema
+from ...integration import ce_bridge_linker
+from ...integration.ce_bridge_linker import LinkerError, LinkerFeatureError
 
 
 class SettingsDialog(QDialog):
@@ -151,7 +154,14 @@ class SettingsDialog(QDialog):
 
         self.ce_test_button = QPushButton("Test Bridge")
         self.ce_test_button.clicked.connect(self._test_ce_bridge)
-        ce_form.addRow("", self.ce_test_button)
+        self.ce_norm_button = QPushButton("Normalization Rules…")
+        self.ce_norm_button.clicked.connect(self._show_normalization_rules)
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.ce_test_button)
+        button_row.addWidget(self.ce_norm_button)
+        button_row.addStretch(1)
+        ce_form.addRow("", button_row)
 
         ce_group.setLayout(ce_form)
         layout.addWidget(ce_group)
@@ -367,6 +377,65 @@ class SettingsDialog(QDialog):
             "Complex Editor",
             "Bridge OK!\n" + "\n".join(info_lines),
         )
+
+    def _show_normalization_rules(self) -> None:
+        try:
+            payload = ce_bridge_linker.fetch_normalization_info()
+        except LinkerFeatureError as exc:
+            QMessageBox.warning(self, "Complex Editor", str(exc))
+            return
+        except LinkerError as exc:
+            QMessageBox.warning(self, "Complex Editor", str(exc))
+            return
+        except Exception as exc:  # pragma: no cover - defensive
+            QMessageBox.warning(
+                self,
+                "Complex Editor",
+                f"Failed to load normalization rules: {exc}",
+            )
+            return
+
+        if not isinstance(payload, dict):
+            QMessageBox.information(
+                self,
+                "Complex Editor",
+                "Normalization rules are unavailable.",
+            )
+            return
+
+        rules_version = (
+            payload.get("rules_version")
+            or payload.get("normalization_rules_version")
+            or "<unknown>"
+        )
+        trace_id = payload.get("trace_id") or "<unknown>"
+
+        def _format_section(value: object) -> str:
+            if isinstance(value, (dict, list)):
+                try:
+                    return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
+                except TypeError:
+                    return str(value)
+            return str(value)
+
+        sections: list[str] = []
+        for key in ("case", "remove_chars", "ignore_suffixes"):
+            if key in payload:
+                sections.append(f"{key}:\n{_format_section(payload.get(key))}")
+
+        text_lines = [f"Rules version: {rules_version}", f"Trace: {trace_id}"]
+        if sections:
+            text_lines.append("")
+            text_lines.extend(sections)
+
+        message = QMessageBox(
+            QMessageBox.Icon.Information,
+            "Normalization Rules",
+            "\n".join(text_lines),
+            parent=self,
+        )
+        message.addButton(QMessageBox.StandardButton.Ok)
+        message.exec()
 
     def _diagnostics_text_from_exception(self, exc: Exception) -> str:
         diagnostics = getattr(exc, "diagnostics", None)

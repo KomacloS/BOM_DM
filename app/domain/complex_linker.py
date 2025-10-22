@@ -10,11 +10,15 @@ from sqlmodel import Field, SQLModel, Session, select
 
 from app import config, database
 from app.domain import complex_creation
-from app.integration import ce_bridge_client
+from app.integration import ce_bridge_client, ce_bridge_linker
 from app.integration.ce_bridge_client import (
-    CENetworkError,
     CEUserCancelled,
     CEWizardUnavailable,
+)
+from app.integration.ce_bridge_linker import (
+    LinkerError,
+    LinkerFeatureError,
+    LinkerInputError,
 )
 from app.integration.ce_supervisor import CEBridgeError
 from app.models import PartTestAssignment, TestMethod
@@ -104,7 +108,7 @@ class CreateComplexOutcome:
     polling_enabled: bool = False
 
 
-class CEWizardLaunchError(CENetworkError):
+class CEWizardLaunchError(ce_bridge_client.CENetworkError):
     """Raised when the Complex Editor GUI wizard cannot be launched."""
 
     def __init__(self, message: str, *, fix_in_settings: bool = False) -> None:
@@ -191,7 +195,7 @@ def _persist_link(part_id: int, ce_id: str) -> None:
 def _refresh_link_snapshot(part_id: int, ce_id: str) -> None:
     try:
         attach_existing_complex(part_id, ce_id)
-    except CENetworkError as exc:
+    except ce_bridge_client.CENetworkError as exc:
         logger.warning(
             "Failed to refresh Complex %s after creation: %s",
             ce_id,
@@ -235,13 +239,17 @@ def create_and_attach_complex(
         return _launch_wizard_flow(part_id, pn, alias_list)
 
     if not isinstance(payload, dict):  # pragma: no cover - defensive
-        raise CENetworkError("Complex Editor returned an unexpected response for create_complex")
+        raise ce_bridge_client.CENetworkError(
+            "Complex Editor returned an unexpected response for create_complex"
+        )
 
     created = payload.get("id")
     try:
         created_id = int(created)
     except (TypeError, ValueError):
-        raise CENetworkError("Complex Editor did not return a valid complex ID") from None
+        raise ce_bridge_client.CENetworkError(
+            "Complex Editor did not return a valid complex ID"
+        ) from None
 
     ce_id = str(created_id)
     _persist_link(part_id, ce_id)
@@ -267,21 +275,39 @@ def create_and_attach_complex(
 
 
 def auto_link_by_pn(part_id: int, pn: str, limit: int = 10) -> bool:
-    """If exactly one exact match by PN or alias from CE, attach and return True; else False."""
+    """Attempt to auto-link a part using the CE Bridge search analysis."""
+
     target = (pn or "").strip()
     if not target:
         return False
+
     try:
-        matches = ce_bridge_client.search_complexes(pn, limit=limit)
-    except CENetworkError:
+        decision = ce_bridge_linker.select_best_match(target, limit=limit)
+    except (LinkerInputError, LinkerFeatureError):
+        return False
+    except LinkerError:
         logger.info("Complex Editor bridge unavailable during auto-link for part %s", part_id)
         return False
-    chosen = complex_creation.select_exact_match(pn, matches)
-    if not chosen:
+
+    candidate = decision.best
+    if candidate is None:
         return False
-    ce_id = chosen.get("id") or chosen.get("ce_id")
-    if not ce_id:
+    if decision.needs_review:
+        logger.info(
+            "Auto-link skipped for part %s due to ambiguous matches (trace=%s)",
+            part_id,
+            decision.trace_id,
+        )
         return False
-    attach_existing_complex(part_id, str(ce_id))
-    logger.info("Auto-linked Complex %s to part %s by PN '%s'", ce_id, part_id, pn)
+    if candidate.match_kind not in {"exact_pn", "exact_alias"}:
+        return False
+
+    attach_existing_complex(part_id, str(candidate.id))
+    logger.info(
+        "Auto-linked Complex %s to part %s by PN '%s' (trace=%s)",
+        candidate.id,
+        part_id,
+        pn,
+        decision.trace_id,
+    )
     return True
