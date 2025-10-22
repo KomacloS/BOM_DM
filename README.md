@@ -147,12 +147,26 @@ debug actions.
 
 The GUI's Complex Editor integrations perform a preflight readiness handshake
 before any other API calls. The handshake uses a shared proxy-bypassing HTTP
-session, always attaches the configured bearer token, and polls `/admin/health`
+session, always attaches the configured bearer token, and polls `/health`
 until the bridge reports `ready == true`. If the bridge takes too long, the
 helper surfaces the latest reason reported by that endpoint.
 
 See [docs/ce_activation.md](docs/ce_activation.md) for a detailed narrative of
 the activation flow and its integration points across the application.
+
+### CE Bridge reference
+
+* API specifics: [docs/ce_bridge_api.md](docs/ce_bridge_api.md)
+* Integration walkthrough: [docs/bom_db_ce_integration.md](docs/bom_db_ce_integration.md)
+
+Quickstart for the CE Ops-Kit gates shipped with BOM_DB:
+
+```bash
+# run CE ops gate from BOM_DB checkout
+cd comm/ce_ops_kit
+source ./ce_env
+./ce_gate.sh
+```
 
 ### BOM to VIVA ➜ Complex Editor export
 
