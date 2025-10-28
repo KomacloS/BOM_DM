@@ -5,6 +5,8 @@ from PyQt6.QtGui import QStandardItem
 import pytest
 from app.gui.bom_editor_pane import BOMEditorPane, PartIdRole
 
+pytestmark = pytest.mark.gui
+
 
 class DummyPane(BOMEditorPane):
     def __init__(self):

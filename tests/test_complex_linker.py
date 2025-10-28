@@ -15,8 +15,8 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app.domain import complex_linker
 from app.domain.complex_linker import ComplexLink
 from app.integration import ce_bridge_client
-from app.integration import ce_bridge_client
 from app.integration.ce_bridge_client import CENetworkError, CENotFound, CEUserCancelled
+from app.integration.ce_bridge_linker import LinkCandidate, LinkerDecision, LinkerError
 
 
 @pytest.fixture
@@ -44,6 +44,61 @@ def _capture_updates(monkeypatch, first_payload, second_payload=None):
         complex_linker.ce_bridge_client,
         "get_complex",
         lambda _ce_id: next(payloads),
+    )
+
+
+def _make_candidate(
+    ce_id: str,
+    pn: str,
+    *,
+    match_kind: str = "exact_pn",
+    reason: str = "",
+    aliases: list[str] | None = None,
+    db_path: str | None = None,
+    normalized_input: str | None = None,
+    normalized_targets: list[str] | None = None,
+) -> LinkCandidate:
+    raw = {
+        "id": ce_id,
+        "pn": pn,
+        "aliases": list(aliases or []),
+        "db_path": db_path,
+        "match_kind": match_kind,
+        "reason": reason,
+    }
+    return LinkCandidate(
+        id=ce_id,
+        pn=pn,
+        aliases=list(aliases or []),
+        db_path=db_path,
+        match_kind=match_kind,
+        reason=reason,
+        normalized_input=normalized_input,
+        normalized_targets=list(normalized_targets or []),
+        analysis={},
+        raw=raw,
+        rank={"exact_pn": 0, "exact_alias": 1}.get(match_kind, 99),
+    )
+
+
+def _decision(
+    query: str,
+    candidates: list[LinkCandidate],
+    *,
+    best: LinkCandidate | None = None,
+    needs_review: bool = False,
+    trace_id: str = "trace-id",
+) -> LinkerDecision:
+    if best is None and candidates:
+        best = candidates[0]
+    return LinkerDecision(
+        query=query,
+        trace_id=trace_id,
+        best=best,
+        results=candidates,
+        needs_review=needs_review,
+        normalized_input=best.normalized_input if best else None,
+        analysis={},
     )
 
 
@@ -128,31 +183,30 @@ def test_create_and_attach_without_id_triggers_selection(monkeypatch):
         "create_complex",
         lambda pn, aliases=None, status_callback=None: {},
     )
-    matches = [
-        {"id": "ce-1", "pn": "PN-123", "aliases": []},
-        {"id": "ce-2", "pn": "PN-123", "aliases": []},
+    candidates = [
+        _make_candidate("ce-1", "PN-123"),
+        _make_candidate("ce-2", "PN-123"),
     ]
-    monkeypatch.setattr(
-        complex_linker.ce_bridge_client,
-        "search_complexes",
-        lambda pn, limit=10: matches,
-    )
+    decision = _decision("PN-123", candidates, best=None, needs_review=True)
+    monkeypatch.setattr(complex_linker, "select_best_match", lambda pn, limit=10: decision)
     with pytest.raises(complex_linker.CESelectionRequired) as exc:
         complex_linker.create_and_attach_complex(1, "PN-123")
-    assert exc.value.matches == matches
+    assert exc.value.matches == decision.results_data
 
 
 def test_auto_link_by_pn_success_and_network(monkeypatch):
     attached = []
 
-    monkeypatch.setattr(
-        complex_linker.ce_bridge_client,
-        "search_complexes",
-        lambda pn, limit=10: [
-            {"id": "ce-1", "pn": "pn-123", "aliases": ["alt-1"]},
-            {"id": "ce-2", "pn": "other", "aliases": []},
-        ],
+    best_candidate = _make_candidate(
+        "ce-1",
+        "pn-123",
+        aliases=["alt-1"],
+        match_kind="exact_pn",
+        normalized_input="pn-123",
     )
+    other_candidate = _make_candidate("ce-2", "other", match_kind="partial")
+    decision = _decision("PN-123", [best_candidate, other_candidate], best=best_candidate, needs_review=False, trace_id="trace-123")
+    monkeypatch.setattr(complex_linker, "select_best_match", lambda pn, limit=10: decision)
     monkeypatch.setattr(
         complex_linker,
         "attach_existing_complex",
@@ -164,13 +218,22 @@ def test_auto_link_by_pn_success_and_network(monkeypatch):
     assert attached == [(11, "ce-1")]
 
     monkeypatch.setattr(
-        complex_linker.ce_bridge_client,
-        "search_complexes",
-        lambda pn, limit=10: (_ for _ in ()).throw(CENetworkError("offline")),
+        complex_linker,
+        "select_best_match",
+        lambda pn, limit=10: (_ for _ in ()).throw(LinkerError("offline")),
     )
     attached.clear()
     assert complex_linker.auto_link_by_pn(11, "PN-123") is False
     assert attached == []
+
+
+def test_auto_link_by_pn_skips_when_ambiguous(monkeypatch):
+    candidate_one = _make_candidate("ce-1", "pn-123", match_kind="exact_pn")
+    candidate_two = _make_candidate("ce-2", "pn-123", match_kind="exact_pn")
+    decision = _decision("PN-123", [candidate_one, candidate_two], best=candidate_one, needs_review=True, trace_id="trace-amb")
+    monkeypatch.setattr(complex_linker, "select_best_match", lambda pn, limit=10: decision)
+
+    assert complex_linker.auto_link_by_pn(42, "PN-123") is False
 
 
 def test_unlink_existing_complex(monkeypatch, sqlite_engine):
@@ -288,11 +351,9 @@ def test_open_in_ce_uses_existing_link(monkeypatch):
 
 
 def test_open_in_ce_with_selection(monkeypatch):
-    monkeypatch.setattr(
-        complex_linker,
-        "search_complexes",
-        lambda pn, limit=20: [{"id": "ce-2", "pn": pn}],
-    )
+    candidate = _make_candidate("ce-2", "PN2", match_kind="exact_pn")
+    decision = _decision("PN2", [candidate], best=candidate, needs_review=False)
+    monkeypatch.setattr(complex_linker, "select_best_match", lambda pn, limit=20: decision)
     open_calls = []
     monkeypatch.setattr(
         complex_linker,
@@ -310,11 +371,9 @@ def test_open_in_ce_with_selection(monkeypatch):
 
 
 def test_open_in_ce_attach_first(monkeypatch):
-    monkeypatch.setattr(
-        complex_linker,
-        "search_complexes",
-        lambda pn, limit=20: [{"id": "ce-3", "pn": pn, "aliases": []}],
-    )
+    candidate = _make_candidate("ce-3", "PN3", aliases=[], match_kind="exact_pn")
+    decision = _decision("PN3", [candidate], best=candidate, needs_review=False)
+    monkeypatch.setattr(complex_linker, "select_best_match", lambda pn, limit=20: decision)
     open_calls = []
     monkeypatch.setattr(
         complex_linker,
@@ -357,10 +416,8 @@ def test_open_in_ce_busy_wrap(monkeypatch):
 
 
 def test_open_in_ce_cancel(monkeypatch):
-    monkeypatch.setattr(
-        complex_linker,
-        "search_complexes",
-        lambda pn, limit=20: [{"id": "ce-6", "pn": pn}],
-    )
+    candidate = _make_candidate("ce-6", "PN6", match_kind="exact_pn")
+    decision = _decision("PN6", [candidate], best=candidate, needs_review=False)
+    monkeypatch.setattr(complex_linker, "select_best_match", lambda pn, limit=20: decision)
     with pytest.raises(CEUserCancelled):
         complex_linker.open_in_ce({"pn": "PN6"}, chooser=lambda items: (None, False))

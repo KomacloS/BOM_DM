@@ -197,7 +197,7 @@ def test_export_bom_to_ce_bridge_partial_success(tmp_path, monkeypatch):
     assert any("unlinked_data_in_CE" in row for row in report_rows[1:])
 
     assert http_session.calls[0][0] == "GET"
-    assert http_session.calls[0][1].endswith("/admin/health")
+    assert http_session.calls[0][1].endswith("/health")
     assert http_session.calls[1][0] == "POST"
     assert http_session.calls[1][1].endswith("/exports/mdb")
 
@@ -231,7 +231,7 @@ def test_export_bom_to_ce_bridge_health_not_ready(tmp_path, monkeypatch):
     assert len(http_session.calls) == 1
     method, url, kwargs = http_session.calls[0]
     assert method == "GET"
-    assert url == "http://bridge.local/admin/health"
+    assert url == "http://bridge.local/health"
 
 
 def test_export_bom_to_ce_bridge_network_error(tmp_path, monkeypatch):
@@ -294,7 +294,7 @@ def test_export_bom_to_ce_bridge_no_resolved_ids(tmp_path, monkeypatch):
     assert len(http_session.calls) == 1
     method, url, kwargs = http_session.calls[0]
     assert method == "GET"
-    assert url == "http://bridge.local/admin/health"
+    assert url == "http://bridge.local/health"
 
 
 class _SessionStub:

@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 import pytest
 
+pytestmark = pytest.mark.gui
+
 TMP_SETTINGS = Path("tests/_tmp_settings.toml")
 if not TMP_SETTINGS.exists():
     TMP_SETTINGS.write_text('[database]\nurl="sqlite:///:memory:"\n')
@@ -16,6 +18,7 @@ from app.gui.widgets.complex_panel import ComplexPanel
 
 from app.domain import complex_linker
 from app.domain.complex_linker import OpenInCEResult
+from app.integration.ce_bridge_linker import LinkCandidate, LinkerDecision
 
 def _settings_stub():
     return {
@@ -28,6 +31,61 @@ def _settings_stub():
         },
         "note_or_link": "",
     }
+
+
+def _make_candidate(
+    ce_id: str,
+    pn: str,
+    *,
+    aliases: list[str] | None = None,
+    match_kind: str = "exact_pn",
+    reason: str = "",
+    db_path: str | None = None,
+    normalized_input: str | None = None,
+    normalized_targets: list[str] | None = None,
+) -> LinkCandidate:
+    raw = {
+        "id": ce_id,
+        "pn": pn,
+        "aliases": list(aliases or []),
+        "db_path": db_path,
+        "match_kind": match_kind,
+        "reason": reason,
+    }
+    return LinkCandidate(
+        id=ce_id,
+        pn=pn,
+        aliases=list(aliases or []),
+        db_path=db_path,
+        match_kind=match_kind,
+        reason=reason,
+        normalized_input=normalized_input,
+        normalized_targets=list(normalized_targets or []),
+        analysis={},
+        raw=raw,
+        rank={"exact_pn": 0, "exact_alias": 1}.get(match_kind, 99),
+    )
+
+
+def _make_decision(
+    query: str,
+    candidates: list[LinkCandidate],
+    *,
+    best: LinkCandidate | None = None,
+    needs_review: bool = False,
+    trace_id: str = "trace-ui",
+) -> LinkerDecision:
+    if best is None and candidates:
+        best = candidates[0]
+    return LinkerDecision(
+        query=query,
+        trace_id=trace_id,
+        best=best,
+        results=candidates,
+        needs_review=needs_review,
+        normalized_input=best.normalized_input if best else None,
+        analysis={},
+    )
 
 
 @pytest.fixture(scope="module")
@@ -75,12 +133,16 @@ def test_complex_panel_search_and_attach(monkeypatch, qapp):
         "app.domain.complex_linker.check_link_stale",
         lambda *args, **kwargs: (False, ""),
     )
-    monkeypatch.setattr(
-        "app.integration.ce_bridge_client.search_complexes",
-        lambda pn, limit=20: [
-            {"id": "ce-1", "pn": pn, "aliases": ["alt"], "db_path": "C:/linked.mdb"}
-        ],
+    candidate = _make_candidate(
+        "ce-1",
+        "PN123",
+        aliases=["alt"],
+        db_path="C:/linked.mdb",
+        match_kind="exact_pn",
+        normalized_input="pn123",
     )
+    decision = _make_decision("PN123", [candidate], best=candidate, needs_review=False)
+    monkeypatch.setattr("app.integration.ce_bridge_linker.select_best_match", lambda pn, limit=50: decision)
 
     panel = ComplexPanel()
     panel.show()
@@ -236,13 +298,17 @@ def test_complex_panel_add_and_link_flow(monkeypatch, qapp):
         "app.domain.complex_linker.attach_as_alias_and_link",
         fake_add_and_link,
     )
-
-    monkeypatch.setattr(
-        "app.integration.ce_bridge_client.search_complexes",
-        lambda pn, limit=20: [
-            {"id": "ce-1", "pn": pn, "aliases": [pn], "db_path": "C:/linked.mdb"}
-        ],
+    candidate = _make_candidate(
+        "ce-1",
+        "PN123",
+        aliases=["PN123"],
+        db_path="C:/linked.mdb",
+        match_kind="exact_alias",
+        normalized_input="pn123",
+        normalized_targets=["pn123"],
     )
+    decision = _make_decision("PN123", [candidate], best=candidate, needs_review=False)
+    monkeypatch.setattr("app.integration.ce_bridge_linker.select_best_match", lambda pn, limit=50: decision)
 
     panel = ComplexPanel()
     panel.show()
@@ -297,12 +363,17 @@ def test_complex_panel_alias_prompt(monkeypatch, qapp):
         fake_add_and_link,
     )
 
-    monkeypatch.setattr(
-        "app.integration.ce_bridge_client.search_complexes",
-        lambda pn, limit=20: [
-            {"id": "ce-2", "pn": "OTHER", "aliases": [pn], "db_path": "C:/alias.mdb"}
-        ],
+    candidate = _make_candidate(
+        "ce-2",
+        "OTHER",
+        aliases=["PNALIAS"],
+        db_path="C:/alias.mdb",
+        match_kind="exact_alias",
+        normalized_input="pnalias",
+        normalized_targets=["pnalias"],
     )
+    decision = _make_decision("PNALIAS", [candidate], best=candidate, needs_review=False)
+    monkeypatch.setattr("app.integration.ce_bridge_linker.select_best_match", lambda pn, limit=50: decision)
 
     panel = ComplexPanel()
     panel.show()

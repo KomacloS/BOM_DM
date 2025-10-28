@@ -6,6 +6,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, List
 from urllib.parse import urljoin
 
 from PyQt6.QtWidgets import (
@@ -34,6 +35,7 @@ from ...integration import ce_bridge_client, ce_bridge_transport
 from ...integration.ce_bridge_client import CEAuthError, CENetworkError
 from ...integration.ce_bridge_diagnostics import CEBridgeDiagnostics
 from ...integration.ce_supervisor import get_last_ce_bridge_diagnostics, get_supervisor
+from ...integration.ce_bridge_linker import fetch_normalization_info, LinkerError, LinkerFeatureError
 
 
 class SettingsDialog(QDialog):
@@ -155,6 +157,10 @@ class SettingsDialog(QDialog):
         self.ce_test_button = QPushButton("Test Bridge")
         self.ce_test_button.clicked.connect(self._test_ce_bridge)
         ce_form.addRow("", self.ce_test_button)
+
+        self.ce_normalization_button = QPushButton("Normalization Rules...")
+        self.ce_normalization_button.clicked.connect(self._show_normalization_rules)
+        ce_form.addRow("", self.ce_normalization_button)
 
         ce_group.setLayout(ce_form)
         layout.addWidget(ce_group)
@@ -330,7 +336,7 @@ class SettingsDialog(QDialog):
         try:
             session = ce_bridge_transport.get_session(base_url)
             headers = ce_bridge_transport.build_headers(token, trace_id=trace_id)
-            health_url = urljoin(base_url.rstrip("/") + "/", "admin/health")
+            health_url = urljoin(base_url.rstrip("/") + "/", "health")
             try:
                 response = session.get(health_url, headers=headers, timeout=timeout)
             except Exception as exc:
@@ -404,6 +410,54 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "Complex Editor", message)
         else:
             QMessageBox.warning(self, "Complex Editor", message)
+
+    def _show_normalization_rules(self) -> None:
+        try:
+            info = fetch_normalization_info()
+        except LinkerFeatureError as exc:
+            QMessageBox.warning(self, "Normalization Rules", str(exc))
+            return
+        except LinkerError as exc:
+            QMessageBox.warning(self, "Normalization Rules", str(exc))
+            return
+
+        version = str(info.get("version") or info.get("rules_version") or "unknown")
+        trace_id = str(info.get("trace_id") or info.get("traceId") or "").strip()
+        sections = self._format_normalization_sections(info.get("rules"))
+        header_lines = [f"Version: {version}"]
+        if trace_id:
+            header_lines.append(f"Trace ID: {trace_id}")
+        header = "\n".join(header_lines)
+        body = "\n\n".join(sections) if sections else "No normalization rules available."
+        QMessageBox.information(self, "Normalization Rules", f"{header}\n\n{body}")
+
+    def _format_normalization_sections(self, raw_rules: Any) -> List[str]:
+        sections: List[str] = []
+        if isinstance(raw_rules, list):
+            for entry in raw_rules:
+                if isinstance(entry, dict):
+                    title = str(entry.get("title") or entry.get("name") or "Rules")
+                    section_body = self._format_normalization_lines(
+                        entry.get("rules") or entry.get("items") or entry.get("lines")
+                    )
+                    sections.append(f"{title}\n{section_body}".strip())
+                else:
+                    sections.append(str(entry))
+        elif isinstance(raw_rules, dict):
+            for key, value in raw_rules.items():
+                sections.append(f"{key}\n{self._format_normalization_lines(value)}".strip())
+        elif raw_rules:
+            sections.append(str(raw_rules))
+        return sections
+
+    def _format_normalization_lines(self, lines: Any) -> str:
+        if isinstance(lines, list):
+            formatted = [f" - {item}" for item in lines]
+            return "\n".join(formatted)
+        if isinstance(lines, dict):
+            formatted = [f" - {key}: {value}" for key, value in lines.items()]
+            return "\n".join(formatted)
+        return str(lines or "")
 
     def _build_bridge_diagnostics_fallback(self, exc: Exception) -> CEBridgeDiagnostics:
         diagnostics = CEBridgeDiagnostics()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Sequence
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -29,6 +29,13 @@ from app.domain import complex_linker
 from app.domain.complex_linker import AliasConflictError, CESelectionRequired, ComplexLink
 from app.integration import ce_bridge_client, ce_supervisor
 from app.integration.ce_bridge_client import CEAuthError, CENetworkError, CENotFound, CEUserCancelled
+from app.integration.ce_bridge_linker import (
+    LinkerDecision,
+    LinkerError,
+    LinkerFeatureError,
+    LinkerInputError,
+    select_best_match,
+)
 from app.gui import state as app_state
 from app.config import get_complex_editor_settings
 
@@ -49,6 +56,7 @@ class ComplexPanel(QWidget):
         self._link_status_reason: str = ""
         self._alias_prompt_ce_id: Optional[str] = None
         self._cached_results: list[dict[str, Any]] = []
+        self._last_decision: Optional[LinkerDecision] = None
         self._last_open_ce_id: Optional[str] = None
         self._last_open_time: float = 0.0
         self._ce_settings = get_complex_editor_settings()
@@ -277,18 +285,27 @@ class ComplexPanel(QWidget):
         dialog.resize(720, 480)
         dialog.exec()
 
-    def _format_result_summary(self, row: Dict[str, Any]) -> str:
+    def _format_result_summary(self, row: Dict[str, Any], *, highlight: bool = False) -> str:
         pn = str(row.get("pn") or row.get("part_number") or "").strip()
         ce_id = row.get("id") or row.get("ce_id") or "?"
-        aliases = ", ".join(
-            alias for alias in (row.get("aliases") or []) if isinstance(alias, str)
-        )
+        aliases = ", ".join(alias for alias in (row.get("aliases") or []) if isinstance(alias, str))
         db_path = row.get("db_path") or row.get("ce_db_uri") or ""
-        parts = [pn or "<unknown>", f"(ID: {ce_id})"]
+        match_kind = str(row.get("match_kind") or "").strip() or "unknown"
+        reason = str(row.get("reason") or "").strip()
+        normalized_input = str(row.get("normalized_input") or "").strip()
+        normalized_targets = row.get("normalized_targets") or []
+        prefix = "★ " if highlight else ""
+        parts = [f"{prefix}{pn or '<unknown>'}", f"(ID: {ce_id})", f"match: {match_kind}"]
+        if reason:
+            parts.append(reason)
         if aliases:
             parts.append(f"aliases: {aliases}")
         if db_path:
             parts.append(f"db: {db_path}")
+        if normalized_input:
+            parts.append(f"norm: {normalized_input}")
+        if isinstance(normalized_targets, Sequence) and normalized_targets:
+            parts.append(f"targets: {self._format_normalized_targets(normalized_targets)}")
         return " | ".join(parts)
 
     def _format_link_message(self, link: Dict[str, Any]) -> str:
@@ -398,31 +415,89 @@ class ComplexPanel(QWidget):
             return
         self._set_busy(True)
         try:
-            results = ce_bridge_client.search_complexes(query, limit=20)
+            decision = select_best_match(query, limit=50)
+        except LinkerInputError as exc:
+            message = str(exc) or "Invalid part number."
+            self._handle_search_failure("Invalid part number", message)
+            return
+        except LinkerFeatureError as exc:
+            message = str(exc) or "Complex Editor linker feature unavailable."
+            self._handle_search_failure("Bridge", message)
+            return
+        except LinkerError as exc:
+            self._handle_search_failure("Search failed", str(exc))
+            return
         except CEAuthError as exc:
-            self._show_error("Authentication", str(exc))
-            results = []
+            self._handle_search_failure("Authentication", str(exc))
+            return
         except CENetworkError as exc:
-            self._show_error("Network", str(exc))
-            results = []
+            self._handle_search_failure("Network", str(exc))
+            return
         except Exception as exc:
-            self._show_error("Search failed", str(exc))
-            results = []
+            self._handle_search_failure("Search failed", str(exc))
+            return
         finally:
             self._set_busy(False)
+        self._populate_search_results(decision)
+
+    def _handle_search_failure(self, title: str, message: str) -> None:
+        self._show_error(title, message)
         self.results_list.clear()
         self._cached_results = []
-        for row in results:
-            if not isinstance(row, dict):
-                continue
-            self._cached_results.append(row)
-            item = QListWidgetItem(self._format_result_summary(row), self.results_list)
-            item.setData(Qt.ItemDataRole.UserRole, row)
-        if self.results_list.count():
+        self._last_decision = None
+        self._maybe_show_alias_prompt(self._cached_results)
+        self._update_buttons_state()
+        self.status_label.setText(message)
+
+    def _populate_search_results(self, decision: LinkerDecision) -> None:
+        self._last_decision = decision
+        self.results_list.clear()
+        self._cached_results = []
+        best_id = decision.best.id if decision.best else None
+        preferred_item: Optional[QListWidgetItem] = None
+        for candidate in decision.results:
+            data = candidate.to_dict()
+            self._cached_results.append(data)
+            item = QListWidgetItem(
+                self._format_result_summary(data, highlight=best_id is not None and data.get("id") == best_id),
+                self.results_list,
+            )
+            item.setData(Qt.ItemDataRole.UserRole, data)
+            if best_id and data.get("id") == best_id:
+                preferred_item = item
+        if preferred_item is not None:
+            self.results_list.setCurrentItem(preferred_item)
+        elif self.results_list.count():
             self.results_list.setCurrentRow(0)
         self._maybe_show_alias_prompt(self._cached_results)
         self._update_buttons_state()
-        self.status_label.setText(f"Found {self.results_list.count()} result(s).")
+        self.status_label.setText(self._compose_status_message(decision))
+
+    def _compose_status_message(self, decision: LinkerDecision) -> str:
+        parts: list[str] = [f"{len(decision.results)} result(s)", f"trace {decision.trace_id}"]
+        if decision.needs_review:
+            parts.append("needs review")
+        best = decision.best
+        if best:
+            summary = f"best #{best.id} {best.pn}".strip()
+            if best.match_kind:
+                summary = f"{summary} [{best.match_kind}]"
+            if best.reason:
+                summary = f"{summary} - {best.reason}"
+            parts.append(summary)
+            if best.normalized_input:
+                parts.append(f"norm input: {best.normalized_input}")
+            if best.normalized_targets:
+                parts.append(f"targets: {self._format_normalized_targets(best.normalized_targets)}")
+        elif decision.normalized_input:
+            parts.append(f"norm input: {decision.normalized_input}")
+        return " | ".join(parts)
+
+    def _format_normalized_targets(self, targets: Sequence[str]) -> str:
+        values = [str(target) for target in targets if isinstance(target, str)]
+        if len(values) > 5:
+            return ", ".join(values[:5]) + ", …"
+        return ", ".join(values)
 
     def _selected_result(self) -> Optional[Dict[str, Any]]:
         item = self.results_list.currentItem()
@@ -594,6 +669,18 @@ class ComplexPanel(QWidget):
             self._set_busy(False)
             self.status_label.setText("Creation cancelled")
             return
+        except LinkerInputError as exc:
+            self._set_busy(False)
+            self._show_error("Invalid part number", str(exc))
+            return
+        except LinkerFeatureError as exc:
+            self._set_busy(False)
+            self._show_error("Bridge", str(exc))
+            return
+        except LinkerError as exc:
+            self._set_busy(False)
+            self._show_error("Create failed", str(exc))
+            return
         except CEAuthError as exc:
             self._set_busy(False)
             self._show_error("Authentication", str(exc))
@@ -662,6 +749,12 @@ class ComplexPanel(QWidget):
         except complex_linker.CEBusyEditorError:
             self.link_warning.setText("Complex Editor is busy; finish current dialog and try again.")
             self.link_warning.setVisible(True)
+        except LinkerInputError as exc:
+            self._show_error("Invalid part number", str(exc))
+        except LinkerFeatureError as exc:
+            self._show_error("Bridge", str(exc))
+        except LinkerError as exc:
+            self._show_error("Search failed", str(exc))
         except CEAuthError as exc:
             self._show_error("Authentication", str(exc))
         except CENetworkError as exc:

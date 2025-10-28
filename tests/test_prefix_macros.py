@@ -5,6 +5,8 @@ from PyQt6.QtWidgets import QApplication
 from app.gui.bom_editor_pane import BOMEditorPane
 from app.logic import prefix_macros
 
+pytestmark = pytest.mark.gui
+
 
 class DummyPane(BOMEditorPane):
     def __init__(self):

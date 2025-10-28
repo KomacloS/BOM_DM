@@ -15,7 +15,7 @@ invokes a synthetic CE export afterwards. The high‑level sequence is:
    `ce_bridge_client.resolve_bridge_connection()`.
 2. Obtain a shared `requests.Session` and build headers using
    `ce_bridge_transport.get_session()` / `build_headers()`.
-3. Perform a health probe (`GET /admin/health`) before attempting an export.
+3. Perform a health probe (`GET /health`) before attempting an export.
 4. Collect Complex IDs from BOM data, existing `ComplexLink` entries, and any
    optional PN→ID overrides.
 5. Submit the export (`POST /exports/mdb`) with a trace ID, output directory,
@@ -39,9 +39,9 @@ invokes a synthetic CE export afterwards. The high‑level sequence is:
 
 ## Health Check Prior to Export
 
-BOM_DB now gatekeeps exports by querying `/admin/health` first. When exports are blocked because the bridge is headless, the CE supervisor automatically launches the configured CE UI to flip `headless` off before continuing. If the bridge remains blocked the workflow exits early with a RETRY status and the GUI only shows the final summary dialog.
+BOM_DB now gatekeeps exports by querying `/health` first. When exports are blocked because the bridge is headless, the CE supervisor automatically launches the configured CE UI to flip `headless` off before continuing. If the bridge remains blocked the workflow exits early with a RETRY status and the GUI only shows the final summary dialog.
 
-Before exporting we call `GET /admin/health` with the same headers. The JSON
+Before exporting we call `GET /health` with the same headers. The JSON
 payload determines whether the bridge is ready:
 
 | Field            | Meaning                                              | Action in BOM_DB                                                       |

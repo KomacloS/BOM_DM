@@ -19,6 +19,7 @@ from ..models import Assembly, BOMItem, Part, PartType
 from ..config import DATASHEETS_DIR, get_complex_editor_settings
 from ..domain.complex_linker import auto_link_by_pn
 from ..integration.ce_bridge_client import CENetworkError
+from ..integration.ce_bridge_linker import LinkerError
 from ..integration.ce_supervisor import CEBridgeError, ensure_ce_bridge_ready
 
 
@@ -290,7 +291,7 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
         if auto_link_enabled and part.id is not None and part.id not in attempted_links:
             try:
                 auto_link_by_pn(part.id, part.part_number)
-            except CENetworkError:
+            except (CENetworkError, LinkerError):
                 logger.debug("Complex Editor bridge unavailable during import auto-link for %s", part.part_number)
             finally:
                 attempted_links.add(part.id)

@@ -102,7 +102,7 @@ def test_healthcheck_success(monkeypatch):
     assert len(session.calls) == 1
     call = session.calls[0]
     assert call[0] == "get"
-    assert call[1] == "http://bridge.local/admin/health"
+    assert call[1] == "http://bridge.local/health"
     headers = call[2]["headers"]
     assert headers["Authorization"] == "Bearer token-123"
     assert headers["X-Trace-Id"]

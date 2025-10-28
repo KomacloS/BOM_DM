@@ -438,6 +438,9 @@ def perform_viva_export(
             "resolved_from_pn": [],
         }
         _write_json_file(manifest_path, manifest_data)
+        root_manifest = export_base_dir / "viva_manifest.json"
+        if root_manifest != manifest_path:
+            _write_json_file(root_manifest, manifest_data)
         save_kwargs: Dict[str, str] = {"last_export_path": str(export_base_dir)}
         settings = get_viva_export_settings()
         if not settings.get("viva_export_base_dir"):
@@ -514,7 +517,9 @@ def perform_viva_export(
         save_kwargs["viva_export_base_dir"] = str(export_base_dir)
     save_viva_export_settings(**save_kwargs)
 
-    mdb_path: Optional[Path] = project_dir / mdb_name if export_ids_final else None
+    mdb_path: Optional[Path] = None
+    if manifest_data.get("export_path"):
+        mdb_path = project_dir / mdb_name
 
     return VivaExportResult(
         status=manifest_data["status"],
@@ -531,4 +536,5 @@ def perform_viva_export(
         ce_diagnostics_path=None,
         manifest=manifest_data,
     )
+
 

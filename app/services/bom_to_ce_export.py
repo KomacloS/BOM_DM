@@ -204,7 +204,7 @@ def export_bom_to_ce_bridge(
         }
 
     http_session = ce_bridge_transport.get_session(base_url)
-    health_url = urljoin(base_url.rstrip("/") + "/", "admin/health")
+    health_url = urljoin(base_url.rstrip("/") + "/", "health")
     health_headers = ce_bridge_transport.build_headers(token, trace)
     try:
         health_response = http_session.get(health_url, headers=health_headers, timeout=timeout)

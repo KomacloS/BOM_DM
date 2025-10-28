@@ -245,7 +245,7 @@ def _preflight(
     headers = ce_bridge_transport.build_headers(config.token, trace_id)
     state_url = _url(config.base_url, "state")
     selftest_url = _url(config.base_url, "selftest")
-    health_url = _url(config.base_url, "admin/health")
+    health_url = _url(config.base_url, "health")
 
     deadline = now + _handshake_budget(config.timeout)
     next_selftest = now
@@ -434,7 +434,7 @@ def _raise_server_error(
     session = ce_bridge_transport.get_session(config.base_url)
     probe_trace = _normalize_trace_id(None)
     headers = ce_bridge_transport.build_headers(config.token, probe_trace)
-    health_url = _url(config.base_url, "admin/health")
+    health_url = _url(config.base_url, "health")
     reason = _fetch_health_reason(session, health_url, headers, config.timeout)
     if not reason and state and isinstance(state, dict):
         state_reason = state.get("last_ready_error")
@@ -770,7 +770,7 @@ def healthcheck(trace_id: Optional[str] = None) -> Dict[str, Any]:
     session = ce_bridge_transport.get_session(base_url)
     trace = _normalize_trace_id(trace_id)
     headers = ce_bridge_transport.build_headers(token, trace_id=trace)
-    url = urljoin(base_url.rstrip("/") + "/", "admin/health")
+    url = urljoin(base_url.rstrip("/") + "/", "health")
     try:
         resp = session.get(url, headers=headers, timeout=timeout)
     except req_exc.RequestException as exc:

@@ -38,7 +38,7 @@ def get_ce_app_exe(settings: Optional[dict] = None) -> str:
 class CESupervisor:
     """
     Ensures the CE Bridge is reachable and, if headless exports are disabled,
-    starts the CE desktop UI (owned instance) and waits until /admin/health
+    starts the CE desktop UI (owned instance) and waits until /health
     reports exports are allowed. If we start CE, we also stop it on BOM_DB exit.
     """
 
@@ -73,7 +73,7 @@ class CESupervisor:
 
         session = ce_bridge_transport.get_session(base_url)
         headers = ce_bridge_transport.build_headers(token, trace_id)
-        health_url = f"{base_url.rstrip('/')}/admin/health"
+        health_url = f"{base_url.rstrip('/')}/health"
 
         payload, status_code = self._probe_health(session, health_url, headers, timeout)
         if status_code in (401, 403):
@@ -96,7 +96,7 @@ class CESupervisor:
                 base_url, token, timeout = ce_bridge_client.resolve_bridge_connection()
                 session = ce_bridge_transport.get_session(base_url)
                 headers = ce_bridge_transport.build_headers(token, trace_id)
-                health_url = f"{base_url.rstrip('/')}/admin/health"
+                health_url = f"{base_url.rstrip('/')}/health"
                 payload, status_code = self._probe_health(session, health_url, headers, timeout)
                 if status_code in (401, 403):
                     return False, {
@@ -130,7 +130,7 @@ class CESupervisor:
             base_url, token, timeout = ce_bridge_client.resolve_bridge_connection()
             session = ce_bridge_transport.get_session(base_url)
             headers = ce_bridge_transport.build_headers(token, trace_id)
-            health_url = f"{base_url.rstrip('/')}/admin/health"
+            health_url = f"{base_url.rstrip('/')}/health"
             payload, status_code = self._probe_health(session, health_url, headers, timeout)
             if status_code in (401, 403):
                 return False, {

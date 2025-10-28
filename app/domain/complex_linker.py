@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, List, Mapping, Optional, Sequence, Tuple
 
 from sqlmodel import Field, SQLModel, Session, select
 
@@ -20,11 +20,19 @@ from app.integration.ce_bridge_client import (
     CEUserCancelled,
     add_aliases,
     open_complex,
-    search_complexes,
+)
+from app.integration.ce_bridge_linker import (
+    LinkerDecision,
+    LinkerError,
+    LinkerFeatureError,
+    LinkerInputError,
+    select_best_match,
 )
 from app.integration.ce_supervisor import record_bridge_action
 
 logger = logging.getLogger(__name__)
+
+_AUTO_LINK_MATCH_KINDS = {"exact_pn", "exact_alias"}
 
 
 class ComplexLink(SQLModel, table=True):
@@ -134,20 +142,6 @@ class AliasConflictError(Exception):
         super().__init__(msg)
 
 
-def _select_exact_match(pn: str, matches: Iterable[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    target = (pn or "").strip().lower()
-    if not target:
-        return None
-    exact = [
-        match
-        for match in matches
-        if isinstance(match, dict) and str(match.get("pn") or "").strip().lower() == target
-    ]
-    if len(exact) == 1:
-        return exact[0]
-    return None
-
-
 def create_and_attach_complex(
     part_id: int,
     pn: str,
@@ -157,13 +151,27 @@ def create_and_attach_complex(
     created = ce_bridge_client.create_complex(pn, aliases, status_callback=status_callback)
     ce_id = created.get("id") or created.get("ce_id")
     if not ce_id:
-        matches = ce_bridge_client.search_complexes(pn, limit=10)
-        matches = [m for m in matches if isinstance(m, dict) and (m.get("id") or m.get("ce_id"))]
-        preferred = _select_exact_match(pn, matches)
-        if preferred:
-            ce_id = preferred.get("id") or preferred.get("ce_id")
+        decision: Optional[LinkerDecision] = None
+        try:
+            decision = select_best_match(pn, limit=10)
+        except LinkerInputError:
+            decision = None
+        except LinkerFeatureError as exc:
+            raise CENetworkError(str(exc)) from exc
+        except LinkerError as exc:
+            raise CENetworkError(str(exc)) from exc
+        if decision and decision.best and not decision.needs_review and decision.best.match_kind in _AUTO_LINK_MATCH_KINDS:
+            ce_id = decision.best.id
+            logger.info(
+                "Selected Complex %s for part %s via linker ranking (trace_id=%s, match=%s)",
+                ce_id,
+                part_id,
+                decision.trace_id,
+                decision.best.match_kind,
+            )
         else:
-            raise CESelectionRequired(matches)
+            results = decision.results_data if decision else []
+            raise CESelectionRequired(results)
     record = attach_existing_complex(part_id, str(ce_id))
     logger.info("Created Complex %s for part %s", ce_id, part_id)
     return record
@@ -280,8 +288,15 @@ def open_in_ce(
         if not pn:
             raise CENotFound("Part number is required to open in Complex Editor.")
         record_bridge_action(f"Searching Complex Editor for PN '{pn}'")
-        matches = search_complexes(pn, limit=20)
-        items = [dict(item) for item in matches if isinstance(item, dict)]
+        try:
+            decision = select_best_match(pn, limit=20)
+        except LinkerInputError as exc:
+            raise CENotFound(str(exc) or "Invalid part number for Complex Editor search.") from exc
+        except LinkerFeatureError as exc:
+            raise CENetworkError(str(exc)) from exc
+        except LinkerError as exc:
+            raise CENetworkError(str(exc)) from exc
+        items = decision.results_data
         if not items:
             raise CENotFound("No Complex Editor entry matches this part number.")
         selection: Optional[dict[str, Any]] = None
@@ -290,6 +305,8 @@ def open_in_ce(
             selection, attach_first = chooser(items)
             if selection is None:
                 raise CEUserCancelled("Selection cancelled")
+        elif decision.best and not decision.needs_review:
+            selection = decision.best.to_dict()
         elif len(items) == 1:
             selection = items[0]
         else:
@@ -377,40 +394,37 @@ def check_link_stale(
     return False, ""
 
 
-def _match_aliases(target: str, aliases: Iterable[Any]) -> bool:
-    for alias in aliases:
-        if isinstance(alias, str) and alias.strip().lower() == target:
-            return True
-    return False
-
-
 def auto_link_by_pn(part_id: int, pn: str) -> bool:
     """If exactly one exact match by PN or alias from CE, attach and return True; else False."""
-    target = (pn or "").strip().lower()
-    if not target:
+    if not (pn or "").strip():
         return False
     try:
-        matches = ce_bridge_client.search_complexes(pn, limit=10)
-    except CENetworkError:
+        decision = select_best_match(pn, limit=10)
+    except LinkerInputError:
+        return False
+    except LinkerFeatureError:
+        return False
+    except LinkerError:
         logger.info("Complex Editor bridge unavailable during auto-link for part %s", part_id)
         return False
-    if not matches:
+    if decision.best is None:
         return False
-
-    exact_matches = []
-    for item in matches:
-        if not isinstance(item, dict):
-            continue
-        item_pn = str(item.get("pn") or item.get("part_number") or "").strip().lower()
-        aliases = item.get("aliases") or []
-        if item_pn == target or _match_aliases(target, aliases):
-            exact_matches.append(item)
-    if len(exact_matches) != 1:
+    if decision.needs_review:
+        logger.info(
+            "Complex Editor auto-link for part %s skipped: ambiguous results (trace_id=%s)",
+            part_id,
+            decision.trace_id,
+        )
         return False
-    chosen = exact_matches[0]
-    ce_id = chosen.get("id") or chosen.get("ce_id")
-    if not ce_id:
+    if decision.best.match_kind not in _AUTO_LINK_MATCH_KINDS:
         return False
-    attach_existing_complex(part_id, str(ce_id))
-    logger.info("Auto-linked Complex %s to part %s by PN '%s'", ce_id, part_id, pn)
+    attach_existing_complex(part_id, str(decision.best.id))
+    logger.info(
+        "Auto-linked Complex %s to part %s by PN '%s' (match=%s, trace_id=%s)",
+        decision.best.id,
+        part_id,
+        pn,
+        decision.best.match_kind,
+        decision.trace_id,
+    )
     return True
