@@ -26,10 +26,12 @@ class BOMItemRead(BaseModel):
     notes: str | None = None
     part_id: int | None = None
     part_number: str | None = None
-    resolved_profile: str | None = None
-    resolution_reason: str | None = None
-    resolved_test_id: int | None = None
-    resolution_message: str | None = None
+    test_method: str | None = None
+    test_detail: str | None = None
+    test_method_powered: str | None = None
+    test_detail_powered: str | None = None
+    test_resolution_source: str | None = None
+    test_resolution_message: str | None = None
 
 
 from .customers import (

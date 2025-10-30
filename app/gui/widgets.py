@@ -621,15 +621,27 @@ class AssembliesPane(QWidget):
             self.items_table.setItem(row, 1, QTableWidgetItem(str(i.qty)))
             pn = i.part_number or "—"
             self.items_table.setItem(row, 2, QTableWidgetItem(pn))
-            profile_item = QTableWidgetItem()
-            if i.resolution_reason == "unresolved":
-                profile_item.setText("⚠️")
-                profile_item.setToolTip(i.resolution_message or "Test mapping unresolved")
+            method_item = QTableWidgetItem()
+            if (i.test_resolution_source or "") == "unresolved":
+                method_item.setText("⚠️")
+                method_item.setToolTip(i.test_resolution_message or "Test mapping unresolved")
             else:
-                profile_item.setText(i.resolved_profile or "—")
-                tooltip = i.resolution_message or f"Resolved via {i.resolution_reason}"
-                profile_item.setToolTip(tooltip)
-            self.items_table.setItem(row, 3, profile_item)
+                method_text = i.test_method or "—"
+                if i.test_detail:
+                    detail_tooltip = i.test_detail
+                else:
+                    detail_tooltip = None
+                method_item.setText(method_text)
+                tooltip_parts = []
+                if detail_tooltip:
+                    tooltip_parts.append(detail_tooltip)
+                if i.test_resolution_message:
+                    tooltip_parts.append(i.test_resolution_message)
+                elif i.test_resolution_source:
+                    tooltip_parts.append(f"Resolved via {i.test_resolution_source}")
+                if tooltip_parts:
+                    method_item.setToolTip("\n".join(tooltip_parts))
+            self.items_table.setItem(row, 3, method_item)
             self.items_table.setItem(row, 4, QTableWidgetItem(i.notes or ""))
         self.items_table.resizeColumnsToContents()
 
@@ -648,11 +660,11 @@ class AssembliesPane(QWidget):
             self.mode_combo.setEnabled(False)
             self._updating_mode = False
             return
-        mode_val = getattr(asm, "test_mode", TestMode.powered)
+        mode_val = getattr(asm, "test_mode", TestMode.unpowered)
         try:
             mode_enum = mode_val if isinstance(mode_val, TestMode) else TestMode(str(mode_val))
         except ValueError:
-            mode_enum = TestMode.powered
+            mode_enum = TestMode.unpowered
         self._updating_mode = True
         self.mode_combo.setCurrentIndex(0 if mode_enum == TestMode.powered else 1)
         self.mode_combo.setEnabled(True)
@@ -661,7 +673,7 @@ class AssembliesPane(QWidget):
     def _on_mode_change(self) -> None:  # pragma: no cover - UI glue
         if self._updating_mode or not self._assembly_id:
             return
-        mode = TestMode.powered if self.mode_combo.currentIndex() == 0 else TestMode.non_powered
+        mode = TestMode.powered if self.mode_combo.currentIndex() == 0 else TestMode.unpowered
         try:
             with app_state.get_session() as s:
                 services.update_assembly_test_mode(s, self._assembly_id, mode)
