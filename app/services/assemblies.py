@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from typing import List, Optional
 
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
-from ..domain.test_resolution import resolve_test_for_bom_item
-from ..models import Assembly, BOMItem, Part, PartTestMap, TestMode
+from ..models import Assembly, BOMItem, Part, PartType, TestMode
 from . import BOMItemRead
+from .test_resolution import BOMTestResolver
 
 
 def list_assemblies(project_id: int, session: Session) -> List[Assembly]:
@@ -44,34 +43,48 @@ def list_bom_items(assembly_id: int, session: Session) -> List[BOMItemRead]:
         ) from e
 
     assembly = session.get(Assembly, assembly_id)
-    part_ids = {part.id for _item, part in rows if part is not None}
-    mappings: dict[int, list[PartTestMap]] = defaultdict(list)
-    if part_ids:
-        mapping_rows = session.exec(
-            select(PartTestMap).where(PartTestMap.part_id.in_(part_ids))
-        ).all()
-        for mapping in mapping_rows:
-            mappings[mapping.part_id].append(mapping)
-
+    resolver = BOMTestResolver.from_session(session, assembly_id, rows)
+    assembly_mode = TestMode.unpowered
+    if assembly is not None:
+        mode_val = getattr(assembly, "test_mode", None)
+        if isinstance(mode_val, TestMode):
+            assembly_mode = mode_val
+        elif isinstance(mode_val, str):
+            try:
+                assembly_mode = TestMode(mode_val)
+            except ValueError:
+                assembly_mode = TestMode.unpowered
     results: list[BOMItemRead] = []
     for item, part in rows:
         pn = part.part_number if part is not None else None
-        resolved = resolve_test_for_bom_item(
-            assembly,
-            item,
-            part,
-            mappings.get(part.id if part else -1, []),
-        )
+        resolved = resolver.resolve_effective_test(item.id, assembly_mode)
+        part_type = None
+        if part is not None:
+            part_type = getattr(part, "active_passive", None)
+            if isinstance(part_type, str):
+                try:
+                    part_type = PartType(part_type)
+                except ValueError:
+                    part_type = None
         data = item.model_dump()
         data.update(
             {
                 "part_number": pn,
-                "resolved_profile": resolved.profile_used.value if resolved.profile_used else None,
-                "resolution_reason": resolved.reason.value,
-                "resolved_test_id": resolved.test_id,
-                "resolution_message": resolved.message,
+                "test_method": resolved.method,
+                "test_detail": resolved.detail,
+                "test_method_powered": None,
+                "test_detail_powered": None,
+                "test_resolution_source": resolved.source,
+                "test_resolution_message": resolved.message,
             }
         )
+        if (
+            assembly_mode == TestMode.powered
+            and isinstance(part_type, PartType)
+            and part_type == PartType.active
+        ):
+            data["test_method_powered"] = resolved.powered_method
+            data["test_detail_powered"] = resolved.powered_detail
         results.append(BOMItemRead(**data))
     return results
 

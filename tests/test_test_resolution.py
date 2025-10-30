@@ -1,20 +1,13 @@
-from app.domain.test_resolution import (
-    ResolutionReason,
-    resolve_test_for_bom_item,
-)
 from app.models import (
-    Assembly,
     BOMItem,
+    BOMItemTestOverride,
     Part,
     PartTestMap,
     PartType,
     TestMode,
     TestProfile,
 )
-
-
-def _assembly(mode: TestMode) -> Assembly:
-    return Assembly(id=1, project_id=1, rev="A", test_mode=mode)
+from app.services.test_resolution import BOMTestResolver
 
 
 def _bom_item(part_id: int = 1) -> BOMItem:
@@ -25,69 +18,143 @@ def _part(part_type: PartType, pn: str = "P1", pid: int = 1) -> Part:
     return Part(id=pid, part_number=pn, active_passive=part_type)
 
 
-def test_passive_part_resolves_passive():
-    asm = _assembly(TestMode.powered)
+def _resolver(
+    item: BOMItem,
+    part: Part,
+    mappings: list[PartTestMap],
+    overrides: list[BOMItemTestOverride] | None = None,
+) -> BOMTestResolver:
+    return BOMTestResolver(
+        assembly_id=item.assembly_id,
+        bom_items={item.id: item},
+        parts={item.id: part},
+        part_mappings=mappings,
+        overrides=overrides or [],
+    )
+
+
+def test_passive_part_ignores_mode():
     part = _part(PartType.passive)
     bom = _bom_item(part_id=part.id)
-    mapping = PartTestMap(part_id=part.id, test_id=42, profile=TestProfile.PASSIVE)
+    mapping = PartTestMap(
+        part_id=part.id,
+        power_mode=TestMode.unpowered,
+        profile=TestProfile.PASSIVE,
+        test_macro_id=42,
+        detail="Passive test",
+    )
+    resolver = _resolver(bom, part, [mapping])
 
-    resolved = resolve_test_for_bom_item(asm, bom, part, [mapping])
+    resolved = resolver.resolve_effective_test(bom.id, TestMode.powered)
 
-    assert resolved.reason == ResolutionReason.default
-    assert resolved.profile_used == TestProfile.PASSIVE
-    assert resolved.test_id == 42
+    assert resolved.method == "Macro"
+    assert resolved.detail == "Passive test"
+    assert resolved.power_mode == TestMode.unpowered
 
 
-def test_active_powered_prefers_active():
-    asm = _assembly(TestMode.powered)
+def test_active_powered_prefers_powered_mapping():
     part = _part(PartType.active)
     bom = _bom_item(part_id=part.id)
-    mapping = PartTestMap(part_id=part.id, test_id=7, profile=TestProfile.ACTIVE)
+    powered_mapping = PartTestMap(
+        part_id=part.id,
+        power_mode=TestMode.powered,
+        profile=TestProfile.ACTIVE,
+        test_macro_id=7,
+        detail="Powered",
+    )
+    resolver = _resolver(bom, part, [powered_mapping])
 
-    resolved = resolve_test_for_bom_item(asm, bom, part, [mapping])
+    resolved = resolver.resolve_effective_test(bom.id, TestMode.powered)
 
-    assert resolved.reason == ResolutionReason.default
-    assert resolved.profile_used == TestProfile.ACTIVE
-    assert resolved.test_id == 7
+    assert resolved.method == "Macro"
+    assert resolved.detail == "Powered"
+    assert resolved.power_mode == TestMode.powered
 
 
-def test_active_non_powered_prefers_passive():
-    asm = _assembly(TestMode.non_powered)
+def test_active_unpowered_falls_back_to_unpowered_mapping():
     part = _part(PartType.active)
     bom = _bom_item(part_id=part.id)
-    mapping = PartTestMap(part_id=part.id, test_id=11, profile=TestProfile.PASSIVE)
+    unpowered_mapping = PartTestMap(
+        part_id=part.id,
+        power_mode=TestMode.unpowered,
+        profile=TestProfile.PASSIVE,
+        test_macro_id=11,
+        detail="Unpowered",
+    )
+    resolver = _resolver(bom, part, [unpowered_mapping])
 
-    resolved = resolve_test_for_bom_item(asm, bom, part, [mapping])
+    resolved = resolver.resolve_effective_test(bom.id, TestMode.unpowered)
 
-    assert resolved.reason == ResolutionReason.default
-    assert resolved.profile_used == TestProfile.PASSIVE
-    assert resolved.test_id == 11
+    assert resolved.method == "Macro"
+    assert resolved.detail == "Unpowered"
+    assert resolved.power_mode == TestMode.unpowered
 
 
-def test_fallback_equivalent_when_only_passive_available():
-    asm = _assembly(TestMode.powered)
+def test_override_takes_precedence():
     part = _part(PartType.active)
     bom = _bom_item(part_id=part.id)
-    mapping = PartTestMap(part_id=part.id, test_id=9, profile=TestProfile.PASSIVE)
+    mapping = PartTestMap(
+        part_id=part.id,
+        power_mode=TestMode.powered,
+        profile=TestProfile.ACTIVE,
+        test_macro_id=5,
+        detail="Mapping",
+    )
+    override = BOMItemTestOverride(
+        bom_item_id=bom.id,
+        power_mode=TestMode.powered,
+        python_test_id=9,
+        detail="Override",
+    )
+    resolver = _resolver(bom, part, [mapping], [override])
 
-    resolved = resolve_test_for_bom_item(asm, bom, part, [mapping])
+    resolved = resolver.resolve_effective_test(bom.id, TestMode.powered)
 
-    assert resolved.reason == ResolutionReason.fallback_equivalent
-    assert resolved.profile_used == TestProfile.PASSIVE
-    assert resolved.test_id == 9
+    assert resolved.method == "Python code"
+    assert resolved.detail == "Override"
+    assert resolved.power_mode == TestMode.powered
 
 
-def test_unresolved_when_profiles_conflict():
-    asm = _assembly(TestMode.powered)
-    part = _part(PartType.active)
+def test_powered_fallback_to_unpowered_mapping_for_active():
+    part = _part(PartType.active, pid=123)
     bom = _bom_item(part_id=part.id)
-    mappings = [
-        PartTestMap(part_id=part.id, test_id=1, profile=TestProfile.PASSIVE),
-        PartTestMap(part_id=part.id, test_id=2, profile=TestProfile.PASSIVE),
-    ]
+    unpowered_mapping = PartTestMap(
+        part_id=part.id,
+        power_mode=TestMode.unpowered,
+        profile=TestProfile.PASSIVE,
+        test_macro_id=777,
+        detail="UnpoweredOnly",
+    )
+    resolver = _resolver(bom, part, [unpowered_mapping])
 
-    resolved = resolve_test_for_bom_item(asm, bom, part, mappings)
+    resolved = resolver.resolve_effective_test(bom.id, TestMode.powered)
 
-    assert resolved.reason == ResolutionReason.unresolved
-    assert resolved.profile_used is None
-    assert "Missing ACTIVE" in (resolved.message or "")
+    assert resolved.method == "Macro"
+    assert resolved.detail == "UnpoweredOnly"
+    assert resolved.source in ("fallback", "mapping")
+
+
+def test_unpowered_override_precedence_for_active():
+    part = _part(PartType.active, pid=124)
+    bom = _bom_item(part_id=part.id)
+    unpowered_mapping = PartTestMap(
+        part_id=part.id,
+        power_mode=TestMode.unpowered,
+        profile=TestProfile.ACTIVE,
+        test_macro_id=123,
+        detail="Mapped",
+    )
+    override = BOMItemTestOverride(
+        bom_item_id=bom.id,
+        power_mode=TestMode.unpowered,
+        python_test_id=999,
+        detail="OverrideDetail",
+    )
+    resolver = _resolver(bom, part, [unpowered_mapping], [override])
+
+    resolved = resolver.resolve_effective_test(bom.id, TestMode.unpowered)
+
+    assert resolved.method == "Python code"
+    assert resolved.detail == "OverrideDetail"
+    assert resolved.power_mode == TestMode.unpowered
+    assert resolved.source == "override"
