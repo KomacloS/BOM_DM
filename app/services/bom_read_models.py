@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 import re
-from collections import defaultdict
 
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from ..domain.test_resolution import resolve_test_for_bom_item
-from ..models import Assembly, BOMItem, Part, PartTestMap, PartType
+from ..models import Assembly, BOMItem, Part, PartType, TestMode
+from .test_resolution import BOMTestResolver
 
 # Regex for natural sort
 _token = re.compile(r"(\d+)")
@@ -33,10 +32,12 @@ class JoinedBOMRow(BaseModel):
     active_passive: Optional[Literal["active", "passive"]] = None
     datasheet_url: str | None = None
     product_url: str | None = None
-    resolved_profile: str | None = None
-    resolution_reason: str | None = None
-    resolved_test_id: int | None = None
-    resolution_message: str | None = None
+    test_method: str | None = None
+    test_detail: str | None = None
+    test_method_powered: str | None = None
+    test_detail_powered: str | None = None
+    test_resolution_source: str | None = None
+    test_resolution_message: str | None = None
 
 
 def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[JoinedBOMRow]:
@@ -49,23 +50,21 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
     )
     rows = session.exec(stmt).all()
     assembly = session.get(Assembly, assembly_id)
-    part_ids = {part.id for _item, part in rows}
-    mappings: dict[int, list[PartTestMap]] = defaultdict(list)
-    if part_ids:
-        mapping_rows = session.exec(
-            select(PartTestMap).where(PartTestMap.part_id.in_(part_ids))
-        ).all()
-        for mapping in mapping_rows:
-            mappings[mapping.part_id].append(mapping)
+    resolver = BOMTestResolver.from_session(session, assembly_id, rows)
+    assembly_mode = TestMode.unpowered
+    if assembly is not None:
+        mode_val = getattr(assembly, "test_mode", None)
+        if isinstance(mode_val, TestMode):
+            assembly_mode = mode_val
+        elif isinstance(mode_val, str):
+            try:
+                assembly_mode = TestMode(mode_val)
+            except ValueError:
+                assembly_mode = TestMode.unpowered
     result: List[JoinedBOMRow] = []
     for item, part in rows:
         ap = part.active_passive.value if isinstance(part.active_passive, PartType) else part.active_passive
-        resolved = resolve_test_for_bom_item(
-            assembly,
-            item,
-            part,
-            mappings.get(part.id, []),
-        )
+        resolved = resolver.resolve_effective_test(item.id, assembly_mode)
         result.append(
             JoinedBOMRow(
                 bom_item_id=item.id,
@@ -83,10 +82,12 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
                 active_passive=ap,
                 datasheet_url=part.datasheet_url,
                 product_url=part.product_url,
-                resolved_profile=resolved.profile_used.value if resolved.profile_used else None,
-                resolution_reason=resolved.reason.value,
-                resolved_test_id=resolved.test_id,
-                resolution_message=resolved.message,
+                test_method=resolved.method,
+                test_detail=resolved.detail,
+                test_method_powered=resolved.powered_method,
+                test_detail_powered=resolved.powered_detail,
+                test_resolution_source=resolved.source,
+                test_resolution_message=resolved.message,
             )
         )
     result.sort(key=lambda r: natural_key(r.reference))

@@ -94,6 +94,7 @@ from datetime import datetime
 from functools import partial
 from ..logic.autofill_rules import infer_from_pn_and_desc
 from ..logic.prefix_macros import load_prefix_macros, reload_prefix_macros
+from ..models import Assembly, TestMode
 from . import state as app_state
 from .widgets.complex_panel import ComplexPanel
 
@@ -306,11 +307,14 @@ class TestMethodDelegate(QStyledItemDelegate):
         return combo
 
     def setEditorData(self, editor: QComboBox, index):  # pragma: no cover - Qt glue
-        editor.setCurrentText(index.data() or "")
+        value = index.data(int(Qt.ItemDataRole.EditRole))
+        if value in (None, ""):
+            value = index.data() or ""
+        editor.setCurrentText(value)
 
     def setModelData(self, editor: QComboBox, model, index):  # pragma: no cover - Qt glue
         text = editor.currentText()
-        model.setData(index, text)
+        model.setData(index, text, int(Qt.ItemDataRole.EditRole))
         part_id = index.data(PartIdRole)
         self.methodChanged.emit(part_id, text)
 
@@ -323,47 +327,6 @@ class TestMethodDelegate(QStyledItemDelegate):
         self.closeEditor.emit(editor)
 
 
-
-
-class TestDetailDelegate(QStyledItemDelegate):
-    """Delegate rendering a button-like area for test detail actions."""
-
-    detailClicked = pyqtSignal(int)  # part_id
-
-    def paint(self, painter: QPainter, option, index):  # pragma: no cover - UI glue
-        opt = QStyleOptionViewItem(option)
-        opt.state &= ~QStyle.StateFlag.State_HasFocus
-
-        # Fill the background based on state so it matches QSS selection/hover
-        if opt.state & QStyle.StateFlag.State_Selected:
-            painter.fillRect(opt.rect, QColor("#DCEBFF"))
-        elif opt.state & QStyle.StateFlag.State_MouseOver:
-            painter.fillRect(opt.rect, QColor("#F3F4F6"))
-        else:
-            painter.fillRect(opt.rect, opt.palette.base().color())
-
-        text = index.data() or ""
-        enabled = text != "—"
-        btn = QStyleOptionButton()
-        btn.rect = opt.rect.adjusted(4, 4, -4, -4)
-        btn.text = text
-        btn.state = QStyle.StateFlag.State_Raised
-        if enabled:
-            btn.state |= QStyle.StateFlag.State_Enabled
-        style = opt.widget.style() if opt.widget else QApplication.style()
-        style.drawControl(QStyle.ControlElement.CE_PushButton, btn, painter)
-
-    def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
-        if event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-            if (index.data() or "") == "—":
-                return False
-            part_id = index.data(PartIdRole)
-            self.detailClicked.emit(part_id)
-            return True
-        return False
-
-    def createEditor(self, parent, option, index):  # pragma: no cover - no inline editor
-        return None
 
 
 class TestDetailDelegate(QStyledItemDelegate):
@@ -390,7 +353,10 @@ class TestDetailDelegate(QStyledItemDelegate):
                 return ""
             model = index.model()  # proxy
             tm_idx = model.index(index.row(), self._tm_col)
-            return (model.data(tm_idx) or "")
+            value = model.data(tm_idx, int(Qt.ItemDataRole.EditRole))
+            if value in (None, ""):
+                value = model.data(tm_idx) or ""
+            return value
         except Exception:
             return ""
 
@@ -402,7 +368,14 @@ class TestDetailDelegate(QStyledItemDelegate):
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
 
     def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
-        # No single-click editor; selection remains easy via drag
+        # Allow single-click action for non-Macro rows (Quick Test picker, Complex, etc.)
+        if event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            method = (self._method_for_index(index) or "")
+            if method != "Macro":
+                part_id = index.data(PartIdRole)
+                if part_id is not None:
+                    self.detailClicked.emit(part_id)
+                    return True
         return False
 
     def createEditor(self, parent, option, index):  # pragma: no cover - Qt glue
@@ -416,11 +389,14 @@ class TestDetailDelegate(QStyledItemDelegate):
         return combo
 
     def setEditorData(self, editor: QComboBox, index):  # pragma: no cover - Qt glue
-        editor.setCurrentText(index.data() or "")
+        value = index.data(int(Qt.ItemDataRole.EditRole))
+        if value in (None, ""):
+            value = index.data() or ""
+        editor.setCurrentText(value)
 
     def setModelData(self, editor: QComboBox, model, index):  # pragma: no cover - Qt glue
         text = (editor.currentText() or "").strip()
-        model.setData(index, text)
+        model.setData(index, text, int(Qt.ItemDataRole.EditRole))
         part_id = index.data(PartIdRole)
         self.detailChanged.emit(part_id, text or None)
 
@@ -526,7 +502,6 @@ class BOMEditorPane(QWidget):
         self._dirty_mfg: Dict[int, Optional[str]] = {}
         self._locked_parts: set[int] = set()
         self._part_product_links: Dict[int, Optional[str]] = {}
-        self._dirty_datasheets: Dict[int, Optional[str]] = {}
         # Staged datasheet add/remove when Apply is off
         self._dirty_datasheets: Dict[int, Optional[str]] = {}
         # View mode: 'by_pn' or 'by_ref'
@@ -538,6 +513,7 @@ class BOMEditorPane(QWidget):
         bridge_enabled = bool(bridge_cfg.get('enabled')) if isinstance(bridge_cfg, dict) else False
         ui_enabled = bool(self._complex_settings.get('ui_enabled')) if isinstance(self._complex_settings, dict) else False
         self._complex_ui_enabled = ui_enabled and bridge_enabled
+        self._assembly_mode: TestMode = TestMode.unpowered
         self._complex_splitter: Optional[QSplitter] = None
         self._complex_panel: Optional[ComplexPanel] = None
         self._view_mode = self._settings.value("view_mode", "by_pn")
@@ -548,12 +524,13 @@ class BOMEditorPane(QWidget):
             "mfg": 3,
             "ap": 4,
             "ds": 5,
-            "test_method": 6,
-            "test_detail": 7,
-            "package": 8,
-            "value": 9,
-            "tol_p": 10,
-            "tol_n": 11,
+            "link": 6,
+            "test_method": 7,
+            "test_detail": 8,
+            "package": 9,
+            "value": 10,
+            "tol_p": 11,
+            "tol_n": 12,
         }
 
         layout = QVBoxLayout(self)
@@ -905,6 +882,18 @@ QTableView::item:selected:hover {
         # Keep canonical raw rows
         with app_state.get_session() as session:
             self._rows_raw = services.get_joined_bom_for_assembly(session, self._assembly_id)
+            asm = session.get(Assembly, self._assembly_id)
+        if asm is not None:
+            mode_val = getattr(asm, "test_mode", TestMode.unpowered)
+            if isinstance(mode_val, TestMode):
+                self._assembly_mode = mode_val
+            else:
+                try:
+                    self._assembly_mode = TestMode(str(mode_val))
+                except ValueError:
+                    self._assembly_mode = TestMode.unpowered
+        else:
+            self._assembly_mode = TestMode.unpowered
         # Seed parts state from DB
         self._parts_state.clear()
         self._part_datasheets.clear()
@@ -936,11 +925,34 @@ QTableView::item:selected:hover {
             return "passive"
         return None
 
+    def _make_method_item(self, resolved: Optional[str], assignment: dict) -> QStandardItem:
+        item = QStandardItem(resolved or "")
+        assigned = (assignment.get("method") or "").strip()
+        item.setData(assigned, int(Qt.ItemDataRole.EditRole))
+        item.setData(assigned, int(Qt.ItemDataRole.ToolTipRole))
+        return item
+
+    def _make_detail_item(self, resolved: Optional[str], assignment: dict) -> QStandardItem:
+        item = QStandardItem(resolved or "")
+        method = (assignment.get("method") or "").strip()
+        if method == "Macro":
+            edit_value = assignment.get("detail") or ""
+        elif method == "Quick test (QT)":
+            edit_value = assignment.get("qt_path") or ""
+        else:
+            edit_value = assignment.get("detail") or ""
+        item.setData(edit_value, int(Qt.ItemDataRole.EditRole))
+        tooltip = self._detail_text_for(assignment)
+        item.setData(tooltip, int(Qt.ItemDataRole.ToolTipRole))
+        return item
+
     def _rebuild_model(self) -> None:
         # Build model based on view mode
         self.model.setRowCount(0)
-        # 13 columns when including Link column
-        self.model.setColumnCount(13)
+        powered = self._assembly_mode == TestMode.powered
+        base_columns = 13
+        extra = 2 if powered else 0
+        self.model.setColumnCount(base_columns + extra)
         if self._view_mode == "by_pn":
             # Column map
             self._col_indices = {
@@ -953,11 +965,21 @@ QTableView::item:selected:hover {
                 "link": 6,
                 "test_method": 7,
                 "test_detail": 8,
-                "package": 9,
-                "value": 10,
-                "tol_p": 11,
-                "tol_n": 12,
             }
+            next_col = 9
+            if powered:
+                self._col_indices["test_method_powered"] = next_col
+                next_col += 1
+                self._col_indices["test_detail_powered"] = next_col
+                next_col += 1
+            self._col_indices.update(
+                {
+                    "package": next_col,
+                    "value": next_col + 1,
+                    "tol_p": next_col + 2,
+                    "tol_n": next_col + 3,
+                }
+            )
             self._build_by_pn()
         else:
             self._col_indices = {
@@ -970,11 +992,21 @@ QTableView::item:selected:hover {
                 "link": 6,
                 "test_method": 7,
                 "test_detail": 8,
-                "package": 9,
-                "value": 10,
-                "tol_p": 11,
-                "tol_n": 12,
             }
+            next_col = 9
+            if powered:
+                self._col_indices["test_method_powered"] = next_col
+                next_col += 1
+                self._col_indices["test_detail_powered"] = next_col
+                next_col += 1
+            self._col_indices.update(
+                {
+                    "package": next_col,
+                    "value": next_col + 1,
+                    "tol_p": next_col + 2,
+                    "tol_n": next_col + 3,
+                }
+            )
             self._build_by_ref()
         # Setup columns menu and sorting based on new headers
         self._setup_columns_menu()
@@ -1007,6 +1039,14 @@ QTableView::item:selected:hover {
             self._handle_auto_infer_persistence(part_id, mode_val, explicit)
 
             ta = self._test_assignments.get(part_id, {"method": "", "qt_path": None})
+            powered_cols = "test_method_powered" in self._col_indices
+            powered_method = ""
+            powered_detail = ""
+            if powered_cols and (mode_val == "active" or any(getattr(x, "active_passive", None) == "active" for x in rows)):
+                powered_method = rows[0].test_method_powered or ""
+                powered_detail = rows[0].test_detail_powered or ""
+            method_item = self._make_method_item(rows[0].test_method, ta)
+            detail_item = self._make_detail_item(rows[0].test_detail, ta)
             row_items = [
                 QStandardItem(rows[0].part_number),
                 QStandardItem(refs_str),
@@ -1015,13 +1055,20 @@ QTableView::item:selected:hover {
                 QStandardItem(mode_val or ""),
                 QStandardItem(""),
                 QStandardItem(""),
-                QStandardItem(ta["method"]),
-                QStandardItem(self._detail_text_for(ta)),
-                QStandardItem(self._part_packages.get(part_id) or ""),
-                QStandardItem(self._part_values.get(part_id) or ""),
-                QStandardItem(self._tolerances.get(part_id, (None, None))[0] or ""),
-                QStandardItem(self._tolerances.get(part_id, (None, None))[1] or ""),
+                method_item,
+                detail_item,
             ]
+            if powered_cols:
+                row_items.append(QStandardItem(powered_method))
+                row_items.append(QStandardItem(powered_detail))
+            row_items.extend(
+                [
+                    QStandardItem(self._part_packages.get(part_id) or ""),
+                    QStandardItem(self._part_values.get(part_id) or ""),
+                    QStandardItem(self._tolerances.get(part_id, (None, None))[0] or ""),
+                    QStandardItem(self._tolerances.get(part_id, (None, None))[1] or ""),
+                ]
+            )
             for i, it in enumerate(row_items):
                 flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
                 editable = {
@@ -1054,6 +1101,12 @@ QTableView::item:selected:hover {
                 mode_val = self._dirty_parts[r.part_id]
             self._handle_auto_infer_persistence(r.part_id, mode_val, explicit)
             ta = self._test_assignments.get(r.part_id, {"method": "", "qt_path": None})
+            powered_cols = "test_method_powered" in self._col_indices
+            is_active = mode_val == "active" or getattr(r, "active_passive", None) == "active"
+            powered_method = r.test_method_powered or "" if powered_cols and is_active else ""
+            powered_detail = r.test_detail_powered or "" if powered_cols and is_active else ""
+            method_item = self._make_method_item(r.test_method, ta)
+            detail_item = self._make_detail_item(r.test_detail, ta)
             items = [
                 QStandardItem(r.reference),
                 QStandardItem(r.part_number),
@@ -1062,13 +1115,20 @@ QTableView::item:selected:hover {
                 QStandardItem(mode_val or ""),
                 QStandardItem(""),
                 QStandardItem(""),
-                QStandardItem(ta["method"]),
-                QStandardItem(self._detail_text_for(ta)),
-                QStandardItem(self._part_packages.get(r.part_id) or ""),
-                QStandardItem(self._part_values.get(r.part_id) or ""),
-                QStandardItem(self._tolerances.get(r.part_id, (None, None))[0] or ""),
-                QStandardItem(self._tolerances.get(r.part_id, (None, None))[1] or ""),
+                method_item,
+                detail_item,
             ]
+            if powered_cols:
+                items.append(QStandardItem(powered_method))
+                items.append(QStandardItem(powered_detail))
+            items.extend(
+                [
+                    QStandardItem(self._part_packages.get(r.part_id) or ""),
+                    QStandardItem(self._part_values.get(r.part_id) or ""),
+                    QStandardItem(self._tolerances.get(r.part_id, (None, None))[0] or ""),
+                    QStandardItem(self._tolerances.get(r.part_id, (None, None))[1] or ""),
+                ]
+            )
             for i, it in enumerate(items):
                 flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
                 editable = {
@@ -1093,23 +1153,40 @@ QTableView::item:selected:hover {
                 if i == self._col_indices["link"]:
                     it.setData(self._part_product_links.get(r.part_id) or "", LinkUrlRole)
             self.model.appendRow(items)
-    def _detail_label_for(self, ta: dict) -> str:
-        # Delegate to unified builder
-        return self._detail_text_for(ta)
-
     def _refresh_rows_for_part(self, part_id: int) -> None:
         ta = self._test_assignments.get(part_id, {"method": "", "qt_path": None})
-        method = ta.get("method", "")
-        detail = self._detail_text_for(ta)
+        method = (ta.get("method") or "").strip()
+        detail_label = self._detail_text_for(ta)
+        detail_value = ta.get("detail") or ""
+        if method == "Quick test (QT)":
+            detail_value = ta.get("qt_path") or ""
         tm_col = self._col_indices.get("test_method")
         td_col = self._col_indices.get("test_detail")
         for row in range(self.model.rowCount()):
             for c in range(self.model.columnCount()):
                 if self.model.data(self.model.index(row, c), PartIdRole) == part_id:
                     if tm_col is not None:
-                        self.model.setData(self.model.index(row, tm_col), method)
+                        self.model.setData(
+                            self.model.index(row, tm_col),
+                            method,
+                            int(Qt.ItemDataRole.EditRole),
+                        )
+                        self.model.setData(
+                            self.model.index(row, tm_col),
+                            method,
+                            int(Qt.ItemDataRole.ToolTipRole),
+                        )
                     if td_col is not None:
-                        self.model.setData(self.model.index(row, td_col), detail)
+                        self.model.setData(
+                            self.model.index(row, td_col),
+                            detail_value,
+                            int(Qt.ItemDataRole.EditRole),
+                        )
+                        self.model.setData(
+                            self.model.index(row, td_col),
+                            detail_label,
+                            int(Qt.ItemDataRole.ToolTipRole),
+                        )
                     break
 
     def _on_method_changed(self, part_id: int, new_method: str) -> None:

@@ -46,6 +46,26 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/assemblies/1/bom/it
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/projects/1/tasks
 ```
 
+Each BOM row now includes mode-aware test metadata resolved by the unified
+service layer:
+
+```json
+{
+  "id": 7,
+  "reference": "Q1",
+  "part_number": "PMIC-123",
+  "test_method": "Macro",
+  "test_detail": "PMIC POWER-UP",
+  "test_method_powered": "Macro",
+  "test_detail_powered": "PMIC POWER-UP",
+  "test_resolution_source": "mapping"
+}
+```
+
+When an assembly's `test_mode` is `powered` and the part is active, the payload
+includes the powered-only fields so the UI can render the additional columns
+without recomputing per-row state.
+
 Download a BOM template (CSV or XLSX accepted):
 
 ```bash
@@ -119,6 +139,20 @@ a Customer or Project has children, the GUI will prompt to cascade-delete.
 
 Use **Import BOM** on an Assembly to load a CSV with the strict header. The dialog
 reports matched/unmatched counts and any created task IDs.
+
+### Powered vs. unpowered boards
+
+The Projects Terminal exposes a **Powered / Not powered** toggle for each
+assembly. Switching to *Powered* automatically resolves active-part tests using
+the powered mapping and reveals two additional columns in the BOM grid:
+**Test method (powered)** and **Test detail (powered)**. Passive parts retain the
+original unpowered tests, and the extra columns collapse automatically when the
+board is marked *Not powered*.
+
+The primary **Test method** and **Test detail** columns always display the
+resolver's effective values for the assembly's current mode. Double-clicking a
+cell still opens the assignment editors so you can stage or apply overrides
+without losing sight of the resolved test plan.
 
 ## Debug GUI
 

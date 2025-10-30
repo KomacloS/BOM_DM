@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- Powered/unpowered board test modes with powered-only BOM columns.
+- Unified powered test resolver shared by API and GUI.
+- Schema support for mode-aware part↔test mappings and BOM overrides.
+
+### Removed
+- Legacy `app/domain/test_resolution.py` helper.
 - Add /projects/{id}/bom endpoint for listing BOM items by project.
 - Configurable MAX_DATASHEET_MB environment variable.
 - Wizard improvements for editing existing projects, deleting rows and paging.

@@ -4,7 +4,15 @@ from decimal import Decimal
 from enum import Enum
 from typing import Optional
 import sqlalchemy as sa
-from sqlalchemy import Boolean, Column, JSON, Enum as SAEnum, Text, Index, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Column,
+    JSON,
+    Enum as SAEnum,
+    Text,
+    Index,
+    CheckConstraint,
+)
 from sqlmodel import SQLModel, Field
 
 if SQLModel.metadata.tables:
@@ -59,7 +67,7 @@ class ProjectPriority(str, Enum):
 
 class TestMode(str, Enum):
     powered = "powered"
-    non_powered = "non_powered"
+    unpowered = "unpowered"
 
 
 class Project(SQLModel, table=True):
@@ -81,11 +89,11 @@ class Assembly(SQLModel, table=True):
     notes: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     test_mode: TestMode = Field(
-        default=TestMode.powered,
+        default=TestMode.unpowered,
         sa_column=Column(
             SAEnum(TestMode, name="test_mode_enum"),
             nullable=False,
-            server_default=TestMode.powered.value,
+            server_default=TestMode.unpowered.value,
         ),
     )
 
@@ -138,11 +146,30 @@ class PartTestAssignment(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class TestMacro(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(nullable=False)
+    glb_path: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PythonTest(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(nullable=False)
+    file_path: Optional[str] = None
+    notes: Optional[str] = None
+
+
 class PartTestMap(SQLModel, table=True):
     __tablename__ = "part_test_map"
     __table_args__ = (
-        UniqueConstraint("part_id", "test_id", "profile", name="uq_part_test_map_part_test_profile"),
-        Index("ptm_part_profile_idx", "part_id", "profile"),
+        CheckConstraint(
+            "((CASE WHEN test_id IS NOT NULL THEN 1 ELSE 0 END) + "
+            "(CASE WHEN python_test_id IS NOT NULL THEN 1 ELSE 0 END)) = 1",
+            name="ck_part_test_map_exactly_one_test",
+        ),
+        Index("ptm_part_profile_mode_idx", "part_id", "profile", "power_mode"),
+        Index("ptm_part_power_mode_idx", "part_id", "power_mode"),
     )
 
     part_id: int = Field(
@@ -153,22 +180,91 @@ class PartTestMap(SQLModel, table=True):
             nullable=False,
         )
     )
-    test_id: int = Field(
+    power_mode: TestMode = Field(
+        default=TestMode.unpowered,
         sa_column=Column(
-            sa.Integer,
-            sa.ForeignKey("testmacro.id", ondelete="CASCADE"),
-            primary_key=True,
+            SAEnum(TestMode, name="test_mode_enum"),
             nullable=False,
-        )
+            primary_key=True,
+        ),
     )
     profile: TestProfile = Field(
         default=TestProfile.PASSIVE,
         sa_column=Column(
             SAEnum(TestProfile, name="test_profile_enum"),
             nullable=False,
+            primary_key=True,
             server_default=TestProfile.PASSIVE.value,
+        ),
+    )
+    test_macro_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            "test_id",
+            sa.Integer,
+            sa.ForeignKey("testmacro.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+    )
+    python_test_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            sa.Integer,
+            sa.ForeignKey("pythontest.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+    )
+    detail: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )
+
+
+class BOMItemTestOverride(SQLModel, table=True):
+    __tablename__ = "bom_item_test_override"
+    __table_args__ = (
+        Index("bom_item_override_mode_idx", "bom_item_id", "power_mode"),
+        CheckConstraint(
+            "((CASE WHEN test_macro_id IS NOT NULL THEN 1 ELSE 0 END) + "
+            "(CASE WHEN python_test_id IS NOT NULL THEN 1 ELSE 0 END)) = 1",
+            name="ck_bom_item_test_override_one_source",
+        ),
+    )
+
+    bom_item_id: int = Field(
+        sa_column=Column(
+            sa.Integer,
+            sa.ForeignKey("bomitem.id", ondelete="CASCADE"),
+            primary_key=True,
+            nullable=False,
+        )
+    )
+    power_mode: TestMode = Field(
+        sa_column=Column(
+            SAEnum(TestMode, name="test_mode_enum"),
+            nullable=False,
             primary_key=True,
         ),
+    )
+    test_macro_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            sa.Integer,
+            sa.ForeignKey("testmacro.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+    )
+    python_test_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            sa.Integer,
+            sa.ForeignKey("pythontest.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+    )
+    detail: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
     )
 
 
