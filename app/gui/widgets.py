@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QLabel,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -370,6 +371,7 @@ class AssembliesPane(QWidget):
         self._assembly_id: Optional[int] = None
         self._pending_id: Optional[int] = None
         self._updating_mode: bool = False
+        self._import_progress_dialog: QProgressDialog | None = None
 
         layout = QVBoxLayout(self)
         hdr = QHBoxLayout()
@@ -460,6 +462,7 @@ class AssembliesPane(QWidget):
         state.bomItemsChanged.connect(self._populate_items)
         state.tasksChanged.connect(self._populate_tasks)
         state.bomImported.connect(self._after_import_bom)
+        state.bomImportProgress.connect(self._on_import_progress)
 
     def select_id(self, aid: int) -> None:
         self._pending_id = aid
@@ -573,6 +576,7 @@ class AssembliesPane(QWidget):
             QMessageBox.warning(self, "Import BOM", f"Could not read file:\n{e}")
             self.import_btn.setEnabled(True)
             return
+        self._show_import_progress_dialog()
         # Use AppState API which emits bomImported
         self._state.import_bom(aid, data)
 
@@ -585,6 +589,10 @@ class AssembliesPane(QWidget):
         Path(path).write_text(",".join(BOM_HEADERS) + "\n", encoding="utf-8")
 
     def _after_import_bom(self, result):  # pragma: no cover - UI glue
+        if self._import_progress_dialog:
+            self._import_progress_dialog.close()
+            self._import_progress_dialog.deleteLater()
+            self._import_progress_dialog = None
         self.import_btn.setEnabled(True)
         if isinstance(result, Exception):
             QMessageBox.warning(self, "Import BOM", str(result))
@@ -605,6 +613,37 @@ class AssembliesPane(QWidget):
             self._state.refresh_tasks(
                 self._project_id, self.status_filter.currentText()
             )
+
+    def _show_import_progress_dialog(self) -> None:
+        if self._import_progress_dialog is None:
+            dlg = QProgressDialog(self)
+            dlg.setWindowTitle("Importing BOM")
+            dlg.setAutoClose(False)
+            dlg.setAutoReset(False)
+            dlg.setMinimumDuration(0)
+            dlg.setRange(0, 1)
+            dlg.setValue(0)
+            dlg.setLabelText("Importing BOM…")
+            dlg.setCancelButton(None)
+            self._import_progress_dialog = dlg
+        else:
+            self._import_progress_dialog.setValue(0)
+            self._import_progress_dialog.setMaximum(1)
+            self._import_progress_dialog.setLabelText("Importing BOM…")
+        self._import_progress_dialog.show()
+
+    def _on_import_progress(self, current: int, total: int) -> None:
+        if self._import_progress_dialog is None:
+            self._show_import_progress_dialog()
+        if total <= 0:
+            self._import_progress_dialog.setMaximum(0)
+            self._import_progress_dialog.setLabelText("Importing BOM…")
+            return
+        self._import_progress_dialog.setMaximum(total)
+        self._import_progress_dialog.setValue(current)
+        self._import_progress_dialog.setLabelText(
+            f"Importing BOM… {current}/{total} lines"
+        )
 
     def _on_status_change(self) -> None:  # pragma: no cover - UI glue
         if self._project_id:
