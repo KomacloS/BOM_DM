@@ -6,10 +6,30 @@ from pathlib import Path
 
 from app import config
 
-from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtWidgets import QPushButton, QVBoxLayout, QWidget, QProgressDialog
 
 from ..api_client import BaseClient
 from ..util import qt
+
+
+class _ImportWorker(QThread):
+    finished = Signal(object)
+
+    def __init__(self, client: BaseClient, path: str) -> None:
+        super().__init__()
+        self._client = client
+        self._path = path
+
+    def run(self) -> None:  # pragma: no cover - Qt thread
+        try:
+            with open(self._path, "rb") as f:
+                resp = self._client.post(
+                    "/bom/import", files={"file": (Path(self._path).name, f)}
+                )
+        except Exception as exc:  # pragma: no cover - user path / IO errors
+            resp = exc
+        self.finished.emit(resp)
 
 
 class QuickActions(QWidget):
@@ -18,6 +38,8 @@ class QuickActions(QWidget):
     def __init__(self, client: BaseClient) -> None:
         super().__init__()
         self._client = client
+        self._import_dialog: QProgressDialog | None = None
+        self._import_worker: _ImportWorker | None = None
 
         layout = QVBoxLayout(self)
         imp_btn = QPushButton("Import BOM…")
@@ -42,12 +64,42 @@ class QuickActions(QWidget):
         path = qt.pick_file(self, "Import BOM", "BOM Files (*.csv *.xlsx)")
         if not path:
             return
+        if self._import_worker and self._import_worker.isRunning():
+            return
         try:
-            with open(path, "rb") as f:
-                resp = self._client.post("/bom/import", files={"file": (Path(path).name, f)})
-        except OSError as exc:  # pragma: no cover - user path
+            Path(path)  # ensure path is valid for error consistency
+        except OSError as exc:  # pragma: no cover - path validation
             qt.error(self, "Import", str(exc))
             return
+
+        dlg = QProgressDialog(self)
+        dlg.setWindowTitle("Importing BOM")
+        dlg.setLabelText("Uploading BOM…")
+        dlg.setRange(0, 0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setCancelButton(None)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.show()
+        self._import_dialog = dlg
+
+        worker = _ImportWorker(self._client, path)
+        worker.finished.connect(self._finish_import)
+        worker.finished.connect(worker.deleteLater)
+        self._import_worker = worker
+        worker.start()
+
+    def _finish_import(self, result: object) -> None:
+        if self._import_dialog is not None:
+            self._import_dialog.close()
+            self._import_dialog.deleteLater()
+            self._import_dialog = None
+        self._import_worker = None
+
+        if isinstance(result, Exception):
+            qt.error(self, "Import", str(result))
+            return
+        resp = result
         if resp.status_code == 200:
             qt.alert(self, "Import", "Done")
         else:
