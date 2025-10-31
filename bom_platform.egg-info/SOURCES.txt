@@ -23,6 +23,7 @@ gui/control_center.py
 tests/test_auth_smoke.py
 tests/test_autofill_integration.py
 tests/test_autofill_rules.py
+tests/test_bom_bootstrap.py
 tests/test_bom_import.py
 tests/test_bom_import_minimal.py
 tests/test_bom_import_price_blank.py
@@ -42,6 +43,7 @@ tests/test_datasheets.py
 tests/test_db_safe_migrate.py
 tests/test_ensure_schema_part_number_migration.py
 tests/test_export_viva.py
+tests/test_method_label_roundtrip.py
 tests/test_migrations.py
 tests/test_parts_updater.py
 tests/test_prefix_macros.py

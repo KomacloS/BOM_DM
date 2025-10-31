@@ -7,8 +7,9 @@ from typing import List, Optional
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
-from ..models import Assembly, BOMItem, Part
+from ..models import Assembly, BOMItem, Part, PartType, TestMode
 from . import BOMItemRead
+from .test_resolution import BOMTestResolver
 
 
 def list_assemblies(project_id: int, session: Session) -> List[Assembly]:
@@ -28,19 +29,53 @@ def list_assemblies(project_id: int, session: Session) -> List[Assembly]:
 def list_bom_items(assembly_id: int, session: Session) -> List[BOMItemRead]:
     """Return BOM items for an assembly with the related ``part_number``."""
 
-    stmt = (
-        select(BOMItem, Part.part_number)
-        .join(Part, Part.id == BOMItem.part_id, isouter=True)
-        .where(BOMItem.assembly_id == assembly_id)
-    )
+    assembly = session.get(Assembly, assembly_id)
+    if assembly is None:
+        raise ValueError(f"Assembly {assembly_id} not found")
+
+    raw_mode = assembly.test_mode or TestMode.unpowered
+    assembly_mode = raw_mode if isinstance(raw_mode, TestMode) else _coerce_mode(raw_mode)
+
+    stmt = select(BOMItem, Part).join(Part, Part.id == BOMItem.part_id, isouter=True).where(BOMItem.assembly_id == assembly_id)
     try:
         rows = session.exec(stmt).all()
-        return [BOMItemRead(part_number=pn, **item.model_dump()) for item, pn in rows]
     except OperationalError as e:  # pragma: no cover - depends on DB schema
         raise RuntimeError(
             "BOM items query failed; run 'python -m app.tools.db migrate'. Details: "
             f"{e}"
         ) from e
+
+    resolver = BOMTestResolver.from_session(session, assembly_id, rows)
+    result: List[BOMItemRead] = []
+    for item, part in rows:
+        resolved = resolver.resolve_effective_test(item.id, assembly_mode)
+        part_number = part.part_number if part else None
+        part_type = part.active_passive if part else None
+        part_is_active = False
+        if isinstance(part_type, PartType):
+            part_is_active = part_type is PartType.active
+        elif part_type is not None:
+            try:
+                part_is_active = PartType(str(part_type)) is PartType.active
+            except ValueError:
+                part_is_active = False
+
+        powered_method = resolved.powered_method if (assembly_mode is TestMode.powered and part_is_active) else None
+        powered_detail = resolved.powered_detail if (assembly_mode is TestMode.powered and part_is_active) else None
+        payload = item.model_dump()
+        payload.update(
+            {
+                "part_number": part_number,
+                "test_method": resolved.method,
+                "test_detail": resolved.detail,
+                "test_method_powered": powered_method,
+                "test_detail_powered": powered_detail,
+                "test_resolution_source": resolved.source,
+                "test_resolution_message": resolved.message,
+            }
+        )
+        result.append(BOMItemRead(**payload))
+    return result
 
 
 def create_assembly(
@@ -141,4 +176,33 @@ def update_manufacturer_for_part_in_assembly(
     result = session.exec(stmt)
     session.commit()
     return int(getattr(result, "rowcount", 0) or 0)
+
+
+def update_assembly_test_mode(session: Session, assembly_id: int, mode: TestMode | str) -> Assembly:
+    """Persist a new test mode for the specified assembly."""
+
+    asm = session.get(Assembly, assembly_id)
+    if asm is None:
+        raise ValueError(f"Assembly {assembly_id} not found")
+
+    if isinstance(mode, str):
+        try:
+            mode = TestMode(mode)
+        except ValueError:
+            if mode == "non_powered":
+                mode = TestMode.unpowered
+            else:
+                raise ValueError(f"Invalid test mode: {mode}")
+
+    asm.test_mode = mode
+    session.add(asm)
+    session.commit()
+    session.refresh(asm)
+    return asm
+
+
+def _coerce_mode(value: TestMode | str) -> TestMode:
+    if isinstance(value, TestMode):
+        return value
+    return TestMode(str(value))
 

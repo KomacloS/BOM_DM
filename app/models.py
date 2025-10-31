@@ -3,7 +3,8 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Optional
-from sqlalchemy import Boolean, Column, JSON
+
+from sqlalchemy import Boolean, Column, JSON, CheckConstraint, Enum as SAEnum, Index
 from sqlmodel import SQLModel, Field
 
 if SQLModel.metadata.tables:
@@ -68,15 +69,33 @@ class Project(SQLModel, table=True):
     due_at: Optional[datetime] = None
 
 
+class TestMode(str, Enum):
+    powered = "powered"
+    unpowered = "unpowered"
+
+
 class Assembly(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="project.id")
     rev: str
     notes: Optional[str] = None
+    test_mode: TestMode = Field(
+        default=TestMode.unpowered,
+        sa_column=Column(
+            SAEnum(TestMode, name="test_mode_enum"),
+            nullable=False,
+            server_default=TestMode.unpowered.value,
+        ),
+    )
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class PartType(str, Enum):
+    active = "active"
+    passive = "passive"
+
+
+class TestProfile(str, Enum):
     active = "active"
     passive = "passive"
 
@@ -110,6 +129,78 @@ class BOMItem(SQLModel, table=True):
     alt_part_number: Optional[str] = None
     is_fitted: bool = True
     notes: Optional[str] = None
+
+
+class TestMacro(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(max_length=128, nullable=False, unique=True)
+    glb_path: Optional[str] = Field(default=None, max_length=512)
+    notes: Optional[str] = Field(default=None)
+
+
+class PythonTest(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(max_length=128, nullable=False, unique=True)
+    file_path: Optional[str] = Field(default=None, max_length=512)
+    notes: Optional[str] = Field(default=None)
+
+
+class PartTestMap(SQLModel, table=True):
+    part_id: int = Field(foreign_key="part.id", primary_key=True)
+    power_mode: TestMode = Field(
+        default=TestMode.unpowered,
+        sa_column=Column(
+            SAEnum(TestMode, name="test_mode_enum"),
+            nullable=False,
+            server_default=TestMode.unpowered.value,
+            primary_key=True,
+        ),
+    )
+    profile: TestProfile = Field(
+        sa_column=Column(
+            SAEnum(TestProfile, name="test_profile_enum"),
+            nullable=False,
+            primary_key=True,
+        ),
+    )
+    test_macro_id: Optional[int] = Field(default=None, foreign_key="testmacro.id")
+    python_test_id: Optional[int] = Field(default=None, foreign_key="pythontest.id")
+    detail: Optional[str] = Field(default=None)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(test_macro_id IS NOT NULL AND python_test_id IS NULL) OR "
+            "(test_macro_id IS NULL AND python_test_id IS NOT NULL)",
+            name="ck_part_test_map_single_source",
+        ),
+        Index("ix_part_test_map_part_profile_mode", "part_id", "profile", "power_mode"),
+        Index("ix_part_test_map_part_mode", "part_id", "power_mode"),
+    )
+
+
+class BOMItemTestOverride(SQLModel, table=True):
+    bom_item_id: int = Field(foreign_key="bomitem.id", primary_key=True)
+    power_mode: TestMode = Field(
+        default=TestMode.unpowered,
+        sa_column=Column(
+            SAEnum(TestMode, name="test_mode_enum"),
+            nullable=False,
+            server_default=TestMode.unpowered.value,
+            primary_key=True,
+        ),
+    )
+    test_macro_id: Optional[int] = Field(default=None, foreign_key="testmacro.id")
+    python_test_id: Optional[int] = Field(default=None, foreign_key="pythontest.id")
+    detail: Optional[str] = Field(default=None)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(test_macro_id IS NOT NULL AND python_test_id IS NULL) OR "
+            "(test_macro_id IS NULL AND python_test_id IS NOT NULL)",
+            name="ck_bom_item_test_override_single_source",
+        ),
+        Index("ix_bom_item_test_override_item_mode", "bom_item_id", "power_mode"),
+    )
 
 
 class TaskStatus(str, Enum):

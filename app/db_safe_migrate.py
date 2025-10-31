@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import re
@@ -31,6 +31,7 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "notes": "TEXT DEFAULT ''",
         "created_at": "TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
     },
+        "test_mode": "TEXT DEFAULT 'unpowered'",
     "part": {
         "part_number": "TEXT",
         "description": "TEXT DEFAULT ''",

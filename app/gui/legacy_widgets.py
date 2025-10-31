@@ -31,7 +31,7 @@ from sqlmodel import select
 
 from . import state as app_state
 from .. import services
-from ..models import ProjectPriority, TaskStatus, Project, Assembly
+from ..models import ProjectPriority, TaskStatus, Project, Assembly, TestMode
 from ..services.customers import CustomerExistsError
 from .workflow import NewProjectWizard
 from ..constants import BOM_TEMPLATE_HEADERS as BOM_HEADERS
@@ -48,11 +48,11 @@ class CustomersPane(QWidget):
 
         layout = QVBoxLayout(self)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search…")
+        self.search.setPlaceholderText("Search...")
         layout.addWidget(self.search)
 
         hdr = QHBoxLayout()
-        self.delete_btn = QPushButton("Delete Customer…")
+        self.delete_btn = QPushButton("Delete Customer")
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self._on_delete_customer)
         hdr.addWidget(self.delete_btn)
@@ -194,12 +194,12 @@ class ProjectsPane(QWidget):
         self._pending_id: Optional[int] = None
 
         layout = QVBoxLayout(self)
-        self.workflow_btn = QPushButton("➕ New Project (Workflow)")
+        self.workflow_btn = QPushButton("New Project (Workflow)")
         self.workflow_btn.clicked.connect(self._open_new_project_workflow)
         layout.addWidget(self.workflow_btn)
 
         hdr = QHBoxLayout()
-        self.delete_btn = QPushButton("Delete Project…")
+        self.delete_btn = QPushButton("Delete Project")
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self._on_delete_project)
         hdr.addWidget(self.delete_btn)
@@ -369,14 +369,25 @@ class AssembliesPane(QWidget):
         self._project_id: Optional[int] = None
         self._assembly_id: Optional[int] = None
         self._pending_id: Optional[int] = None
+        self._assemblies: list[Assembly] = []
+        self._mode_updating = False
 
         layout = QVBoxLayout(self)
         hdr = QHBoxLayout()
-        self.delete_btn = QPushButton("Delete Assembly…")
+        self.delete_btn = QPushButton("Delete Assembly")
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self._on_delete_assembly)
         hdr.addWidget(self.delete_btn)
         hdr.addStretch()
+        mode_lbl = QLabel("Board mode:")
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Not powered", TestMode.unpowered.value)
+        self.mode_combo.addItem("Powered", TestMode.powered.value)
+        self.mode_combo.setEnabled(False)
+        self.mode_combo.setToolTip("Select the powered / not powered test mode for this assembly.")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        hdr.addWidget(mode_lbl)
+        hdr.addWidget(self.mode_combo)
         layout.addLayout(hdr)
 
         self.table = QTableWidget(0, 2)
@@ -399,7 +410,7 @@ class AssembliesPane(QWidget):
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
-        self.import_btn = QPushButton("Import BOM…")
+        self.import_btn = QPushButton("Import BOM...")
         self.import_btn.clicked.connect(self._on_import_bom)
         self.template_btn = QPushButton("Download CSV template")
         self.template_btn.clicked.connect(self.download_template)
@@ -459,10 +470,72 @@ class AssembliesPane(QWidget):
     def _table_id_at(self, row: int) -> int:
         return int(self.table.item(row, 0).text())
 
+    def _assembly_by_id(self, assembly_id: Optional[int]) -> Optional[Assembly]:
+        if assembly_id is None:
+            return None
+        for asm in self._assemblies:
+            if asm.id == assembly_id:
+                return asm
+        return None
+
+    def _set_mode_combo(self, assembly: Optional[Assembly]) -> None:
+        self._mode_updating = True
+        try:
+            if assembly is None:
+                idx = self.mode_combo.findData(TestMode.unpowered.value)
+                if idx >= 0:
+                    self.mode_combo.setCurrentIndex(idx)
+                self.mode_combo.setEnabled(False)
+                return
+            mode = assembly.test_mode or TestMode.unpowered
+            if not isinstance(mode, TestMode):
+                try:
+                    mode = TestMode(str(mode))
+                except ValueError:
+                    mode = TestMode.unpowered
+            idx = self.mode_combo.findData(mode.value)
+            if idx >= 0:
+                self.mode_combo.setCurrentIndex(idx)
+            self.mode_combo.setEnabled(True)
+        finally:
+            self._mode_updating = False
+
+    def _on_mode_changed(self) -> None:
+        if self._mode_updating:
+            return
+        if self._assembly_id is None:
+            return
+        value = self.mode_combo.currentData()
+        if value is None:
+            return
+        try:
+            with app_state.get_session() as session:
+                updated = services.update_assembly_test_mode(session, self._assembly_id, value)
+        except Exception as exc:
+            QMessageBox.warning(self, "Update failed", str(exc))
+            self._set_mode_combo(self._assembly_by_id(self._assembly_id))
+            return
+        self._update_local_assembly(updated)
+        self._set_mode_combo(updated)
+        self._state.refresh_bom_items(self._assembly_id)
+        if self._project_id:
+            self._pending_id = self._assembly_id
+            self._state.refresh_assemblies(self._project_id)
+
+    def _update_local_assembly(self, updated: Assembly) -> None:
+        for idx, asm in enumerate(self._assemblies):
+            if asm.id == updated.id:
+                self._assemblies[idx] = updated
+                break
+        else:
+            self._assemblies.append(updated)
+
     # --------------------------------------------------------------
     def set_project(self, pid: int) -> None:  # pragma: no cover - UI glue
         self._project_id = pid
         self._assembly_id = None
+        self._assemblies = []
+        self._set_mode_combo(None)
         self.delete_btn.setEnabled(False)
         self.items_table.setEnabled(False)
         self.import_btn.setEnabled(False)
@@ -476,7 +549,9 @@ class AssembliesPane(QWidget):
             self.items_table.setEnabled(False)
             self.import_btn.setEnabled(False)
             self.items_table.setRowCount(0)
+            self._set_mode_combo(None)
             return
+        self._assemblies = list(assemblies)
         self.table.setRowCount(len(assemblies))
         for row, a in enumerate(assemblies):
             self.table.setItem(row, 0, QTableWidgetItem(str(a.id)))
@@ -489,6 +564,8 @@ class AssembliesPane(QWidget):
                     self._on_select(row, 0)
                     break
             self._pending_id = None
+        current = self._assembly_by_id(self._assembly_id) if self._assembly_id is not None else None
+        self._set_mode_combo(current)
         if self._assembly_id is None:
             self.items_table.setEnabled(False)
             self.import_btn.setEnabled(False)
@@ -499,6 +576,7 @@ class AssembliesPane(QWidget):
             return
         aid = self._table_id_at(row)
         self._assembly_id = aid
+        self._set_mode_combo(self._assembly_by_id(aid))
         self.delete_btn.setEnabled(True)
         self.assemblySelected.emit(aid)
         if aid:
@@ -607,7 +685,7 @@ class AssembliesPane(QWidget):
         for row, i in enumerate(items):
             self.items_table.setItem(row, 0, QTableWidgetItem(i.reference))
             self.items_table.setItem(row, 1, QTableWidgetItem(str(i.qty)))
-            pn = i.part_number or "—"
+            pn = i.part_number or "-"
             self.items_table.setItem(row, 2, QTableWidgetItem(pn))
             self.items_table.setItem(row, 3, QTableWidgetItem(i.notes or ""))
         self.items_table.resizeColumnsToContents()
@@ -650,4 +728,3 @@ class AssembliesPane(QWidget):
                 self._project_id, self.status_filter.currentText()
             )
         self._state.bomItemsChanged.emit([])
-

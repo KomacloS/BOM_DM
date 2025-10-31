@@ -115,6 +115,7 @@ from . import state as app_state
 from .widgets.complex_panel import ComplexPanel
 from ..services.export_viva import VivaExportError, VivaExportResult
 from ..integration.ce_supervisor import CESupervisor
+from ..models import Assembly, TestMode
 
 
 
@@ -832,6 +833,8 @@ class BOMEditorPane(QWidget):
         self._dirty_tolerances: dict[int, tuple[Optional[str], Optional[str]]] = {}
 
         self._dirty_tests: set[int] = set()
+        self._assembly_mode: TestMode = TestMode.unpowered
+        self._resolved_tests: Dict[int, dict] = {}
 
         # Track manual edits to the Link column before Save
 
@@ -1427,6 +1430,35 @@ QTableView::item:selected:hover {
 
     # ------------------------------------------------------------------
 
+    def _set_headers(self) -> None:
+        base = {
+            "pn": "PN",
+            "ref": "Reference",
+            "desc": "Description",
+            "mfg": "Manufacturer",
+            "ap": "A/P",
+            "ds": "DS",
+            "link": "Link",
+            "test_method": "Test method",
+            "test_detail": "Test detail",
+            "package": "Package",
+            "value": "Value",
+            "tol_p": "Tol (+)",
+            "tol_n": "Tol (–)",
+        }
+        if "test_method_powered" in self._col_indices:
+            base["test_method_powered"] = "Test method (powered)"
+        if "test_detail_powered" in self._col_indices:
+            base["test_detail_powered"] = "Test detail (powered)"
+        if self._view_mode == "by_pn":
+            base["ref"] = "References"
+
+        inv = {v: k for k, v in self._col_indices.items()}
+        headers = [""] * len(inv)
+        for name, idx in self._col_indices.items():
+            headers[idx] = base.get(name, name.replace("_", " " ).title())
+        self.model.setHorizontalHeaderLabels(headers)
+
     def _setup_columns_menu(self) -> None:
 
         # Clear previous actions
@@ -1435,79 +1467,20 @@ QTableView::item:selected:hover {
 
         self._column_actions: list[QAction] = []
 
-        if self._view_mode == "by_pn":
-
-            headers = [
-
-                "PN",
-
-                "References",
-
-                "Description",
-
-                "Manufacturer",
-
-                "Active/Passive",
-
-                "Datasheet",
-
-                "Link",
-
-                "Test Method",
-
-                "Test Detail",
-
-                "Package",
-
-                "Value",
-
-                "Tol Positive",
-
-                "Tol Negative",
-
-            ]
-
-        else:
-
-            headers = [
-
-                "Reference",
-
-                "PN",
-
-                "Description",
-
-                "Manufacturer",
-
-                "Active/Passive",
-
-                "Datasheet",
-
-                "Link",
-
-                "Test Method",
-
-                "Test Detail",
-
-                "Package",
-
-                "Value",
-
-                "Tol Positive",
-
-                "Tol Negative",
-
-            ]
-
-        self.model.setHorizontalHeaderLabels(headers)
+        header_labels: list[str] = []
+        for idx in range(self.model.columnCount()):
+            header = self.model.headerData(idx, Qt.Orientation.Horizontal)
+            label = str(header) if header is not None else ""
+            header_labels.append(label)
 
         # Persist settings per mode
 
         mode_key = "cols_by_pn" if self._view_mode == "by_pn" else "cols_by_ref"
 
-        for idx, name in enumerate(headers):
+        for idx, name in enumerate(header_labels):
+            display_name = name or f"Column {idx + 1}"
 
-            act = QAction(name, self)
+            act = QAction(display_name, self)
 
             act.setCheckable(True)
 
@@ -1585,62 +1558,86 @@ QTableView::item:selected:hover {
 
         self._sync_detail_editors()
 
-        # Set reference column for natural sorting and skip AP from filter
-
-        self.proxy.setReferenceColumn(ref_col)
-
-        self.proxy.setSkipColumns({ap_col})
-
 
 
     def _load_data(self) -> None:
 
         # Keep canonical raw rows
-
         with app_state.get_session() as session:
-
+            assembly = session.get(Assembly, self._assembly_id)
+            mode = TestMode.unpowered
+            if assembly is not None and getattr(assembly, "test_mode", None) is not None:
+                raw_mode = assembly.test_mode
+                if isinstance(raw_mode, TestMode):
+                    mode = raw_mode
+                else:
+                    try:
+                        mode = TestMode(str(raw_mode))
+                    except ValueError:
+                        mode = TestMode.unpowered
+            self._assembly_mode = mode
             self._rows_raw = services.get_joined_bom_for_assembly(session, self._assembly_id)
 
         # Seed parts state from DB
-
         self._parts_state.clear()
-
         self._part_datasheets.clear()
-
         self._part_packages.clear()
-
         self._part_numbers.clear()
-
         self._part_values.clear()
-
         self._tolerances.clear()
-
         self._dirty_datasheets.clear()
+        self._resolved_tests.clear()
 
+        processed_parts: set[int] = set()
         for r in self._rows_raw:
+            part_id = getattr(r, "part_id", None)
+            if part_id is None or part_id in processed_parts:
+                continue
+            processed_parts.add(part_id)
 
             # Use DB-provided value; may be None in future schema
-
-            self._parts_state[r.part_id] = getattr(r, "active_passive", None)
-
-            self._part_datasheets[r.part_id] = getattr(r, "datasheet_url", None)
-
-            self._part_packages[r.part_id] = getattr(r, "package", None)
-
-            self._part_numbers[r.part_id] = getattr(r, "part_number", "")
-
-            self._part_values[r.part_id] = getattr(r, "value", None)
-
-            self._tolerances[r.part_id] = (getattr(r, "tol_p", None), getattr(r, "tol_n", None))
-
+            self._parts_state[part_id] = getattr(r, "active_passive", None)
+            self._part_datasheets[part_id] = getattr(r, "datasheet_url", None)
+            self._part_packages[part_id] = getattr(r, "package", None)
+            self._part_numbers[part_id] = getattr(r, "part_number", "")
+            self._part_values[part_id] = getattr(r, "value", None)
+            self._tolerances[part_id] = (getattr(r, "tol_p", None), getattr(r, "tol_n", None))
             # Seed product link if available so the Link column shows after reload
+            self._part_product_links[part_id] = getattr(r, "product_url", None)
 
-            self._part_product_links[r.part_id] = getattr(r, "product_url", None)
+            resolved = self._resolved_tests.setdefault(
+                part_id,
+                {
+                    "method": getattr(r, "test_method", None),
+                    "detail": getattr(r, "test_detail", None),
+                    "method_powered": getattr(r, "test_method_powered", None),
+                    "detail_powered": getattr(r, "test_detail_powered", None),
+                    "source": getattr(r, "test_resolution_source", None),
+                    "message": getattr(r, "test_resolution_message", None),
+                },
+            )
+
+            ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+            if part_id not in self._dirty_tests:
+                ta["method"] = resolved.get("method") or ""
+                detail_val = resolved.get("detail")
+                if detail_val:
+                    ta["detail"] = detail_val
+                else:
+                    ta.pop("detail", None)
+            method_powered = resolved.get("method_powered")
+            detail_powered = resolved.get("detail_powered")
+            if method_powered:
+                ta["method_powered"] = method_powered
+            else:
+                ta.pop("method_powered", None)
+            if detail_powered:
+                ta["detail_powered"] = detail_powered
+            else:
+                ta.pop("detail_powered", None)
 
         # Overlay any saved test assignments from settings for visible parts
-
         self._load_test_assignments_from_settings()
-
 
 
     def _auto_infer(self, value: Optional[str], reference: str) -> Optional[str]:
@@ -1662,316 +1659,197 @@ QTableView::item:selected:hover {
     def _rebuild_model(self) -> None:
 
         # Build model based on view mode
-
         self.model.setRowCount(0)
 
-        # 13 columns when including Link column
+        if self._view_mode == "by_pn":
+            columns = [
+                "pn",
+                "ref",
+                "desc",
+                "mfg",
+                "ap",
+                "ds",
+                "link",
+                "test_method",
+                "test_detail",
+                "package",
+                "value",
+                "tol_p",
+                "tol_n",
+            ]
+        else:
+            columns = [
+                "ref",
+                "pn",
+                "desc",
+                "mfg",
+                "ap",
+                "ds",
+                "link",
+                "test_method",
+                "test_detail",
+                "package",
+                "value",
+                "tol_p",
+                "tol_n",
+            ]
 
-        self.model.setColumnCount(13)
+        if self._assembly_mode is TestMode.powered:
+            insert_at = columns.index("test_detail") + 1
+            columns[insert_at:insert_at] = ["test_method_powered", "test_detail_powered"]
+
+        self._col_indices = {name: idx for idx, name in enumerate(columns)}
+        self.model.setColumnCount(len(columns))
 
         if self._view_mode == "by_pn":
-
-            # Column map
-
-            self._col_indices = {
-
-                "pn": 0,
-
-                "ref": 1,
-
-                "desc": 2,
-
-                "mfg": 3,
-
-                "ap": 4,
-
-                "ds": 5,
-
-                "link": 6,
-
-                "test_method": 7,
-
-                "test_detail": 8,
-
-                "package": 9,
-
-                "value": 10,
-
-                "tol_p": 11,
-
-                "tol_n": 12,
-
-            }
-
             self._build_by_pn()
-
         else:
-
-            self._col_indices = {
-
-                "ref": 0,
-
-                "pn": 1,
-
-                "desc": 2,
-
-                "mfg": 3,
-
-                "ap": 4,
-
-                "ds": 5,
-
-                "link": 6,
-
-                "test_method": 7,
-
-                "test_detail": 8,
-
-                "package": 9,
-
-                "value": 10,
-
-                "tol_p": 11,
-
-                "tol_n": 12,
-
-            }
-
             self._build_by_ref()
 
-        # Setup columns menu and sorting based on new headers
-
+        self._set_headers()
         self._setup_columns_menu()
 
         self.table.setSortingEnabled(True)
-
         self.table.sortByColumn(self._col_indices["ref"], Qt.SortOrder.AscendingOrder)
 
+        ref_col = self._col_indices["ref"]
+        ap_col = self._col_indices["ap"]
+        self.proxy.setReferenceColumn(ref_col)
+        self.proxy.setSkipColumns({ap_col})
+
         # Defer autosize until columns are applied
-
         QTimer.singleShot(0, self._autosize_window_to_columns)
-
         QTimer.singleShot(0, self._install_datasheet_widgets)
-
         QTimer.singleShot(0, self._sync_detail_editors)
-
         if self._complex_panel:
-
             QTimer.singleShot(0, self._update_complex_panel_context)
-
 
 
     def _build_by_pn(self) -> None:
 
         from collections import defaultdict
 
-
-
         groups: Dict[int, List[object]] = defaultdict(list)
-
         for r in self._rows_raw:
-
+            if getattr(r, "part_id", None) is None:
+                continue
             groups[r.part_id].append(r)
 
-
-
         for part_id, rows in groups.items():
-
-            # Aggregate references
-
+            first = rows[0]
             refs_sorted = sorted((x.reference for x in rows), key=natural_key)
-
             refs_str = ",".join(refs_sorted)
-
-            # Determine value: use explicit if present, else auto-infer, then overlay staged
-
             explicit = next((x.active_passive for x in rows if getattr(x, "active_passive", None) in ("active", "passive")), None)
-
-            mode_val = explicit or self._auto_infer(None, rows[0].reference)
-
+            mode_val = explicit or self._auto_infer(None, first.reference)
             if part_id in self._dirty_parts:
-
                 mode_val = self._dirty_parts[part_id]
-
-            # Persist or stage auto-inferred, if any
-
             self._handle_auto_infer_persistence(part_id, mode_val, explicit)
 
-
-
             ta = self._test_assignments.get(part_id, {"method": "", "qt_path": None})
+            resolved = self._resolved_tests.get(part_id, {})
 
-            row_items = [
+            values = {
+                "pn": first.part_number or "",
+                "ref": refs_str,
+                "desc": first.description or "",
+                "mfg": first.manufacturer or "",
+                "ap": mode_val or "",
+                "ds": "",
+                "link": "",
+                "test_method": ta.get("method", ""),
+                "test_detail": self._detail_text_for(ta),
+                "package": self._part_packages.get(part_id) or "",
+                "value": self._part_values.get(part_id) or "",
+                "tol_p": self._tolerances.get(part_id, (None, None))[0] or "",
+                "tol_n": self._tolerances.get(part_id, (None, None))[1] or "",
+            }
+            if "test_method_powered" in self._col_indices:
+                values["test_method_powered"] = ta.get("method_powered") or resolved.get("method_powered") or ""
+            if "test_detail_powered" in self._col_indices:
+                values["test_detail_powered"] = ta.get("detail_powered") or resolved.get("detail_powered") or ""
 
-                QStandardItem(rows[0].part_number),
+            row_items = [QStandardItem("") for _ in range(len(self._col_indices))]
+            for name, idx in self._col_indices.items():
+                text_value = values.get(name)
+                if text_value is not None:
+                    row_items[idx].setText(str(text_value))
 
-                QStandardItem(refs_str),
+            editable_names = {"test_method", "test_detail", "desc", "mfg", "package", "value", "tol_p", "tol_n"}
+            editable = {self._col_indices[n] for n in editable_names if n in self._col_indices}
 
-                QStandardItem(rows[0].description or ""),
-
-                QStandardItem(rows[0].manufacturer or ""),
-
-                QStandardItem(mode_val or ""),
-
-                QStandardItem(""),
-
-                QStandardItem(""),
-
-                QStandardItem(ta["method"]),
-
-                QStandardItem(self._detail_text_for(ta)),
-
-                QStandardItem(self._part_packages.get(part_id) or ""),
-
-                QStandardItem(self._part_values.get(part_id) or ""),
-
-                QStandardItem(self._tolerances.get(part_id, (None, None))[0] or ""),
-
-                QStandardItem(self._tolerances.get(part_id, (None, None))[1] or ""),
-
-            ]
-
-            for i, it in enumerate(row_items):
-
-                flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
-
-                editable = {
-
-                    self._col_indices["test_method"],
-
-                    self._col_indices["test_detail"],
-
-                    self._col_indices["desc"],
-
-                    self._col_indices["mfg"],
-
-                    self._col_indices["package"],
-
-                    self._col_indices["value"],
-
-                    self._col_indices["tol_p"],
-
-                    self._col_indices["tol_n"],
-
-                }
-
-                if i not in editable or part_id in self._locked_parts:
-
+            for idx, item in enumerate(row_items):
+                flags = item.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+                if idx not in editable or part_id in self._locked_parts:
                     flags &= ~Qt.ItemFlag.ItemIsEditable
-
-                it.setFlags(flags)
-
-                it.setData(part_id, PartIdRole)
-
-                if i == self._col_indices["ap"]:
-
-                    it.setData(mode_val, ModeRole)
-
-                if i == self._col_indices["ds"]:
-
-                    it.setData(self._part_datasheets.get(part_id), DatasheetRole)
-
-                if i == self._col_indices["link"]:
-
-                    it.setData(self._part_product_links.get(part_id) or "", LinkUrlRole)
-
+                item.setFlags(flags)
+                item.setData(part_id, PartIdRole)
+                if idx == self._col_indices.get("ap"):
+                    item.setData(mode_val, ModeRole)
+                if idx == self._col_indices.get("ds"):
+                    item.setData(self._part_datasheets.get(part_id), DatasheetRole)
+                if idx == self._col_indices.get("link"):
+                    item.setData(self._part_product_links.get(part_id) or "", LinkUrlRole)
             self.model.appendRow(row_items)
-
 
 
     def _build_by_ref(self) -> None:
 
         for r in self._rows_raw:
-
+            part_id = getattr(r, "part_id", None)
             explicit = getattr(r, "active_passive", None)
-
             mode_val = explicit or self._auto_infer(None, r.reference)
+            if part_id in self._dirty_parts:
+                mode_val = self._dirty_parts[part_id]
+            if part_id is not None:
+                self._handle_auto_infer_persistence(part_id, mode_val, explicit)
 
-            if r.part_id in self._dirty_parts:
+            method_val = getattr(r, "test_method", None)
+            detail_val = getattr(r, "test_detail", None)
+            ta_display = {"method": method_val or "", "detail": detail_val}
 
-                mode_val = self._dirty_parts[r.part_id]
+            values = {
+                "ref": r.reference,
+                "pn": r.part_number,
+                "desc": r.description or "",
+                "mfg": r.manufacturer or "",
+                "ap": mode_val or "",
+                "ds": "",
+                "link": "",
+                "test_method": method_val or "",
+                "test_detail": self._detail_text_for(ta_display),
+                "package": self._part_packages.get(part_id, "") if part_id is not None else "",
+                "value": self._part_values.get(part_id, "") if part_id is not None else "",
+                "tol_p": self._tolerances.get(part_id, (None, None))[0] if part_id is not None else "",
+                "tol_n": self._tolerances.get(part_id, (None, None))[1] if part_id is not None else "",
+            }
+            if "test_method_powered" in self._col_indices:
+                values["test_method_powered"] = getattr(r, "test_method_powered", None) or ""
+            if "test_detail_powered" in self._col_indices:
+                values["test_detail_powered"] = getattr(r, "test_detail_powered", None) or ""
 
-            self._handle_auto_infer_persistence(r.part_id, mode_val, explicit)
+            row_items = [QStandardItem("") for _ in range(len(self._col_indices))]
+            for name, idx in self._col_indices.items():
+                text_value = values.get(name)
+                if text_value is not None:
+                    row_items[idx].setText(str(text_value))
 
-            ta = self._test_assignments.get(r.part_id, {"method": "", "qt_path": None})
+            editable_names = {"test_method", "test_detail", "desc", "mfg", "package", "value", "tol_p", "tol_n"}
+            editable = {self._col_indices[n] for n in editable_names if n in self._col_indices}
 
-            items = [
-
-                QStandardItem(r.reference),
-
-                QStandardItem(r.part_number),
-
-                QStandardItem(r.description or ""),
-
-                QStandardItem(r.manufacturer or ""),
-
-                QStandardItem(mode_val or ""),
-
-                QStandardItem(""),
-
-                QStandardItem(""),
-
-                QStandardItem(ta["method"]),
-
-                QStandardItem(self._detail_text_for(ta)),
-
-                QStandardItem(self._part_packages.get(r.part_id) or ""),
-
-                QStandardItem(self._part_values.get(r.part_id) or ""),
-
-                QStandardItem(self._tolerances.get(r.part_id, (None, None))[0] or ""),
-
-                QStandardItem(self._tolerances.get(r.part_id, (None, None))[1] or ""),
-
-            ]
-
-            for i, it in enumerate(items):
-
-                flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
-
-                editable = {
-
-                    self._col_indices["test_method"],
-
-                    self._col_indices["test_detail"],
-
-                    self._col_indices["desc"],
-
-                    self._col_indices["mfg"],
-
-                    self._col_indices["package"],
-
-                    self._col_indices["value"],
-
-                    self._col_indices["tol_p"],
-
-                    self._col_indices["tol_n"],
-
-                }
-
-                if i not in editable or r.part_id in self._locked_parts:
-
+            for idx, item in enumerate(row_items):
+                flags = item.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+                if idx not in editable or (part_id is not None and part_id in self._locked_parts):
                     flags &= ~Qt.ItemFlag.ItemIsEditable
+                item.setFlags(flags)
+                item.setData(part_id, PartIdRole)
+                if idx == self._col_indices.get("ap"):
+                    item.setData(mode_val, ModeRole)
+                if idx == self._col_indices.get("ds") and part_id is not None:
+                    item.setData(self._part_datasheets.get(part_id), DatasheetRole)
+                if idx == self._col_indices.get("link") and part_id is not None:
+                    item.setData(self._part_product_links.get(part_id) or "", LinkUrlRole)
+            self.model.appendRow(row_items)
 
-                it.setFlags(flags)
-
-                it.setData(r.part_id, PartIdRole)
-
-                it.setData(getattr(r, "bom_item_id", None), BOMItemIdRole)
-
-                if i == self._col_indices["ap"]:
-
-                    it.setData(mode_val, ModeRole)
-
-                if i == self._col_indices["ds"]:
-
-                    it.setData(self._part_datasheets.get(r.part_id), DatasheetRole)
-
-                if i == self._col_indices["link"]:
-
-                    it.setData(self._part_product_links.get(r.part_id) or "", LinkUrlRole)
-
-            self.model.appendRow(items)
 
     def _detail_label_for(self, ta: dict) -> str:
 

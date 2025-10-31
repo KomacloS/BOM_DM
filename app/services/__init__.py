@@ -26,6 +26,12 @@ class BOMItemRead(BaseModel):
     notes: str | None = None
     part_id: int | None = None
     part_number: str | None = None
+    test_method: str | None = None
+    test_detail: str | None = None
+    test_method_powered: str | None = None
+    test_detail_powered: str | None = None
+    test_resolution_source: str | None = None
+    test_resolution_message: str | None = None
 
 
 from .customers import (
@@ -44,6 +50,7 @@ from .assemblies import (
     delete_bom_items_for_part,
     update_bom_item_manufacturer,
     update_manufacturer_for_part_in_assembly,
+    update_assembly_test_mode,
 )
 from .tasks import list_tasks
 from .bom_import import ImportReport, validate_headers, import_bom
@@ -85,6 +92,7 @@ __all__ = [
     "delete_bom_items_for_part",
     "update_bom_item_manufacturer",
     "update_manufacturer_for_part_in_assembly",
+    "update_assembly_test_mode",
     "delete_customer",
     "DeleteBlockedError",
     "list_tasks",
