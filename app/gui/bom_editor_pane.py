@@ -93,7 +93,7 @@ import subprocess, shutil, time, os
 from datetime import datetime
 from functools import partial
 from ..logic.autofill_rules import infer_from_pn_and_desc
-from ..logic.prefix_macros import load_prefix_macros, reload_prefix_macros
+from ..logic.prefix_macros import load_prefix_macros
 from ..models import Assembly, TestMode
 from . import state as app_state
 from .widgets.complex_panel import ComplexPanel
@@ -587,10 +587,6 @@ class BOMEditorPane(QWidget):
         self.export_viva_act = QAction("Export for VIVA", self)
         self.export_viva_act.triggered.connect(self._on_export_viva)
 
-        # Reload prefix map
-        self.reload_prefix_map_act = QAction("Reload Prefix Map", self)
-        self.reload_prefix_map_act.triggered.connect(self._reload_prefix_map)
-
         # Table
         self.table = QTableView()
 
@@ -754,6 +750,12 @@ QTableView::item:selected:hover {
         self.btn_view.setMenu(self.menu_view)
         self.toolbar.addWidget(self.btn_view)
 
+        self.mode_badge = QLabel("", self)
+        self.mode_badge.setObjectName("modeBadge")
+        self.mode_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mode_badge.setMinimumWidth(200)
+        self.toolbar.addWidget(self.mode_badge)
+
         self.btn_data = QToolButton(self)
         self.btn_data.setText("Data")
         self.btn_data.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -768,7 +770,6 @@ QTableView::item:selected:hover {
         self.btn_tools.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.menu_tools = QMenu(self.btn_tools)
         self.menu_tools.addAction(self.autofill_act)
-        self.menu_tools.addAction(self.reload_prefix_map_act)
         self.menu_tools.addAction(self.auto_ds_act)
         self.menu_tools.addAction(self.export_viva_act)
         # Export to Excel
@@ -831,6 +832,10 @@ QTableView::item:selected:hover {
                 "Tol Positive",
                 "Tol Negative",
             ]
+        if "test_method_powered" in self._col_indices:
+            insert_at = self._col_indices["test_method_powered"]
+            headers.insert(insert_at, "Test Method (Powered)")
+            headers.insert(insert_at + 1, "Test Detail (Powered)")
         self.model.setHorizontalHeaderLabels(headers)
         # Persist settings per mode
         mode_key = "cols_by_pn" if self._view_mode == "by_pn" else "cols_by_ref"
@@ -853,10 +858,21 @@ QTableView::item:selected:hover {
         self.table.setItemDelegateForColumn(ref_col, self.wrap_delegate)
         tm_col = self._col_indices["test_method"]
         self.table.setItemDelegateForColumn(tm_col, self.method_delegate)
+        powered_tm_col = self._col_indices.get("test_method_powered")
+        if powered_tm_col is not None:
+            self.table.setItemDelegateForColumn(powered_tm_col, self.method_delegate)
         td_col = self._col_indices["test_detail"]
+        powered_td_col = self._col_indices.get("test_detail_powered")
         # Keep delegate up to date on column positions and options
-        self.detail_delegate.set_test_method_col(tm_col)
+        relevant_method_col = self._col_indices.get(
+            self._relevant_test_column_keys()[0],
+            tm_col,
+        )
+        self.detail_delegate.set_test_method_col(relevant_method_col)
         self.table.setItemDelegateForColumn(td_col, self.detail_delegate)
+        if powered_td_col is not None:
+            self.table.setItemDelegateForColumn(powered_td_col, self.detail_delegate)
+        self._update_test_header_labels()
         # Make icon-only columns compact while keeping icons prominent
         try:
             from PyQt6.QtWidgets import QHeaderView as _QHV
@@ -878,6 +894,87 @@ QTableView::item:selected:hover {
         self.proxy.setReferenceColumn(ref_col)
         self.proxy.setSkipColumns({ap_col})
 
+    def _relevant_test_column_keys(self) -> tuple[str, str]:
+        powered_cols_present = (
+            "test_method_powered" in self._col_indices
+            and "test_detail_powered" in self._col_indices
+        )
+        if self._assembly_mode == TestMode.powered and powered_cols_present:
+            return "test_method_powered", "test_detail_powered"
+        return "test_method", "test_detail"
+
+    def _update_test_header_labels(self) -> None:
+        label_map = {
+            "test_method": "Test Method",
+            "test_detail": "Test Detail",
+        }
+        if "test_method_powered" in self._col_indices:
+            label_map["test_method_powered"] = "Test Method (Powered)"
+        if "test_detail_powered" in self._col_indices:
+            label_map["test_detail_powered"] = "Test Detail (Powered)"
+        relevant_method, relevant_detail = self._relevant_test_column_keys()
+        relevant_cols = {
+            self._col_indices.get(relevant_method),
+            self._col_indices.get(relevant_detail),
+        }
+        for key, base_label in label_map.items():
+            col = self._col_indices.get(key)
+            if col is None:
+                continue
+            item = self.model.horizontalHeaderItem(col)
+            if item is None:
+                continue
+            is_relevant = col in relevant_cols
+            label = base_label + (" — Current Mode" if is_relevant else "")
+            item.setText(label)
+            if is_relevant:
+                item.setData(
+                    QBrush(QColor("#BFDBFE")),
+                    int(Qt.ItemDataRole.BackgroundRole),
+                )
+                item.setData(
+                    QBrush(QColor("#1E3A8A")),
+                    int(Qt.ItemDataRole.ForegroundRole),
+                )
+                item.setToolTip(
+                    "These values are used for Autofill, VIVA export, and Excel export."
+                )
+            else:
+                item.setData(QBrush(), int(Qt.ItemDataRole.BackgroundRole))
+                item.setData(QBrush(), int(Qt.ItemDataRole.ForegroundRole))
+                if key.endswith("powered"):
+                    item.setToolTip(
+                        "Reference values for powered tests (read-only display)."
+                    )
+                else:
+                    item.setToolTip("")
+
+    def _update_mode_badge(self) -> None:
+        badge = getattr(self, "mode_badge", None)
+        if badge is None:
+            return
+        if self._assembly_mode == TestMode.powered:
+            text = "Powered board — using powered test columns"
+            bg = "#F97316"
+            fg = "#FFFFFF"
+        else:
+            text = "Unpowered board — using unpowered test columns"
+            bg = "#0EA5E9"
+            fg = "#FFFFFF"
+        badge.setText(text)
+        badge.setStyleSheet(
+            "QLabel#modeBadge {"
+            " border-radius: 14px;"
+            " padding: 4px 12px;"
+            " font-weight: 600;"
+            f" color: {fg};"
+            f" background-color: {bg};"
+            "}"
+        )
+        badge.setToolTip(
+            "This reflects the assembly test mode currently applied to the BOM."
+        )
+
     def _load_data(self) -> None:
         # Keep canonical raw rows
         with app_state.get_session() as session:
@@ -894,6 +991,7 @@ QTableView::item:selected:hover {
                     self._assembly_mode = TestMode.unpowered
         else:
             self._assembly_mode = TestMode.unpowered
+        self._update_mode_badge()
         # Seed parts state from DB
         self._parts_state.clear()
         self._part_datasheets.clear()
@@ -1018,6 +1116,7 @@ QTableView::item:selected:hover {
         QTimer.singleShot(0, self._sync_detail_editors)
         if self._complex_panel:
             QTimer.singleShot(0, self._update_complex_panel_context)
+        self._update_mode_badge()
 
     def _build_by_pn(self) -> None:
         from collections import defaultdict
@@ -1071,15 +1170,14 @@ QTableView::item:selected:hover {
             )
             for i, it in enumerate(row_items):
                 flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+                editable_keys = (
+                    list(self._relevant_test_column_keys())
+                    + ["desc", "mfg", "package", "value", "tol_p", "tol_n"]
+                )
                 editable = {
-                    self._col_indices["test_method"],
-                    self._col_indices["test_detail"],
-                    self._col_indices["desc"],
-                    self._col_indices["mfg"],
-                    self._col_indices["package"],
-                    self._col_indices["value"],
-                    self._col_indices["tol_p"],
-                    self._col_indices["tol_n"],
+                    self._col_indices.get(key)
+                    for key in editable_keys
+                    if self._col_indices.get(key) is not None
                 }
                 if i not in editable or part_id in self._locked_parts:
                     flags &= ~Qt.ItemFlag.ItemIsEditable
@@ -1131,15 +1229,14 @@ QTableView::item:selected:hover {
             )
             for i, it in enumerate(items):
                 flags = it.flags() | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+                editable_keys = (
+                    list(self._relevant_test_column_keys())
+                    + ["desc", "mfg", "package", "value", "tol_p", "tol_n"]
+                )
                 editable = {
-                    self._col_indices["test_method"],
-                    self._col_indices["test_detail"],
-                    self._col_indices["desc"],
-                    self._col_indices["mfg"],
-                    self._col_indices["package"],
-                    self._col_indices["value"],
-                    self._col_indices["tol_p"],
-                    self._col_indices["tol_n"],
+                    self._col_indices.get(key)
+                    for key in editable_keys
+                    if self._col_indices.get(key) is not None
                 }
                 if i not in editable or r.part_id in self._locked_parts:
                     flags &= ~Qt.ItemFlag.ItemIsEditable
@@ -1160,30 +1257,35 @@ QTableView::item:selected:hover {
         detail_value = ta.get("detail") or ""
         if method == "Quick test (QT)":
             detail_value = ta.get("qt_path") or ""
-        tm_col = self._col_indices.get("test_method")
-        td_col = self._col_indices.get("test_detail")
+        method_key, detail_key = self._relevant_test_column_keys()
+        method_cols = [self._col_indices.get(method_key)]
+        detail_cols = [self._col_indices.get(detail_key)]
         for row in range(self.model.rowCount()):
             for c in range(self.model.columnCount()):
                 if self.model.data(self.model.index(row, c), PartIdRole) == part_id:
-                    if tm_col is not None:
+                    for col in method_cols:
+                        if col is None:
+                            continue
                         self.model.setData(
-                            self.model.index(row, tm_col),
+                            self.model.index(row, col),
                             method,
                             int(Qt.ItemDataRole.EditRole),
                         )
                         self.model.setData(
-                            self.model.index(row, tm_col),
+                            self.model.index(row, col),
                             method,
                             int(Qt.ItemDataRole.ToolTipRole),
                         )
-                    if td_col is not None:
+                    for col in detail_cols:
+                        if col is None:
+                            continue
                         self.model.setData(
-                            self.model.index(row, td_col),
+                            self.model.index(row, col),
                             detail_value,
                             int(Qt.ItemDataRole.EditRole),
                         )
                         self.model.setData(
-                            self.model.index(row, td_col),
+                            self.model.index(row, col),
                             detail_label,
                             int(Qt.ItemDataRole.ToolTipRole),
                         )
@@ -1252,8 +1354,9 @@ QTableView::item:selected:hover {
         model = self.table.model()  # proxy
         if model is None:
             return
-        tm_col = self._col_indices.get("test_method")
-        td_col = self._col_indices.get("test_detail")
+        method_key, detail_key = self._relevant_test_column_keys()
+        tm_col = self._col_indices.get(method_key)
+        td_col = self._col_indices.get(detail_key)
         if tm_col is None or td_col is None:
             return
         rows = model.rowCount()
@@ -1574,7 +1677,8 @@ QTableView::item:selected:hover {
                     self._fanout_part_field(part_id, "tol_p", pair[0])
                     self._fanout_part_field(part_id, "tol_n", pair[1])
                     self._persist_or_stage_tolerances(part_id, pair[0], pair[1])
-            tm_col = self._col_indices.get("test_method")
+            method_key, _detail_key = self._relevant_test_column_keys()
+            tm_col = self._col_indices.get(method_key)
             ref_col = self._col_indices.get("ref")
             if tm_col is not None and ref_col is not None:
                 tm_text = str(proxy.data(proxy.index(r, tm_col)) or "").strip()
@@ -1596,10 +1700,6 @@ QTableView::item:selected:hover {
                         else:
                             self._dirty_tests.add(part_id)
                             self.save_act.setEnabled(True)
-
-    def _reload_prefix_map(self):
-        self._prefix_macros = reload_prefix_macros()
-        QMessageBox.information(self, "Prefix Map", "Prefix-to-macro map reloaded.")
 
     def _auto_datasheet(self) -> None:
         proxy = self.table.model()
@@ -1899,8 +1999,9 @@ QTableView::item:selected:hover {
         model = self.table.model()
         if model is None:
             return [], set()
-        tm_col = self._col_indices.get("test_method")
-        td_col = self._col_indices.get("test_detail")
+        method_key, detail_key = self._relevant_test_column_keys()
+        tm_col = self._col_indices.get(method_key)
+        td_col = self._col_indices.get(detail_key)
         ref_col = self._col_indices.get("ref")
         pn_col = self._col_indices.get("pn")
         rows: list[dict] = []
