@@ -9,7 +9,7 @@ import shutil
 import logging
 from decimal import Decimal
 from pathlib import Path
-from typing import List
+from typing import Callable, List
 
 from pydantic import BaseModel, Field, validator
 from sqlmodel import Session, select
@@ -210,7 +210,16 @@ def _cache_datasheet_for_pn(pn: str, url_or_path: str) -> str | None:
 # Importer
 
 
-def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
+ProgressCallback = Callable[[int, int], None]
+
+
+def import_bom(
+    assembly_id: int,
+    data: bytes,
+    session: Session,
+    *,
+    progress_cb: ProgressCallback | None = None,
+) -> ImportReport:
     errors: List[str] = []
     ce_settings = get_complex_editor_settings()
     bridge_cfg = ce_settings.get('bridge', {}) if isinstance(ce_settings, dict) else {}
@@ -235,69 +244,106 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
         return ImportReport(total=0, matched=0, unmatched=0, errors=errors)
 
     total = matched = unmatched = 0
+    processed = 0
+    total_rows = len(raw_rows)
+
+    if progress_cb:
+        progress_cb(0, total_rows)
 
     for i, row in enumerate(raw_rows, start=2):
-        data_map = {key: row[idx] if idx < len(row) else "" for key, idx in col_map.items()}
-        raw_qty = data_map.get("qty")
-        if not data_map.get("part_number") or not data_map.get("reference"):
-            errors.append(f"Row {i}: missing part_number or reference")
-            continue
+        processed += 1
         try:
-            bom_row = BOMRow(**data_map)
-        except Exception as e:
-            errors.append(f"Row {i}: {e}")
-            continue
-
-        total += 1
-        pn = bom_row.part_number
-        part = session.exec(select(Part).where(Part.part_number == pn)).first()
-        is_new = part is None
-        if part:
-            matched += 1
-        else:
-            unmatched += 1
-            part = Part(part_number=pn)
-
-        if bom_row.active_passive:
-            try:
-                ap = PartType(bom_row.active_passive.lower())
-            except Exception:
-                ap = PartType.passive
-            if is_new or not getattr(part, "active_passive", None):
-                part.active_passive = ap
-        if bom_row.function and (is_new or not part.function):
-            part.function = bom_row.function
-        if bom_row.tol_p and (is_new or not part.tol_p):
-            part.tol_p = bom_row.tol_p
-        if bom_row.tol_n and (is_new or not part.tol_n):
-            part.tol_n = bom_row.tol_n
-        if bom_row.datasheet_url and (is_new or not part.datasheet_url):
-            cached = _cache_datasheet_for_pn(pn, bom_row.datasheet_url)
-            if cached:
-                part.datasheet_url = cached
-
-        session.add(part)
-        try:
-            session.commit()
-        except IntegrityError:
-            session.rollback()
-            part = session.exec(select(Part).where(Part.part_number == pn)).first()
-            if not part:
-                errors.append(f"Row {i}: duplicate part_number {pn}")
+            data_map = {key: row[idx] if idx < len(row) else "" for key, idx in col_map.items()}
+            raw_qty = data_map.get("qty")
+            if not data_map.get("part_number") or not data_map.get("reference"):
+                errors.append(f"Row {i}: missing part_number or reference")
                 continue
-        session.refresh(part)
-
-        if auto_link_enabled and part.id is not None and part.id not in attempted_links:
             try:
-                auto_link_by_pn(part.id, part.part_number)
-            except CENetworkError:
-                logger.debug("Complex Editor bridge unavailable during import auto-link for %s", part.part_number)
-            finally:
-                attempted_links.add(part.id)
+                bom_row = BOMRow(**data_map)
+            except Exception as e:
+                errors.append(f"Row {i}: {e}")
+                continue
 
-        refs = _expand_references(bom_row.reference)
-        if len(refs) > 1:
-            for ref in refs:
+            total += 1
+            pn = bom_row.part_number
+            part = session.exec(select(Part).where(Part.part_number == pn)).first()
+            is_new = part is None
+            if part:
+                matched += 1
+            else:
+                unmatched += 1
+                part = Part(part_number=pn)
+
+            if bom_row.active_passive:
+                try:
+                    ap = PartType(bom_row.active_passive.lower())
+                except Exception:
+                    ap = PartType.passive
+                if is_new or not getattr(part, "active_passive", None):
+                    part.active_passive = ap
+            if bom_row.function and (is_new or not part.function):
+                part.function = bom_row.function
+            if bom_row.tol_p and (is_new or not part.tol_p):
+                part.tol_p = bom_row.tol_p
+            if bom_row.tol_n and (is_new or not part.tol_n):
+                part.tol_n = bom_row.tol_n
+            if bom_row.datasheet_url and (is_new or not part.datasheet_url):
+                cached = _cache_datasheet_for_pn(pn, bom_row.datasheet_url)
+                if cached:
+                    part.datasheet_url = cached
+
+            session.add(part)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                part = session.exec(select(Part).where(Part.part_number == pn)).first()
+                if not part:
+                    errors.append(f"Row {i}: duplicate part_number {pn}")
+                    continue
+            session.refresh(part)
+
+            if auto_link_enabled and part.id is not None and part.id not in attempted_links:
+                try:
+                    auto_link_by_pn(part.id, part.part_number)
+                except CENetworkError:
+                    logger.debug(
+                        "Complex Editor bridge unavailable during import auto-link for %s",
+                        part.part_number,
+                    )
+                finally:
+                    attempted_links.add(part.id)
+
+            refs = _expand_references(bom_row.reference)
+            if len(refs) > 1:
+                for ref in refs:
+                    item = session.exec(
+                        select(BOMItem).where(
+                            BOMItem.assembly_id == assembly_id, BOMItem.reference == ref
+                        )
+                    ).first()
+                    if not item:
+                        item = BOMItem(assembly_id=assembly_id, reference=ref)
+                    item.part_id = part.id
+                    item.qty = 1
+                    if bom_row.manufacturer:
+                        item.manufacturer = bom_row.manufacturer
+                    if bom_row.unit_cost is not None:
+                        item.unit_cost = bom_row.unit_cost
+                    if bom_row.currency:
+                        item.currency = bom_row.currency
+                    if bom_row.datasheet_url:
+                        item.datasheet_url = bom_row.datasheet_url
+                    if bom_row.notes:
+                        item.notes = bom_row.notes
+                    session.add(item)
+                session.commit()
+                if raw_qty not in (None, "", " ") and bom_row.qty != len(refs):
+                    errors.append(
+                        f"Row {i}: qty={bom_row.qty} but {len(refs)} references expanded"
+                    )
+            else:
+                ref = refs[0] if refs else bom_row.reference
                 item = session.exec(
                     select(BOMItem).where(
                         BOMItem.assembly_id == assembly_id, BOMItem.reference == ref
@@ -305,8 +351,9 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
                 ).first()
                 if not item:
                     item = BOMItem(assembly_id=assembly_id, reference=ref)
+
                 item.part_id = part.id
-                item.qty = 1
+                item.qty = bom_row.qty
                 if bom_row.manufacturer:
                     item.manufacturer = bom_row.manufacturer
                 if bom_row.unit_cost is not None:
@@ -317,37 +364,12 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
                     item.datasheet_url = bom_row.datasheet_url
                 if bom_row.notes:
                     item.notes = bom_row.notes
+
                 session.add(item)
-            session.commit()
-            if raw_qty not in (None, "", " ") and bom_row.qty != len(refs):
-                errors.append(
-                    f"Row {i}: qty={bom_row.qty} but {len(refs)} references expanded"
-                )
-        else:
-            ref = refs[0] if refs else bom_row.reference
-            item = session.exec(
-                select(BOMItem).where(
-                    BOMItem.assembly_id == assembly_id, BOMItem.reference == ref
-                )
-            ).first()
-            if not item:
-                item = BOMItem(assembly_id=assembly_id, reference=ref)
-
-            item.part_id = part.id
-            item.qty = bom_row.qty
-            if bom_row.manufacturer:
-                item.manufacturer = bom_row.manufacturer
-            if bom_row.unit_cost is not None:
-                item.unit_cost = bom_row.unit_cost
-            if bom_row.currency:
-                item.currency = bom_row.currency
-            if bom_row.datasheet_url:
-                item.datasheet_url = bom_row.datasheet_url
-            if bom_row.notes:
-                item.notes = bom_row.notes
-
-            session.add(item)
-            session.commit()
+                session.commit()
+        finally:
+            if progress_cb:
+                progress_cb(processed, total_rows)
 
     return ImportReport(total=total, matched=matched, unmatched=unmatched, errors=errors)
 
