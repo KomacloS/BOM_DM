@@ -1,0 +1,9 @@
+[database]
+url = "sqlite:///C:/Users/Michael/.bom_platform/bom_dev.db"
+
+
+[viva_export]
+last_export_path = "C:\\Users\\Michael\\AppData\\Local\\Temp\\pytest-of-Michael\\pytest-204\\test_perform_viva_export_relax0"
+viva_export_base_dir = "C:\\Users\\Michael\\AppData\\Local\\Temp\\pytest-of-Michael\\pytest-195\\test_perform_viva_export_assig0"
+
+

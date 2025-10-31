@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QProgressDialog,
 )
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -459,10 +460,13 @@ class AssembliesPane(QWidget):
         layout.addWidget(self.tasks_table)
 
         self.table.cellClicked.connect(self._on_select)
-        state.assembliesChanged.connect(self._populate)
-        state.bomItemsChanged.connect(self._populate_items)
-        state.tasksChanged.connect(self._populate_tasks)
-        state.bomImported.connect(self._after_import_bom)
+        self._state.assembliesChanged.connect(self._populate)
+        self._state.bomItemsChanged.connect(self._populate_items)
+        self._state.tasksChanged.connect(self._populate_tasks)
+        self._state.bomImported.connect(self._after_import_bom)
+        # Progress during BOM import
+        self._state.bomImportProgress.connect(self._on_bom_import_progress)
+        self._import_progress_dialog: Optional[QProgressDialog] = None
 
     def select_id(self, aid: int) -> None:
         self._pending_id = aid
@@ -639,8 +643,33 @@ class AssembliesPane(QWidget):
             QMessageBox.warning(self, "Import BOM", f"Could not read file:\n{e}")
             self.import_btn.setEnabled(True)
             return
-        # Use AppState API which emits bomImported
+        # Prepare a determinate progress dialog; range is updated on first progress event
+        self._import_progress_dialog = QProgressDialog("Importing...", None, 0, 0, self)
+        self._import_progress_dialog.setWindowTitle("Importing BOM")
+        self._import_progress_dialog.setCancelButton(None)
+        self._import_progress_dialog.setAutoClose(True)
+        self._import_progress_dialog.setMinimumDuration(0)
+        self._import_progress_dialog.show()
+        # Use AppState API which emits bomImportProgress and bomImported
         self._state.import_bom(aid, data)
+
+    def _on_bom_import_progress(self, payload: object) -> None:  # pragma: no cover - UI glue
+        try:
+            done, total = payload if isinstance(payload, tuple) else (0, 0)
+        except Exception:
+            done, total = 0, 0
+        dlg = self._import_progress_dialog
+        if dlg is None:
+            return
+        if total <= 0:
+            dlg.setRange(0, 0)
+            dlg.setLabelText("Importing...")
+            return
+        if dlg.maximum() != total:
+            dlg.setRange(0, total)
+        dlg.setValue(max(0, done))
+        remaining = max(total - max(0, done), 0)
+        dlg.setLabelText(f"Loaded {done} of {total}  (left: {remaining})")
 
     def download_template(self) -> None:  # pragma: no cover - UI glue
         path, _ = QFileDialog.getSaveFileName(
@@ -651,6 +680,12 @@ class AssembliesPane(QWidget):
         Path(path).write_text(",".join(BOM_HEADERS) + "\n", encoding="utf-8")
 
     def _after_import_bom(self, result):  # pragma: no cover - UI glue
+        if self._import_progress_dialog is not None:
+            try:
+                self._import_progress_dialog.close()
+            except Exception:
+                pass
+            self._import_progress_dialog = None
         self.import_btn.setEnabled(True)
         if isinstance(result, Exception):
             QMessageBox.warning(self, "Import BOM", str(result))

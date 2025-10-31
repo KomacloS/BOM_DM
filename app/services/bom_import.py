@@ -9,7 +9,7 @@ import shutil
 import logging
 from decimal import Decimal
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Callable
 
 from pydantic import BaseModel, Field, validator
 from sqlmodel import Session, select
@@ -211,7 +211,12 @@ def _cache_datasheet_for_pn(pn: str, url_or_path: str) -> str | None:
 # Importer
 
 
-def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
+def import_bom(
+    assembly_id: int,
+    data: bytes,
+    session: Session,
+    progress: Optional[Callable[[int, int], None]] = None,
+) -> ImportReport:
     errors: List[str] = []
     ce_settings = get_complex_editor_settings()
     bridge_cfg = ce_settings.get('bridge', {}) if isinstance(ce_settings, dict) else {}
@@ -236,6 +241,13 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
         return ImportReport(total=0, matched=0, unmatched=0, errors=errors)
 
     total = matched = unmatched = 0
+    processed = 0
+    total_rows = len(raw_rows)
+    if progress:
+        try:
+            progress(0, total_rows)
+        except Exception:
+            pass
 
     for i, row in enumerate(raw_rows, start=2):
         data_map = {key: row[idx] if idx < len(row) else "" for key, idx in col_map.items()}
@@ -349,6 +361,13 @@ def import_bom(assembly_id: int, data: bytes, session: Session) -> ImportReport:
 
             session.add(item)
             session.commit()
+
+        processed += 1
+        if progress:
+            try:
+                progress(processed, total_rows)
+            except Exception:
+                pass
 
     return ImportReport(total=total, matched=matched, unmatched=unmatched, errors=errors)
 

@@ -699,15 +699,17 @@ def _wait_for_focus_or_wizard(config: _BridgeConfig, ce_id: str | int, *, timeou
             payload = {}
         record_state_snapshot(payload)
         focused = payload.get("focused_comp_id")
-    if target_id is not None and focused == target_id:
-        record_bridge_action(f"Complex {ce_id} focused in editor")
-        return
-    if payload.get("wizard_open"):
-        record_bridge_action(f"Complex {ce_id} wizard opened")
-        return
-    time.sleep(0.25)
+        if target_id is not None and focused == target_id:
+            record_bridge_action(f"Complex {ce_id} focused in editor")
+            return
+        if payload.get("wizard_open"):
+            record_bridge_action(f"Complex {ce_id} wizard opened")
+            return
+        time.sleep(0.25)
 
-    record_bridge_action(f"Open request for Complex {ce_id} completed without focus confirmation")
+    record_bridge_action(
+        f"Open request for Complex {ce_id} completed without focus confirmation"
+    )
 
 
 def get_bridge_context() -> Dict[str, Any]:

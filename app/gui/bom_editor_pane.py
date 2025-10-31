@@ -83,7 +83,7 @@ from PyQt6.QtWidgets import (
 
     QLabel, QMessageBox, QSpinBox, QComboBox, QFileDialog, QInputDialog, QStyleOptionButton,
 
-    QSplitter
+    QSplitter, QProgressDialog
 
 )
 
@@ -116,6 +116,8 @@ from .widgets.complex_panel import ComplexPanel
 from ..services.export_viva import VivaExportError, VivaExportResult
 from ..integration.ce_supervisor import CESupervisor
 from ..models import Assembly, TestMode
+from ..domain import complex_linker
+from ..domain.complex_linker import ComplexLink
 
 
 
@@ -735,9 +737,16 @@ class TestDetailDelegate(QStyledItemDelegate):
 
 
     def editorEvent(self, event, model, option, index):  # pragma: no cover - Qt glue
-
-        # No single-click editor; selection remains easy via drag
-
+        # Treat left-click as an action trigger to open the appropriate dialog/panel.
+        try:
+            if event.type() == event.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                part_id = index.data(PartIdRole)
+                method = str(self._method_for_index(index) or "").strip()
+                if isinstance(part_id, int) and method:
+                    self.detailClicked.emit(part_id)
+                    return True
+        except Exception:
+            pass
         return False
 
 
@@ -1242,6 +1251,12 @@ QTableView::item:selected:hover {
 
         self.table.addAction(self.remove_ds_act)
 
+        # Auto-link in Complex Editor (context menu and Tools menu)
+        self.auto_link_act = QAction("Auto-link in Complex Editor", self)
+        self.auto_link_act.setToolTip("For selected rows with Test method=Complex, auto-link by exact PN/alias match in CE")
+        self.auto_link_act.triggered.connect(self._auto_link_selected_complex)
+        self.table.addAction(self.auto_link_act)
+
 
 
         if self._complex_ui_enabled:
@@ -1389,6 +1404,13 @@ QTableView::item:selected:hover {
         self.export_xlsx_act.triggered.connect(self._export_excel)
 
         self.menu_tools.addAction(self.export_xlsx_act)
+        # Add Auto-link action to Tools as well
+        self.menu_tools.addAction(self.auto_link_act)
+        # Bulk sync CE links by PN for current assembly
+        self.sync_ce_links_act = QAction("Sync CE Links (Assembly)", self)
+        self.sync_ce_links_act.setToolTip("Search CE for all PNs in this assembly and link exact matches")
+        self.sync_ce_links_act.triggered.connect(self._sync_ce_links_assembly)
+        self.menu_tools.addAction(self.sync_ce_links_act)
 
         self.btn_tools.setMenu(self.menu_tools)
 
@@ -1587,6 +1609,8 @@ QTableView::item:selected:hover {
         self._tolerances.clear()
         self._dirty_datasheets.clear()
         self._resolved_tests.clear()
+        # Track whether a part is already linked to a Complex Editor record
+        self._part_ce_linked: set[int] = set()
 
         processed_parts: set[int] = set()
         for r in self._rows_raw:
@@ -1635,6 +1659,34 @@ QTableView::item:selected:hover {
                 ta["detail_powered"] = detail_powered
             else:
                 ta.pop("detail_powered", None)
+
+            # Do not force method defaults based on CE link; powered and unpowered can differ
+
+        # Load CE link status for visible parts (robust to driver return types)
+        self._part_ce_linked = set()
+        if processed_parts:
+            try:
+                with app_state.get_session() as session:
+                    from sqlmodel import select as _select
+                    rows = session.exec(
+                        _select(ComplexLink.part_id).where(ComplexLink.part_id.in_(processed_parts))
+                    ).all()
+                    linked: set[int] = set()
+                    for rec in rows:
+                        try:
+                            if isinstance(rec, (list, tuple)) and rec:
+                                pid = rec[0]
+                            elif hasattr(rec, "part_id"):
+                                pid = getattr(rec, "part_id", None)
+                            else:
+                                pid = rec
+                            if pid is not None:
+                                linked.add(int(pid))
+                        except Exception:
+                            continue
+                    self._part_ce_linked = linked
+            except Exception:
+                self._part_ce_linked = set()
 
         # Overlay any saved test assignments from settings for visible parts
         self._load_test_assignments_from_settings()
@@ -1748,6 +1800,13 @@ QTableView::item:selected:hover {
             ta = self._test_assignments.get(part_id, {"method": "", "qt_path": None})
             resolved = self._resolved_tests.get(part_id, {})
 
+            # Compute powered display values if columns are present
+            powered_method_val = ta.get("method_powered") or resolved.get("method_powered") or ""
+            powered_detail_val = ta.get("detail_powered") or resolved.get("detail_powered") or ""
+            powered_detail_display = self._detail_text_for(
+                {"method": powered_method_val, "detail": powered_detail_val}, part_id
+            )
+
             values = {
                 "pn": first.part_number or "",
                 "ref": refs_str,
@@ -1757,16 +1816,16 @@ QTableView::item:selected:hover {
                 "ds": "",
                 "link": "",
                 "test_method": ta.get("method", ""),
-                "test_detail": self._detail_text_for(ta),
+                "test_detail": self._detail_text_for(ta, part_id),
                 "package": self._part_packages.get(part_id) or "",
                 "value": self._part_values.get(part_id) or "",
                 "tol_p": self._tolerances.get(part_id, (None, None))[0] or "",
                 "tol_n": self._tolerances.get(part_id, (None, None))[1] or "",
             }
             if "test_method_powered" in self._col_indices:
-                values["test_method_powered"] = ta.get("method_powered") or resolved.get("method_powered") or ""
+                values["test_method_powered"] = powered_method_val
             if "test_detail_powered" in self._col_indices:
-                values["test_detail_powered"] = ta.get("detail_powered") or resolved.get("detail_powered") or ""
+                values["test_detail_powered"] = powered_detail_display
 
             row_items = [QStandardItem("") for _ in range(len(self._col_indices))]
             for name, idx in self._col_indices.items():
@@ -1816,16 +1875,21 @@ QTableView::item:selected:hover {
                 "ds": "",
                 "link": "",
                 "test_method": method_val or "",
-                "test_detail": self._detail_text_for(ta_display),
+                "test_detail": self._detail_text_for(ta_display, part_id),
                 "package": self._part_packages.get(part_id, "") if part_id is not None else "",
                 "value": self._part_values.get(part_id, "") if part_id is not None else "",
                 "tol_p": self._tolerances.get(part_id, (None, None))[0] if part_id is not None else "",
                 "tol_n": self._tolerances.get(part_id, (None, None))[1] if part_id is not None else "",
             }
             if "test_method_powered" in self._col_indices:
-                values["test_method_powered"] = getattr(r, "test_method_powered", None) or ""
+                powered_method_val = getattr(r, "test_method_powered", None) or ""
+                values["test_method_powered"] = powered_method_val
             if "test_detail_powered" in self._col_indices:
-                values["test_detail_powered"] = getattr(r, "test_detail_powered", None) or ""
+                powered_method_val = getattr(r, "test_method_powered", None) or ""
+                powered_detail_val = getattr(r, "test_detail_powered", None) or ""
+                values["test_detail_powered"] = self._detail_text_for(
+                    {"method": powered_method_val, "detail": powered_detail_val}, part_id
+                )
 
             row_items = [QStandardItem("") for _ in range(len(self._col_indices))]
             for name, idx in self._col_indices.items():
@@ -1865,7 +1929,7 @@ QTableView::item:selected:hover {
 
         method = ta.get("method", "")
 
-        detail = self._detail_text_for(ta)
+        detail = self._detail_text_for(ta, part_id)
 
         tm_col = self._col_indices.get("test_method")
 
@@ -1901,13 +1965,9 @@ QTableView::item:selected:hover {
 
         self._refresh_rows_for_part(part_id)
 
-        if new_method == "Complex":
-
-            self._ensure_complex_panel_visible_for_part(part_id)
-
-        else:
-
-            self._update_complex_panel_context()
+        # Keep bulk changes fast: don't auto-open the Complex panel.
+        # Only refresh the panel context if it's already visible; opening happens on Test detail click.
+        self._update_complex_panel_context()
 
         # Ensure editors reflect Macro selection state
 
@@ -2095,7 +2155,7 @@ QTableView::item:selected:hover {
 
     # ------------------------------------------------------------------
 
-    def _detail_text_for(self, ta: dict) -> str:
+    def _detail_text_for(self, ta: dict, part_id: Optional[int] = None) -> str:
 
         method = ta.get("method") or ""
 
@@ -2106,7 +2166,11 @@ QTableView::item:selected:hover {
             return sel or "Choose Macro..."
 
         if method == "Complex":
-
+            try:
+                if part_id is not None and part_id in getattr(self, "_part_ce_linked", set()):
+                    return "Linked"
+            except Exception:
+                pass
             return "Link Complex..."
 
         if method == "Quick test (QT)":
@@ -2783,6 +2847,12 @@ QTableView::item:selected:hover {
 
         self._update_complex_panel_context()
 
+        # Enable/disable auto-link action based on selection
+        try:
+            self._update_auto_link_act()
+        except Exception:
+            pass
+
 
 
     def _update_auto_ds_act(self) -> None:
@@ -2791,6 +2861,24 @@ QTableView::item:selected:hover {
 
         self.auto_ds_act.setEnabled(bool(sel and sel.selectedIndexes()))
 
+
+    def _update_auto_link_act(self) -> None:
+        sel = self.table.selectionModel()
+        if not sel or not sel.selectedIndexes():
+            self.auto_link_act.setEnabled(False)
+            return
+        part_ids: set[int] = set()
+        for idx in sel.selectedIndexes():
+            pid = idx.data(PartIdRole)
+            if isinstance(pid, int):
+                part_ids.add(pid)
+        enable = False
+        for pid in part_ids:
+            method = (self._test_assignments.get(pid, {}) or {}).get("method", "")
+            if str(method).strip().lower() == "complex":
+                enable = True
+                break
+        self.auto_link_act.setEnabled(enable)
 
 
     def _selected_part_id(self) -> Optional[int]:
@@ -2888,12 +2976,25 @@ QTableView::item:selected:hover {
             self._complex_panel.hide()
 
             return
-
-        self._ensure_complex_panel_visible_for_part(part_id)
+        # Only refresh if visible; do not auto-open on method change.
+        if self._complex_panel.isVisible():
+            self._ensure_complex_panel_visible_for_part(part_id)
 
 
 
     def _on_complex_link_updated(self, part_id: int) -> None:
+        # Refresh in-memory CE link status for this part
+        try:
+            with app_state.get_session() as session:
+                from sqlmodel import select as _select
+                row = session.exec(_select(ComplexLink).where(ComplexLink.part_id == part_id)).first()
+                if row is not None:
+                    getattr(self, "_part_ce_linked", set()).add(part_id)
+                else:
+                    if hasattr(self, "_part_ce_linked") and part_id in self._part_ce_linked:
+                        self._part_ce_linked.remove(part_id)
+        except Exception:
+            pass
 
         self._refresh_rows_for_part(part_id)
 
@@ -4093,6 +4194,153 @@ QTableView::item:selected:hover {
             except Exception:
 
                 pass
+
+
+    def _auto_link_selected_complex(self) -> None:  # pragma: no cover - UI glue
+        sel = self.table.selectionModel()
+        proxy = self.table.model()
+        if proxy is None or sel is None or not sel.selectedIndexes():
+            QMessageBox.information(self, "Auto-link", "Select one or more rows first.")
+            return
+        # Unique part ids from selection
+        part_ids: list[int] = []
+        for idx in sel.selectedIndexes():
+            pid = idx.data(PartIdRole)
+            if isinstance(pid, int) and pid not in part_ids:
+                part_ids.append(pid)
+        if not part_ids:
+            QMessageBox.information(self, "Auto-link", "No parts selected.")
+            return
+        # Filter parts with Test method = Complex
+        targets: list[int] = []
+        for pid in part_ids:
+            method = (self._test_assignments.get(pid, {}) or {}).get("method", "")
+            if str(method).strip().lower() == "complex":
+                targets.append(pid)
+        if not targets:
+            QMessageBox.information(self, "Auto-link", "Selection has no rows with Test method = Complex.")
+            return
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Auto-link in Complex Editor")
+        dlg.setText(f"Attempt auto-link for {len(targets)} part(s) by exact PN/alias match?")
+        ok_btn = dlg.addButton("Start", QMessageBox.ButtonRole.AcceptRole)
+        dlg.addButton(QMessageBox.StandardButton.Cancel)
+        dlg.exec()
+        if dlg.clickedButton() is not ok_btn:
+            return
+
+        prog = QProgressDialog("Starting...", "", 0, len(targets), self)
+        prog.setWindowTitle("Auto-link in Complex Editor")
+        prog.setCancelButton(None)
+        prog.setAutoClose(True)
+        prog.setMinimumDuration(0)
+        prog.show()
+
+        successes = 0
+        skipped = 0
+        errors = 0
+        for i, pid in enumerate(targets, start=1):
+            pn = self._part_number_for_part(pid)
+            prog.setLabelText(
+                f"{i}/{len(targets)}: {pn or pid}  |  linked:{successes} skipped:{skipped} errors:{errors}"
+            )
+            prog.setValue(i - 1)
+            QApplication.processEvents()
+            if not pn:
+                skipped += 1
+                continue
+            try:
+                ok = complex_linker.auto_link_by_pn(pid, pn)
+                if ok:
+                    successes += 1
+                    # Refresh row UI for this part
+                    self._refresh_rows_for_part(pid)
+                else:
+                    skipped += 1
+            except Exception:
+                errors += 1
+            # Keep UI responsive
+            QApplication.processEvents()
+
+        prog.setValue(len(targets))
+        # If panel visible and pointing to a selected part, refresh context
+        try:
+            self._update_complex_panel_context()
+        except Exception:
+            pass
+
+        details: list[str] = []
+        details.append(f"Linked: {successes}")
+        if skipped:
+            details.append(f"Skipped: {skipped}")
+        if errors:
+            details.append(f"Errors: {errors}")
+        QMessageBox.information(
+            self,
+            "Auto-link complete",
+            "\n".join(details) if details else "No work performed.",
+        )
+
+    def _sync_ce_links_assembly(self) -> None:  # pragma: no cover - UI glue
+        # Gather unique part ids in current model
+        part_ids: list[int] = []
+        seen: set[int] = set()
+        for r in self._rows_raw:
+            pid = getattr(r, "part_id", None)
+            if isinstance(pid, int) and pid not in seen:
+                seen.add(pid)
+                part_ids.append(pid)
+        if not part_ids:
+            QMessageBox.information(self, "Sync CE Links", "No parts found in this assembly.")
+            return
+
+        prog = QProgressDialog("Starting...", "", 0, len(part_ids), self)
+        prog.setWindowTitle("Sync CE Links (Assembly)")
+        prog.setCancelButton(None)
+        prog.setAutoClose(True)
+        prog.setMinimumDuration(0)
+        prog.show()
+
+        successes = 0
+        skipped = 0
+        errors = 0
+        for i, pid in enumerate(part_ids, start=1):
+            pn = self._part_number_for_part(pid)
+            prog.setLabelText(
+                f"{i}/{len(part_ids)}: {pn or pid}  |  linked:{successes} skipped:{skipped} errors:{errors}"
+            )
+            prog.setValue(i - 1)
+            QApplication.processEvents()
+            if not pn:
+                skipped += 1
+                continue
+            try:
+                ok = complex_linker.auto_link_by_pn(pid, pn)
+                if ok:
+                    successes += 1
+                    # Record locally for detail rendering
+                    try:
+                        self._part_ce_linked.add(pid)
+                    except Exception:
+                        pass
+                    self._refresh_rows_for_part(pid)
+                else:
+                    skipped += 1
+            except Exception:
+                errors += 1
+            QApplication.processEvents()
+
+        prog.setValue(len(part_ids))
+        # Refresh panel context and table state
+        try:
+            self._update_complex_panel_context()
+        except Exception:
+            pass
+        QMessageBox.information(
+            self,
+            "Sync CE Links",
+            f"Linked: {successes}\nSkipped: {skipped}\nErrors: {errors}",
+        )
 
 
 

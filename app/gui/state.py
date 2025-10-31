@@ -53,6 +53,8 @@ class AppState(QObject):
     bomItemsChanged = pyqtSignal(object)
     tasksChanged = pyqtSignal(object)
     bomImported = pyqtSignal(object)
+    # (done, total)
+    bomImportProgress = pyqtSignal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -100,7 +102,12 @@ class AppState(QObject):
         )
 
     def import_bom(self, assembly_id: int, data: bytes) -> None:
-        self._run_with_session(
-            lambda session: services.import_bom(assembly_id, data, session), self.bomImported
-        )
+        def _call(session: Session):
+            def _progress(done: int, total: int) -> None:
+                # emit tuple to keep signal signature simple
+                self.bomImportProgress.emit((done, total))
+
+            return services.import_bom(assembly_id, data, session, progress=_progress)
+
+        self._run_with_session(_call, self.bomImported)
 
