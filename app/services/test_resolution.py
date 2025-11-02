@@ -16,6 +16,7 @@ from ..models import (
     TestMode,
     TestProfile,
 )
+from ..domain.complex_linker import ComplexLink
 
 
 @dataclass(slots=True)
@@ -55,6 +56,8 @@ class BOMTestResolver:
         parts: Mapping[int, Part | None],
         part_mappings: Iterable[PartTestMap],
         overrides: Iterable[BOMItemTestOverride],
+        *,
+        ce_linked_parts: Iterable[int] | None = None,
     ) -> None:
         self._assembly_id = assembly_id
         self._bom_items = bom_items
@@ -71,6 +74,7 @@ class BOMTestResolver:
                 override.power_mode
             ] = override
         self._cache: MutableMapping[Tuple[int, TestMode], TestSelection] = {}
+        self._ce_linked_parts: set[int] = set(ce_linked_parts or [])
 
     @classmethod
     def from_session(
@@ -104,7 +108,28 @@ class BOMTestResolver:
                 )
             )
 
-        return cls(assembly_id, bom_items, parts, mapping_rows, override_rows)
+        ce_linked_parts: set[int] = set()
+        if part_ids:
+            linked_rows = session.exec(
+                select(ComplexLink.part_id).where(ComplexLink.part_id.in_(part_ids))
+            ).all()
+            for row in linked_rows:
+                if isinstance(row, tuple):
+                    row = row[0]
+                if row is not None:
+                    try:
+                        ce_linked_parts.add(int(row))
+                    except (TypeError, ValueError):
+                        continue
+
+        return cls(
+            assembly_id,
+            bom_items,
+            parts,
+            mapping_rows,
+            override_rows,
+            ce_linked_parts=ce_linked_parts,
+        )
 
     def resolve_effective_test(
         self, bom_item_id: int, assembly_test_mode: TestMode
@@ -235,6 +260,16 @@ class BOMTestResolver:
                 )
                 self._cache[cache_key] = selection
                 return selection
+
+        if part_id in self._ce_linked_parts:
+            selection = TestSelection(
+                method="Complex",
+                detail=None,
+                source="complex_link_default",
+                power_mode=mode,
+            )
+            self._cache[cache_key] = selection
+            return selection
 
         selection = TestSelection(
             method=None,

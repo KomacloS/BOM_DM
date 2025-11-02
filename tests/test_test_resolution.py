@@ -23,6 +23,8 @@ def _resolver(
     part: Part,
     mappings: list[PartTestMap],
     overrides: list[BOMItemTestOverride] | None = None,
+    *,
+    ce_linked_parts: list[int] | None = None,
 ) -> BOMTestResolver:
     return BOMTestResolver(
         assembly_id=item.assembly_id,
@@ -30,6 +32,7 @@ def _resolver(
         parts={item.id: part},
         part_mappings=mappings,
         overrides=overrides or [],
+        ce_linked_parts=ce_linked_parts,
     )
 
 
@@ -158,3 +161,21 @@ def test_unpowered_override_precedence_for_active():
     assert resolved.detail == "OverrideDetail"
     assert resolved.power_mode == TestMode.unpowered
     assert resolved.source == "override"
+
+
+def test_complex_link_default_when_unmapped():
+    part = _part(PartType.active, pid=200)
+    bom = _bom_item(part_id=part.id)
+    resolver = _resolver(
+        bom,
+        part,
+        [],
+        [],
+        ce_linked_parts=[part.id],
+    )
+
+    resolved = resolver.resolve_effective_test(bom.id, TestMode.powered)
+
+    assert resolved.method == "Complex"
+    assert resolved.detail is None
+    assert resolved.source == "complex_link_default"

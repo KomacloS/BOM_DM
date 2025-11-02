@@ -98,6 +98,11 @@ from .datasheets import (
     ensure_store_dirs,
     register_datasheet_for_part,
 )
+from .test_defaults import (
+    upsert_part_test_map,
+    upsert_python_test,
+    upsert_test_macro,
+)
 
 __all__ = [
     "list_customers",
@@ -160,5 +165,8 @@ __all__ = [
     "canonical_path_for_hash",
     "ensure_store_dirs",
     "register_datasheet_for_part",
+    "upsert_part_test_map",
+    "upsert_python_test",
+    "upsert_test_macro",
 ]
 
