@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 
 from app import config
 
@@ -53,6 +55,10 @@ class QuickActions(QWidget):
         exp_btn = QPushButton("Open exports folder…")
         exp_btn.clicked.connect(self.export_files)
         layout.addWidget(exp_btn)
+
+        parts_btn = QPushButton("Open Parts Terminal…")
+        parts_btn.clicked.connect(self.open_parts_terminal)
+        layout.addWidget(parts_btn)
         layout.addStretch(1)
 
     # ------------------------------------------------------------------
@@ -164,3 +170,10 @@ class QuickActions(QWidget):
             else:
                 qt.error(self, "Export", resp.text)
         qt.alert(self, "Export", "Done")
+
+    # ------------------------------------------------------------------
+    def open_parts_terminal(self) -> None:
+        try:
+            subprocess.Popen([sys.executable, "-m", "app.gui.parts_terminal"])
+        except Exception as exc:  # pragma: no cover - subprocess errors
+            qt.error(self, "Parts Terminal", str(exc))

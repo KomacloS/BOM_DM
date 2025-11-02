@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from typing import Literal, Tuple
+from typing import Literal
 from pathlib import Path
 import os
 
-from sqlmodel import Session
+from sqlalchemy import func, or_, update as sa_update, delete as sa_delete
+from sqlalchemy.exc import IntegrityError, InvalidRequestError
+from sqlmodel import Session, select
 
-from ..models import Part, PartType
+from ..models import BOMItem, Part, PartTestAssignment, PartType
 
 
 def update_part_active_passive(
@@ -193,3 +195,174 @@ def clear_part_datasheet(session: Session, part_id: int) -> Part:
 
     # ``update_part_datasheet_url`` performs validation and commits the change.
     return update_part_datasheet_url(session, part_id, None)
+
+
+# ---------------------------------------------------------------------------
+# CRUD helpers for the Parts terminal
+
+
+SEARCHABLE_PART_COLUMNS = (
+    Part.part_number,
+    Part.description,
+    Part.package,
+    Part.value,
+    Part.function,
+    Part.datasheet_url,
+    Part.product_url,
+)
+
+
+def create_part(session: Session, **fields) -> Part:
+    """Create a new :class:`Part` enforcing unique part numbers."""
+
+    allowed = {
+        "part_number",
+        "description",
+        "package",
+        "value",
+        "function",
+        "active_passive",
+        "power_required",
+        "datasheet_url",
+        "product_url",
+        "tol_p",
+        "tol_n",
+    }
+    data = {k: v for k, v in fields.items() if k in allowed}
+    part_number = (data.get("part_number") or "").strip()
+    if not part_number:
+        raise ValueError("part_number is required")
+    data["part_number"] = part_number
+    if "active_passive" in data and isinstance(data["active_passive"], str):
+        data["active_passive"] = PartType(data["active_passive"])
+    part = Part(**data)
+    session.add(part)
+    try:
+        session.commit()
+    except IntegrityError as exc:  # pragma: no cover - DB constraint detail
+        session.rollback()
+        _raise_unique_part_number(part_number)  # raises ValueError
+    session.refresh(part)
+    return part
+
+
+def search_parts(session: Session, query: str | None, limit: int = 500) -> list[Part]:
+    """Search for parts matching ``query`` across common attributes."""
+
+    stmt = select(Part)
+    if query:
+        term = f"%{query.strip()}%"
+        conditions = [col.ilike(term) for col in SEARCHABLE_PART_COLUMNS]
+        stmt = stmt.where(or_(*conditions))
+        stmt = stmt.order_by(Part.part_number)
+    else:
+        stmt = stmt.order_by(Part.created_at.desc(), Part.part_number)
+    stmt = stmt.limit(limit)
+    return list(session.exec(stmt))
+
+
+def _raise_unique_part_number(part_number: str) -> None:
+    raise ValueError(f"Part number '{part_number}' already exists.")
+
+
+def update_part(session: Session, part_id: int, **fields) -> Part:
+    """Update mutable fields for a part and enforce unique part numbers."""
+
+    allowed = {
+        "part_number",
+        "description",
+        "package",
+        "value",
+        "function",
+        "active_passive",
+        "power_required",
+        "datasheet_url",
+        "product_url",
+        "tol_p",
+        "tol_n",
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+    if not updates:
+        return part
+    if "part_number" in updates:
+        new_number = (updates["part_number"] or "").strip()
+        if not new_number:
+            raise ValueError("part_number must not be empty")
+        exists = session.exec(
+            select(Part.id).where(Part.part_number == new_number, Part.id != part_id)
+        ).first()
+        if exists:
+            _raise_unique_part_number(new_number)
+        part.part_number = new_number
+        updates.pop("part_number")
+    for key, value in updates.items():
+        if key == "active_passive" and isinstance(value, str):
+            value = PartType(value)
+        setattr(part, key, value)
+    session.add(part)
+    try:
+        session.commit()
+    except IntegrityError as exc:  # pragma: no cover - DB constraint detail
+        session.rollback()
+        if "part_number" in fields:
+            _raise_unique_part_number(fields["part_number"])
+        raise
+    session.refresh(part)
+    return part
+
+
+def count_part_references(session: Session, part_id: int) -> int:
+    """Return the number of BOM items referencing the part."""
+
+    stmt = select(func.count()).select_from(BOMItem).where(BOMItem.part_id == part_id)
+    result = session.exec(stmt)
+    if hasattr(result, "scalar_one"):
+        return int(result.scalar_one())
+    row = result.one()
+    # SA <1.4 returns a Row/tuple; first element is the count
+    if isinstance(row, (tuple, list)):
+        value = row[0]
+    else:
+        value = row
+    return int(value)
+
+
+def unlink_part_from_boms(session: Session, part_id: int) -> int:
+    """Clear BOM item ``part_id`` references for the given part."""
+
+    result = session.exec(
+        sa_update(BOMItem).where(BOMItem.part_id == part_id).values(part_id=None)
+    )
+    return result.rowcount or 0
+
+
+def delete_part(session: Session, part_id: int, mode: str = "block") -> None:
+    """Delete a part respecting reference safety rules."""
+
+    part = session.get(Part, part_id)
+    if part is None:
+        raise ValueError(f"Part {part_id} not found")
+
+    if mode == "block":
+        refs = count_part_references(session, part_id)
+        if refs:
+            raise RuntimeError(f"Part is referenced by {refs} BOM items")
+        session.delete(part)
+        session.commit()
+        return
+    if mode == "unlink_then_delete":
+        try:
+            transaction = session.begin()
+        except InvalidRequestError:
+            transaction = session.begin_nested()
+        with transaction:
+            unlink_part_from_boms(session, part_id)
+            session.exec(
+                sa_delete(PartTestAssignment).where(PartTestAssignment.part_id == part_id)
+            )
+            session.delete(part)
+        return
+    raise ValueError("mode must be 'block' or 'unlink_then_delete'")

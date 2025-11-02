@@ -1,6 +1,10 @@
 import os
+
 import pytest
-from PyQt6.QtWidgets import QApplication
+
+pytest.importorskip("PySide6.QtWidgets")
+
+from PySide6.QtWidgets import QApplication
 
 from app.gui.bom_editor_pane import BOMEditorPane
 from app.logic import prefix_macros
