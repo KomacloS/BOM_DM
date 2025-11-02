@@ -1,8 +1,14 @@
-from app.logic.autofill_rules import infer_from_pn_and_desc
 import os
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtGui import QStandardItem
+
 import pytest
+
+pytest.importorskip("PySide6.QtWidgets")
+pytest.importorskip("PySide6.QtGui")
+
+from PySide6.QtWidgets import QApplication
+from PySide6.QtGui import QStandardItem
+
+from app.logic.autofill_rules import infer_from_pn_and_desc
 from app.gui.bom_editor_pane import BOMEditorPane, PartIdRole
 
 

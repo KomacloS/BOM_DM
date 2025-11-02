@@ -56,6 +56,12 @@ from .tasks import list_tasks
 from .bom_import import ImportReport, validate_headers, import_bom
 from .bom_read_models import JoinedBOMRow, get_joined_bom_for_assembly
 from .parts import (
+    create_part,
+    search_parts,
+    update_part,
+    count_part_references,
+    unlink_part_from_boms,
+    delete_part,
     update_part_active_passive,
     update_part_datasheet_url,
     update_part_product_url,
@@ -117,6 +123,12 @@ __all__ = [
     "import_bom",
     "JoinedBOMRow",
     "get_joined_bom_for_assembly",
+    "create_part",
+    "search_parts",
+    "update_part",
+    "count_part_references",
+    "unlink_part_from_boms",
+    "delete_part",
     "update_part_active_passive",
     "update_part_datasheet_url",
     "update_part_product_url",
