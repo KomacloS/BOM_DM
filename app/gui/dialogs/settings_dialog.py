@@ -5,6 +5,8 @@ import sys
 import tempfile
 import uuid
 from datetime import datetime, timezone
+import subprocess
+import importlib.util as _importlib_util
 from pathlib import Path
 from typing import Any, List
 from urllib.parse import urljoin
@@ -169,6 +171,11 @@ class SettingsDialog(QDialog):
         helper = QPushButton("Use data root for all")
         helper.clicked.connect(self._apply_portable_defaults)
         helper_row.addWidget(helper)
+
+        self.open_db_terminal_btn = QPushButton("Open Parts Terminal")
+        self.open_db_terminal_btn.setToolTip("Launch the Parts Terminal to edit main DB parts")
+        self.open_db_terminal_btn.clicked.connect(self._open_db_terminal)
+        helper_row.addWidget(self.open_db_terminal_btn)
         helper_row.addStretch(1)
         layout.addLayout(helper_row)
 
@@ -267,6 +274,26 @@ class SettingsDialog(QDialog):
             self.ce_config_edit.setText(path)
 
     # ------------------------------------------------------------------
+    def _open_db_terminal(self) -> None:
+        """Open the main Projects/DB Terminal in a new process.
+
+        Uses the current Python interpreter to run the GUI entry point
+        (``python -m app.gui``) so we avoid import cycles within the
+        running Qt application.
+        """
+        try:
+            # When running as a packaged app, launching the same executable will
+            # open another instance. In dev, run the package entry with -m.
+            if getattr(sys, "frozen", False) and sys.executable:
+                subprocess.Popen([sys.executable])  # nosec - user-driven GUI spawn
+            else:
+                exe = sys.executable or "python"
+                # Prefer parts_terminal if available, else default to app.gui
+                module = "app.gui.parts_terminal" if _importlib_util.find_spec("app.gui.parts_terminal") else "app.gui"
+                subprocess.Popen([exe, "-m", module])  # nosec - user-driven GUI spawn
+        except Exception as exc:
+            QMessageBox.critical(self, "DB Terminal", f"Failed to launch Projects Terminal: {exc}")
+
     def _collect_ce_settings(self) -> dict[str, object]:
         base_url = self.ce_base_url_edit.text().strip() or "http://127.0.0.1:8765"
         token = self.ce_token_edit.text().strip()
