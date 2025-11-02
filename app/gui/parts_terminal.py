@@ -43,8 +43,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView
 
+from sqlmodel import select
+
 from .. import services
-from ..models import Part, PartType
+from ..models import Part, PartType, PartTestMap, TestMode, TestProfile, PythonTest
 from .state import get_session
 
 
@@ -55,12 +57,15 @@ COLUMNS = [
     "Value",
     "Function",
     "Type (A/P)",
-    "Power req",
     "Datasheet",
     "Product",
     "Tol +",
     "Tol −",
     "Created",
+    "Powered Method",
+    "Powered Detail",
+    "Unpowered Method",
+    "Unpowered Detail",
 ]
 
 
@@ -346,20 +351,43 @@ class PartsTerminalWindow(QMainWindow):
     def _populate_table(self, parts: list[Part]) -> None:
         self._parts = parts
         self.model.removeRows(0, self.model.rowCount())
+        part_ids = [part.id for part in parts if part.id is not None]
+        part_types = {
+            pid: self._normalize_part_type(part.active_passive)
+            for part, pid in ((p, p.id) for p in parts if p.id is not None)
+        }
+        test_map = self._load_test_map_snapshot(part_ids, part_types)
         for row, part in enumerate(parts):
+            part_id = part.id or -1
+            type_value = part.active_passive
+            if isinstance(type_value, PartType):
+                type_label = type_value.value.capitalize()
+            elif isinstance(type_value, str):
+                type_label = type_value.capitalize()
+            else:
+                type_label = ""
+            powered_method, powered_detail = test_map.get(part_id, {}).get(
+                TestMode.powered, ("", "")
+            )
+            unpowered_method, unpowered_detail = test_map.get(part_id, {}).get(
+                TestMode.unpowered, ("", "")
+            )
             values = [
                 part.part_number,
                 part.description or "",
                 part.package or "",
                 part.value or "",
                 part.function or "",
-                part.active_passive.value.capitalize(),
-                "Yes" if part.power_required else "",
+                type_label or "",
                 part.datasheet_url or "",
                 part.product_url or "",
                 part.tol_p or "",
                 part.tol_n or "",
                 part.created_at.strftime("%Y-%m-%d %H:%M"),
+                powered_method or "",
+                powered_detail or "",
+                unpowered_method or "",
+                unpowered_detail or "",
             ]
             row_items: list[QStandardItem] = []
             search_blob = " ".join(values).lower()
@@ -375,6 +403,118 @@ class PartsTerminalWindow(QMainWindow):
             self.model.appendRow(row_items)
         self.proxy.setFilterText(self.search_edit.text())
         # Selection handling will toggle delete button
+
+    def _load_test_map_snapshot(
+        self,
+        part_ids: list[int],
+        part_types: dict[int, PartType | None],
+    ) -> dict[int, dict[TestMode, tuple[str, str]]]:
+        if not part_ids:
+            return {}
+
+        def loader(session):
+            rows = session.exec(
+                select(PartTestMap).where(PartTestMap.part_id.in_(part_ids))
+            ).all()
+            python_ids = {row.python_test_id for row in rows if row.python_test_id}
+            python_lookup: dict[int, PythonTest] = {}
+            if python_ids:
+                python_rows = session.exec(
+                    select(PythonTest).where(PythonTest.id.in_(python_ids))
+                ).all()
+                python_lookup = {row.id: row for row in python_rows}
+            grouped: dict[int, list[PartTestMap]] = {}
+            for row in rows:
+                grouped.setdefault(row.part_id, []).append(row)
+            result: dict[int, dict[TestMode, tuple[str, str]]] = {}
+            for part_id, entries in grouped.items():
+                part_type = part_types.get(part_id)
+                powered = self._select_mapping(entries, part_type, TestMode.powered)
+                unpowered = self._select_mapping(entries, part_type, TestMode.unpowered)
+                result[part_id] = {
+                    TestMode.powered: self._label_for_mapping(powered, python_lookup),
+                    TestMode.unpowered: self._label_for_mapping(unpowered, python_lookup),
+                }
+            return result
+
+        return self._with_session(loader)
+
+    def _normalize_part_type(self, value: Any) -> PartType | None:
+        if isinstance(value, PartType):
+            return value
+        if isinstance(value, str):
+            try:
+                return PartType(value)
+            except ValueError:
+                return None
+        return None
+
+    def _select_mapping(
+        self,
+        entries: list[PartTestMap],
+        part_type: PartType | None,
+        mode: TestMode,
+    ) -> PartTestMap | None:
+        if not entries:
+            return None
+        profiles = self._profile_order(part_type, mode)
+        candidates = [row for row in entries if row.power_mode == mode]
+        match = self._match_by_profile(candidates, profiles)
+        if match:
+            return match
+        if mode == TestMode.powered:
+            fallback_profiles = self._profile_order(part_type, TestMode.unpowered)
+            fallback_entries = [row for row in entries if row.power_mode == TestMode.unpowered]
+            return self._match_by_profile(fallback_entries, fallback_profiles)
+        return None
+
+    def _profile_order(
+        self, part_type: PartType | None, mode: TestMode
+    ) -> list[TestProfile]:
+        if part_type == PartType.passive:
+            return [TestProfile.PASSIVE, TestProfile.ACTIVE]
+        if mode == TestMode.powered:
+            return [TestProfile.ACTIVE, TestProfile.PASSIVE]
+        return [TestProfile.PASSIVE, TestProfile.ACTIVE]
+
+    def _match_by_profile(
+        self, entries: list[PartTestMap], order: list[TestProfile]
+    ) -> PartTestMap | None:
+        for profile in order:
+            for row in entries:
+                row_profile = self._normalize_profile(row.profile)
+                if row_profile == profile:
+                    return row
+        return entries[0] if entries else None
+
+    def _normalize_profile(self, value: Any) -> TestProfile | None:
+        if isinstance(value, TestProfile):
+            return value
+        if isinstance(value, str):
+            try:
+                return TestProfile(value)
+            except ValueError:
+                return None
+        return None
+
+    def _label_for_mapping(
+        self, mapping: PartTestMap | None, python_lookup: dict[int, PythonTest]
+    ) -> tuple[str, str]:
+        if mapping is None:
+            return "", ""
+        if mapping.python_test_id:
+            python_row = python_lookup.get(mapping.python_test_id)
+            name = (python_row.name or "").strip().lower() if python_row else ""
+            if name == "quick test":
+                method = "Quick test (QT)"
+            else:
+                method = "Python code"
+        elif mapping.test_macro_id:
+            method = "Macro"
+        else:
+            method = ""
+        detail = mapping.detail or ""
+        return method, detail
 
     # ------------------------------------------------------------------
     def _select_part(self, part_id: int) -> bool:
