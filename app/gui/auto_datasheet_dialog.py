@@ -571,15 +571,6 @@ class AutoDatasheetDialog(QDialog):
             len(self.work),
             self.pool.maxThreadCount(),
         )
-        try:
-            active_before = self.pool.activeThreadCount()
-        except Exception:
-            active_before = -1
-        logger.debug(
-            "Auto-datasheet: initial pool state active=%s max=%s",
-            active_before,
-            self.pool.maxThreadCount(),
-        )
         if len(self.work) > self.pool.maxThreadCount():
             logger.info(
                 "Auto-datasheet queue depth=%d (exceeds concurrency)",
@@ -636,20 +627,6 @@ class AutoDatasheetDialog(QDialog):
             len(self.dup_queue),
             self.auto_dupes.isChecked(),
         )
-        try:
-            active = self.pool.activeThreadCount()
-            if active:
-                logger.debug(
-                    "Auto-datasheet: waiting up to 5s for worker pool to drain (active=%s)",
-                    active,
-                )
-                self.pool.waitForDone(5000)
-                logger.debug(
-                    "Auto-datasheet: worker pool drain complete (active=%s)",
-                    self.pool.activeThreadCount(),
-                )
-        except Exception as exc:
-            logger.debug("Auto-datasheet: waitForDone skipped due to %s", exc)
         if self.on_locked_parts_changed:
             self.on_locked_parts_changed({w.part_id for w in self.work}, lock=False)
         if self.dup_queue and not self.auto_dupes.isChecked():
