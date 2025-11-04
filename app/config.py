@@ -215,6 +215,22 @@ def _load_max_datasheet_mb(default: int = 25) -> int:
                 return _coerce_positive_int(data[key], default)
     return default
 
+
+def _load_auto_ds_max_workers(default: int = 4) -> int:
+    env_value = os.getenv("BOM_AUTO_DS_MAX_WORKERS")
+    if env_value is not None:
+        return _coerce_positive_int(env_value, default)
+    data = _read_settings_dict().get("datasheets")
+    if isinstance(data, Mapping):
+        for key in (
+            "auto_ds_max_workers",
+            "auto_datasheet_max_workers",
+            "auto_max_workers",
+        ):
+            if key in data:
+                return _coerce_positive_int(data[key], default)
+    return default
+
 def _toml_scalar(value: Any) -> str:
     if isinstance(value, bool):
         return str(value).lower()
@@ -404,10 +420,11 @@ def get_engine(url: Optional[str] = None) -> Engine:
 
 def reload_settings() -> None:
     """Reload settings from disk and rebuild engine if needed."""
-    global MAX_DATASHEET_MB
+    global MAX_DATASHEET_MB, AUTO_DATASHEET_MAX_WORKERS
     get_engine(load_settings())
     refresh_paths()
     MAX_DATASHEET_MB = _load_max_datasheet_mb()
+    AUTO_DATASHEET_MAX_WORKERS = _load_auto_ds_max_workers()
 
 def _from_settings(section: str, key: str, default: str) -> str:
     try:
@@ -553,6 +570,7 @@ PDF_OPEN_DEBUG = _as_bool(
 )
 
 MAX_DATASHEET_MB = _load_max_datasheet_mb()
+AUTO_DATASHEET_MAX_WORKERS = _load_auto_ds_max_workers()
 
 def get_complex_editor_settings() -> Dict[str, Any]:
     """Return Complex Editor UI/bridge configuration with defaults applied."""

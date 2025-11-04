@@ -20,9 +20,12 @@ from ..services.datasheet_html import find_pdfs_in_page
 from ..services.datasheet_api import resolve_datasheet_api_first, get_part_description_api_first
 from ..services.description_extract import infer_description_from_pdf
 from . import state as app_state
-import requests
 import logging
-from ..config import MAX_DATASHEET_MB
+import requests
+from ..config import MAX_DATASHEET_MB, AUTO_DATASHEET_MAX_WORKERS
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,10 +57,29 @@ class _Worker(QRunnable):
         import requests
         self._sess = requests.Session()
 
+    def _log_outcome(self, outcome: str, **extra: object) -> None:
+        """Emit a structured info log summarizing the worker result."""
+        details = " ".join(f"{k}={extra[k]}" for k in sorted(extra)) if extra else ""
+        if details:
+            logger.info(
+                "Auto-datasheet worker finished: row=%s part_id=%s outcome=%s %s",
+                self.row,
+                self.wi.part_id,
+                outcome,
+                details,
+            )
+        else:
+            logger.info(
+                "Auto-datasheet worker finished: row=%s part_id=%s outcome=%s",
+                self.row,
+                self.wi.part_id,
+                outcome,
+            )
+
     def run(self):
-        logging.info("Auto-datasheet worker start: row=%s part_id=%s pn=%s", self.row, self.wi.part_id, self.wi.pn)
+        logger.info("Auto-datasheet worker start: row=%s part_id=%s pn=%s", self.row, self.wi.part_id, self.wi.pn)
         try:
-            logging.info(
+            logger.info(
                 "API-first: configured -> mouser=%s digikey=%s nexar=%s",
                 bool(os.getenv("MOUSER_API_KEY") or os.getenv("PROVIDER_MOUSER_KEY")),
                 bool(os.getenv("DIGIKEY_ACCESS_TOKEN") or os.getenv("PROVIDER_DIGIKEY_ACCESS_TOKEN")),
@@ -82,7 +104,7 @@ class _Worker(QRunnable):
                 api_referer = api_page_urls[0] if api_page_urls else (f"https://www.mouser.com/" if "mouser" in (self.wi.mfg or "").lower() else None)
                 for idx, u in enumerate(api_pdf_urls, start=1):
                     self.sig.rowStatus.emit(self.row, f"Downloading API {idx}/{len(api_pdf_urls)}...")
-                    logging.info("Auto-datasheet: downloading (API) %s", u)
+                    logger.info("Auto-datasheet: downloading (API) %s", u)
                     tmp = self._download_pdf(u, trusted=True, referer=api_referer)
                     if tmp:
                         break
@@ -91,12 +113,12 @@ class _Worker(QRunnable):
                     for jdx, page in enumerate(api_page_urls, start=1):
                         try:
                             self.sig.rowStatus.emit(self.row, f"API page {jdx}/{len(api_page_urls)}...")
-                            logging.info("Auto-datasheet: scanning API page %s/%s %s", jdx, len(api_page_urls), page)
+                            logger.info("Auto-datasheet: scanning API page %s/%s %s", jdx, len(api_page_urls), page)
                             pdfs = find_pdfs_in_page(page, self.wi.pn, self.wi.mfg or "")
                         except Exception:
                             continue
                         for kdx, pdf_url in enumerate(pdfs, start=1):
-                            logging.info("Auto-datasheet: downloading %s (API-extracted)", pdf_url)
+                            logger.info("Auto-datasheet: downloading %s (API-extracted)", pdf_url)
                             # Treat PDFs extracted from distributor API product pages as trusted
                             tmp = self._download_pdf(pdf_url, trusted=True, referer=page)
                             if tmp:
@@ -106,11 +128,13 @@ class _Worker(QRunnable):
                 if tmp:
                     with app_state.get_session() as session:
                         dst, existed = services.register_datasheet_for_part(session, self.wi.part_id, Path(tmp))
+                        canonical_path = str(dst)
                         if existed and not self.auto:
                             self.sig.rowStatus.emit(self.row, "Duplicate (review)")
                             self.sig.rowDone.emit(self.row, False, True)
+                            self._log_outcome("duplicate_api", canonical=canonical_path)
                         else:
-                            canonical = str(dst)
+                            canonical = canonical_path
                             services.update_part_datasheet_url(session, self.wi.part_id, canonical)
                             # If part has no description, try to infer one from this validated PDF
                             try:
@@ -129,6 +153,7 @@ class _Worker(QRunnable):
                             self.sig.attached.emit(self.wi.part_id, canonical)
                             self.sig.rowStatus.emit(self.row, "Attached")
                             self.sig.rowDone.emit(self.row, True, existed)
+                            self._log_outcome("attached_api", canonical=canonical, duplicate=existed)
                     # cleanup temporary file
                     try:
                         if tmp and os.path.exists(tmp):
@@ -150,10 +175,12 @@ class _Worker(QRunnable):
                         self.sig.manualLink.emit(self.wi.part_id, first_page)
                         self.sig.rowStatus.emit(self.row, "Link saved")
                         self.sig.rowDone.emit(self.row, False, False)
+                        self._log_outcome("api_page_link", page=first_page)
                     else:
                         self.sig.rowStatus.emit(self.row, "API PDF blocked")
                         self.sig.failed.emit(self.wi.part_id)
                         self.sig.rowDone.emit(self.row, False, False)
+                        self._log_outcome("api_pdf_blocked")
                     return
                 # If we have API product pages (even without API PDFs), save a link now and continue to web search
                 elif api_page_urls:
@@ -164,6 +191,7 @@ class _Worker(QRunnable):
                     except Exception:
                         pass
                     self.sig.manualLink.emit(self.wi.part_id, first_page)
+                    self._log_outcome("api_page_hint", page=first_page)
             # Build exclusion list: avoid hosts already attempted via APIs
             exclude_hosts: set[str] = set()
             from urllib.parse import urlparse
@@ -186,6 +214,7 @@ class _Worker(QRunnable):
                 self.sig.rowStatus.emit(self.row, "No results")
                 self.sig.failed.emit(self.wi.part_id)
                 self.sig.rowDone.emit(self.row, False, False)
+                self._log_outcome("no_search_results")
                 return
             ranked = sorted(
                 cands,
@@ -201,6 +230,7 @@ class _Worker(QRunnable):
                 self.sig.rowStatus.emit(self.row, "No candidate")
                 self.sig.failed.emit(self.wi.part_id)
                 self.sig.rowDone.emit(self.row, False, False)
+                self._log_outcome("no_candidate")
                 return
             # Try API URLs first; then best + shortlist
             # Start with any direct PDF URLs returned by the API phase
@@ -225,7 +255,7 @@ class _Worker(QRunnable):
             api_pdf_set = set(api_pdf_urls)
             for idx, u in enumerate(urls, start=1):
                 self.sig.rowStatus.emit(self.row, f"Downloading {idx}/{len(urls)}...")
-                logging.info("Auto-datasheet: downloading %s", u)
+                logger.info("Auto-datasheet: downloading %s", u)
                 # Only validate PDFs that came from web search; accept API PDFs without strict validation
                 is_api = (u in api_pdf_set)
                 tmp = self._download_pdf(u, trusted=is_api)
@@ -248,7 +278,7 @@ class _Worker(QRunnable):
                                 continue
                             seen.add(pdf_url)
                             self.sig.rowStatus.emit(self.row, f"Downloading {kdx}/{len(pdfs)} from page...")
-                            logging.info("Auto-datasheet: downloading %s (extracted)", pdf_url)
+                            logger.info("Auto-datasheet: downloading %s (extracted)", pdf_url)
                             tmp = self._download_pdf(pdf_url)
                             if tmp:
                                 src_page = page_url
@@ -260,6 +290,12 @@ class _Worker(QRunnable):
                 if not tmp:
                     # As a last resort, open the first page for manual download (UI thread)
                     if manual_urls:
+                        if not self.manual_ok:
+                            self.sig.rowStatus.emit(self.row, "Manual review required")
+                            self.sig.failed.emit(self.wi.part_id)
+                            self.sig.rowDone.emit(self.row, False, False)
+                            self._log_outcome("manual_pages_disabled")
+                            return
                         first = next((u for u in manual_urls if _is_http(u)), None)
                         if first:
                             try:
@@ -271,16 +307,19 @@ class _Worker(QRunnable):
                             self.sig.rowStatus.emit(self.row, "Link saved")
                             # Mark done without attachment; UI shows link icon
                             self.sig.rowDone.emit(self.row, False, False)
+                            self._log_outcome("manual_page_link", url=first)
                             return
                         else:
                             self.sig.rowStatus.emit(self.row, "No manual page available")
                             self.sig.failed.emit(self.wi.part_id)
                             self.sig.rowDone.emit(self.row, False, False)
+                            self._log_outcome("manual_page_missing")
                             return
                     else:
                         self.sig.rowStatus.emit(self.row, "Download failed")
                         self.sig.failed.emit(self.wi.part_id)
                         self.sig.rowDone.emit(self.row, False, False)
+                        self._log_outcome("download_failed")
                         return
             with app_state.get_session() as session:
                 dst, existed = services.register_datasheet_for_part(session, self.wi.part_id, Path(tmp))
@@ -307,6 +346,7 @@ class _Worker(QRunnable):
                     self.sig.attached.emit(self.wi.part_id, canonical)
                     self.sig.rowStatus.emit(self.row, "Attached")
                     self.sig.rowDone.emit(self.row, True, existed)
+                    self._log_outcome("attached_web", canonical=canonical, duplicate=existed, source_page=src_page or "")
             # cleanup temporary file
             try:
                 if tmp and os.path.exists(tmp):
@@ -317,13 +357,14 @@ class _Worker(QRunnable):
             self.sig.rowStatus.emit(self.row, "No search provider configured")
             self.sig.failed.emit(self.wi.part_id)
             self.sig.rowDone.emit(self.row, False, False)
-        except Exception:
+            self._log_outcome("no_search_provider")
+        except Exception as exc:
             # Avoid crashing if UI dialog/signals are already destroyed
             try:
                 self.sig.rowStatus.emit(self.row, "Error")
             except RuntimeError:
                 pass
-            logging.exception("Auto-datasheet: unexpected error in worker")
+            logger.exception("Auto-datasheet: unexpected error in worker")
             try:
                 self.sig.failed.emit(self.wi.part_id)
             except RuntimeError:
@@ -332,6 +373,7 @@ class _Worker(QRunnable):
                 self.sig.rowDone.emit(self.row, False, False)
             except RuntimeError:
                 pass
+            self._log_outcome("error", error=str(exc))
 
     def _queries(self, wi: WorkItem, exclude_hosts: set[str] | None = None) -> List[str]:
         q: List[str] = []
@@ -392,16 +434,16 @@ class _Worker(QRunnable):
             try:
                 r = _try_download(to)
             except requests.ReadTimeout:
-                logging.warning("Auto-datasheet: read timeout for %s; retrying once with extended timeout", url)
+                logger.warning("Auto-datasheet: read timeout for %s; retrying once with extended timeout", url)
                 r = _try_download((to[0], max(to[1], 120)))
 
             with r:
                 if r.status_code != 200:
-                    logging.warning("Auto-datasheet: HTTP %s for %s", r.status_code, url)
+                    logger.warning("Auto-datasheet: HTTP %s for %s", r.status_code, url)
                     return None
                 ctype = (r.headers.get("Content-Type") or "").lower()
                 if "pdf" not in ctype and not url.lower().endswith(".pdf"):
-                    logging.warning("Auto-datasheet: not a PDF content-type=%s url=%s", ctype, url)
+                    logger.warning("Auto-datasheet: not a PDF content-type=%s url=%s", ctype, url)
                     return None
                 size_limit = max(1, int(MAX_DATASHEET_MB)) * 1024 * 1024
                 written = 0
@@ -413,7 +455,7 @@ class _Worker(QRunnable):
                         f.write(chunk)
                         written += len(chunk)
                         if written > size_limit:
-                            logging.warning("Auto-datasheet: exceeded size limit %s MB for %s", MAX_DATASHEET_MB, url)
+                            logger.warning("Auto-datasheet: exceeded size limit %s MB for %s", MAX_DATASHEET_MB, url)
                             try:
                                 f.close()
                                 os.remove(path)
@@ -425,7 +467,7 @@ class _Worker(QRunnable):
                 with open(path, "rb") as _pf:
                     magic = _pf.read(5)
                 if magic != b"%PDF-":
-                    logging.warning("Auto-datasheet: invalid PDF signature for %s; discarding", url)
+                    logger.warning("Auto-datasheet: invalid PDF signature for %s; discarding", url)
                     try:
                         os.remove(path)
                     except Exception:
@@ -434,14 +476,14 @@ class _Worker(QRunnable):
             except Exception:
                 pass
 
-            logging.info("Auto-datasheet: downloaded to temp %s", path)
+            logger.info("Auto-datasheet: downloaded to temp %s", path)
             # Distributor/API PDFs are considered reliable; only validate for web-search results
             if trusted:
                 ok, score = True, 2.0
             else:
                 ok, score = pdf_matches_request(self.wi.pn, self.wi.mfg or "", self.wi.desc or "", Path(path), source_name=url)
             if not ok:
-                logging.info(
+                logger.info(
                     "Auto-datasheet: validation failed (score=%.2f) for %s; discarding",
                     score,
                     url,
@@ -453,7 +495,7 @@ class _Worker(QRunnable):
                 return None
             return path
         except requests.RequestException as e:
-            logging.warning("Auto-datasheet: download failed for %s: %s", url, e)
+            logger.warning("Auto-datasheet: download failed for %s: %s", url, e)
             return None
 
 
@@ -467,7 +509,16 @@ class AutoDatasheetDialog(QDialog):
         self.resize(900, 420)
         self.work = work
         self.on_locked_parts_changed = on_locked_parts_changed
-        self.pool = QThreadPool.globalInstance()
+        configured_workers = max(1, AUTO_DATASHEET_MAX_WORKERS)
+        self._max_workers = max(1, min(configured_workers, len(work) or 1))
+        self.pool = QThreadPool(self)
+        self.pool.setMaxThreadCount(self._max_workers)
+        logger.info(
+            "Auto-datasheet dialog initialized: work_items=%d max_workers=%d (configured=%d)",
+            len(work),
+            self._max_workers,
+            configured_workers,
+        )
         self.sig = _Signals()
         self.sig.rowStatus.connect(self._row_status)
         self.sig.rowDone.connect(self._row_done)
@@ -515,6 +566,16 @@ class AutoDatasheetDialog(QDialog):
         self.btnCancel.clicked.connect(self.reject)
 
     def _start(self):
+        logger.info(
+            "Auto-datasheet dispatch starting: work_items=%d concurrency=%d",
+            len(self.work),
+            self.pool.maxThreadCount(),
+        )
+        if len(self.work) > self.pool.maxThreadCount():
+            logger.info(
+                "Auto-datasheet queue depth=%d (exceeds concurrency)",
+                len(self.work) - self.pool.maxThreadCount(),
+            )
         if self.on_locked_parts_changed:
             self.on_locked_parts_changed({w.part_id for w in self.work}, lock=True)
         self.btnStart.setEnabled(False)
@@ -524,6 +585,9 @@ class AutoDatasheetDialog(QDialog):
             worker = _Worker(i, wi, auto, self.sig)
             # pass manual-pages preference
             worker.manual_ok = self.manual_pages.isChecked()
+            logger.debug(
+                "Auto-datasheet: queue worker row=%s part_id=%s manual_ok=%s", i, wi.part_id, worker.manual_ok
+            )
             self.pool.start(worker)
 
     def _row_status(self, row: int, text: str):
@@ -537,10 +601,24 @@ class AutoDatasheetDialog(QDialog):
         )
         if duplicate:
             self.dup_queue.append(row)
+        logger.debug(
+            "Auto-datasheet: row completed row=%s attached=%s duplicate=%s done=%s/%s",
+            row,
+            attached,
+            duplicate,
+            self.done,
+            len(self.work),
+        )
         if self.done == len(self.work):
             self._finish()
 
     def _finish(self):
+        logger.info(
+            "Auto-datasheet dialog finished: total=%d duplicates=%d auto_dupes=%s",
+            len(self.work),
+            len(self.dup_queue),
+            self.auto_dupes.isChecked(),
+        )
         if self.on_locked_parts_changed:
             self.on_locked_parts_changed({w.part_id for w in self.work}, lock=False)
         if self.dup_queue and not self.auto_dupes.isChecked():
