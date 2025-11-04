@@ -6,14 +6,14 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.domain import complex_linker
 from app.domain.complex_creation import WizardLaunchResult
-from app.domain.complex_linker import CEWizardLaunchError, ComplexLink
+from app.domain.complex_linker import ComplexLink
 from app.integration.ce_bridge_client import (
     CEUserCancelled,
     CEWizardUnavailable,
 )
 from app.integration.ce_bridge_linker import LinkCandidate, LinkerDecision, LinkerError
 from app.integration.ce_supervisor import CEBridgeError
-from app.models import Part, PartTestAssignment, TestMethod
+from app.models import Part, PartTestAssignment, PartTestMap, TestMethod
 
 
 @pytest.fixture
@@ -30,6 +30,7 @@ def sqlite_engine(monkeypatch):
             ComplexLink.__table__,
             Part.__table__,
             PartTestAssignment.__table__,
+            PartTestMap.__table__,
         ],
     )
 
@@ -40,6 +41,7 @@ def sqlite_engine(monkeypatch):
                 ComplexLink.__table__,
                 Part.__table__,
                 PartTestAssignment.__table__,
+                PartTestMap.__table__,
             ],
         )
         return Session(engine)
@@ -198,7 +200,7 @@ def test_create_complex_launch_error_flags_fix(monkeypatch):
 
     monkeypatch.setattr(complex_linker.complex_creation, "launch_wizard", fake_launch)
 
-    with pytest.raises(CEWizardLaunchError) as excinfo:
+    with pytest.raises(complex_linker.CEWizardLaunchError) as excinfo:
         complex_linker.create_and_attach_complex(1, "PN-100")
 
     assert excinfo.value.fix_in_settings is True

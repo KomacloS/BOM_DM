@@ -15,6 +15,9 @@ def setup_db():
     )
     SQLModel.metadata.clear()
     reload(models)
+    from app.domain import complex_linker as linker
+
+    reload(linker)
     SQLModel.metadata.create_all(engine)
     return engine
 

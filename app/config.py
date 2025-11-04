@@ -83,6 +83,32 @@ def _resolve_writable_runtime_root() -> Path:
 
 APP_STORAGE_ROOT = _resolve_writable_runtime_root()
 
+if getattr(sys, "frozen", False):
+    _DEFAULT_DATA_ROOT = (APP_STORAGE_ROOT / "data").resolve()
+else:
+    _DEFAULT_DATA_ROOT = (REPO_ROOT / "data").resolve()
+
+
+def _configured_data_root(default: Path | None = None) -> Path:
+    """Return the currently configured data root, falling back to ``default``."""
+
+    fallback = default or _DEFAULT_DATA_ROOT
+    override = os.getenv("BOM_DATA_ROOT")
+    if override:
+        try:
+            return Path(override).expanduser().resolve()
+        except Exception:
+            return Path(override).expanduser()
+    data = _read_settings_dict().get("paths")
+    if isinstance(data, Mapping):
+        candidate = data.get("data_root")
+        if candidate:
+            try:
+                return Path(candidate).expanduser().resolve()
+            except Exception:
+                return Path(candidate).expanduser()
+    return fallback
+
 def _determine_settings_path() -> Path:
     override = os.getenv("BOM_SETTINGS_PATH")
     if override:
@@ -96,7 +122,7 @@ def _determine_settings_path() -> Path:
 
 SETTINGS_PATH = _determine_settings_path()
 
-def _ensure_sqlite_directory(url: str) -> str:
+def _ensure_sqlite_directory(url: str, *, data_root: Optional[Path] = None) -> str:
     try:
         url_obj = make_url(url)
     except Exception:
@@ -107,18 +133,32 @@ def _ensure_sqlite_directory(url: str) -> str:
     if not database or database == ":memory:" or database.startswith("file:"):
         return url
     db_path = Path(database)
+    resolved_data_root: Optional[Path] = None
+    if data_root is not None:
+        try:
+            resolved_data_root = Path(data_root).expanduser().resolve()
+        except Exception:
+            resolved_data_root = Path(data_root).expanduser()
     if not db_path.is_absolute():
-        base_dir = SETTINGS_PATH.parent
+        base_dir = resolved_data_root or SETTINGS_PATH.parent
         db_path = (base_dir / db_path).resolve()
         url_obj = url_obj.set(database=db_path.as_posix())
+    elif resolved_data_root is not None:
+        try:
+            db_path.relative_to(resolved_data_root)
+        except ValueError:
+            db_path = (resolved_data_root / db_path.name).resolve()
+            url_obj = url_obj.set(database=db_path.as_posix())
     db_path.parent.mkdir(parents=True, exist_ok=True)
     return str(url_obj)
 
 if getattr(sys, "frozen", False):
-    _default_db_path = (APP_STORAGE_ROOT / "app.db").resolve()
+    _default_db_path = (_DEFAULT_DATA_ROOT / "app.db").resolve()
 else:
-    _default_db_path = (APP_STORAGE_ROOT / "bom_dev.db").resolve()
-DEFAULT_URL = _ensure_sqlite_directory(f"sqlite:///{_default_db_path.as_posix()}")
+    _default_db_path = (_DEFAULT_DATA_ROOT / "bom_dev.db").resolve()
+DEFAULT_URL = _ensure_sqlite_directory(
+    f"sqlite:///{_default_db_path.as_posix()}", data_root=_DEFAULT_DATA_ROOT
+)
 
 def _ensure_settings() -> None:
     if not SETTINGS_PATH.exists():
@@ -239,12 +279,8 @@ def _coerce_bool(value: Any, default: bool) -> bool:
 
 
 def _default_viva_base_dir() -> Path:
-    documents = Path.home() / "Documents"
-    target = documents / "VIVA_Exports"
-    if _is_dir_writable(documents):
-        return target.resolve()
-    fallback = Path.home() / "VIVA_Exports"
-    return fallback.resolve()
+    data_root = _configured_data_root()
+    return (data_root / "exports").resolve()
 
 
 def get_viva_export_settings() -> Dict[str, Any]:
@@ -329,21 +365,25 @@ _COMPLEX_EDITOR_DEFAULTS: Dict[str, Any] = {
 def load_settings() -> str:
     """Return database URL from env or settings.toml."""
     _ensure_settings()
-    url = os.getenv("DATABASE_URL")
+    env_url = os.getenv("DATABASE_URL")
+    url = env_url
+    settings_data: Dict[str, Any] | None = None
     if SETTINGS_PATH.exists():
         try:
             if _toml_reader is not None:
                 with open(SETTINGS_PATH, "rb") as f:
-                    data = _toml_reader.load(f)  # type: ignore[arg-type]
+                    settings_data = _toml_reader.load(f)  # type: ignore[arg-type]
             elif _toml_rw is not None:
-                data = _toml_rw.load(SETTINGS_PATH)  # type: ignore[call-arg]
+                settings_data = _toml_rw.load(SETTINGS_PATH)  # type: ignore[call-arg]
             else:
-                data = {}
+                settings_data = {}
         except Exception:
-            data = {}
-        url = data.get("database", {}).get("url", url)
+            settings_data = {}
+        if settings_data is not None:
+            url = settings_data.get("database", {}).get("url", url)
     raw_url = url or DEFAULT_URL
-    return _ensure_sqlite_directory(raw_url)
+    data_root_hint = None if env_url else _configured_data_root()
+    return _ensure_sqlite_directory(raw_url, data_root=data_root_hint)
 
 DATABASE_URL = load_settings()
 _ENGINE: Engine = create_engine(DATABASE_URL, echo=False)
@@ -351,7 +391,11 @@ _ENGINE: Engine = create_engine(DATABASE_URL, echo=False)
 def get_engine(url: Optional[str] = None) -> Engine:
     """Return engine, recreating if the URL changed."""
     global _ENGINE, DATABASE_URL
-    new_url = _ensure_sqlite_directory(url) if url is not None else load_settings()
+    if url is not None:
+        data_root_hint = None if os.getenv("DATABASE_URL") else _configured_data_root()
+        new_url = _ensure_sqlite_directory(url, data_root=data_root_hint)
+    else:
+        new_url = load_settings()
     if new_url != DATABASE_URL:
         DATABASE_URL = new_url
         _ENGINE.dispose()
@@ -387,7 +431,7 @@ def _value_from_env_or_settings(env: str, section: str, key: str, default: str) 
 
 def _compute_paths() -> dict[str, Path]:
     _ensure_settings()
-    data_root_default = str((APP_STORAGE_ROOT / "data") if getattr(sys, "frozen", False) else (REPO_ROOT / "data"))
+    data_root_default = str(_DEFAULT_DATA_ROOT)
     data_root = Path(
         _value_from_env_or_settings("BOM_DATA_ROOT", "paths", "data_root", data_root_default)
     ).expanduser().resolve()

@@ -139,7 +139,7 @@ def assign_test_method(
 
 
 @router.get("/{part_number}/detail", response_model=TestDetailResponse)
-def test_detail(
+def get_test_detail(
     part_number: str,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),

@@ -6,7 +6,16 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.domain.complex_linker import ComplexLink
-from app.models import Assembly, BOMItem, Part, PartTestAssignment, Project, TestMethod
+from app.models import (
+    Assembly,
+    BOMItem,
+    BOMItemTestOverride,
+    Part,
+    PartTestAssignment,
+    PartTestMap,
+    Project,
+    TestMethod,
+)
 from app.services import (
     VIVAExportValidationError,
     collect_bom_lines,
@@ -29,6 +38,8 @@ def sqlite_session(tmp_path, monkeypatch):
         Assembly.__table__,
         Part.__table__,
         PartTestAssignment.__table__,
+        PartTestMap.__table__,
+        BOMItemTestOverride.__table__,
         BOMItem.__table__,
         ComplexLink.__table__,
     ]
