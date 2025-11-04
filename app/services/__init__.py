@@ -68,6 +68,10 @@ from .parts import (
     update_part_tolerances,
     clear_part_datasheet,
 )
+from .test_defaults import (
+    remove_part_test_map,
+    save_part_test_map,
+)
 from .export_viva import build_viva_groups, write_viva_txt, perform_viva_export
 from .bom_to_ce_export import export_bom_to_ce_bridge
 from .datasheets import (
@@ -113,6 +117,8 @@ __all__ = [
     "update_part_value",
     "update_part_tolerances",
     "clear_part_datasheet",
+    "save_part_test_map",
+    "remove_part_test_map",
     "build_viva_groups",
     "write_viva_txt",
     "perform_viva_export",

@@ -72,8 +72,12 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
             part_is_active = False
 
         resolved = resolver.resolve_effective_test(item.id, assembly_mode)
-        powered_method = resolved.powered_method if (assembly_mode is TestMode.powered and part_is_active) else None
-        powered_detail = resolved.powered_detail if (assembly_mode is TestMode.powered and part_is_active) else None
+        if assembly_mode is TestMode.powered:
+            powered_method = getattr(resolved, "powered_method", None)
+            powered_detail = getattr(resolved, "powered_detail", None)
+        else:
+            powered_method = None
+            powered_detail = Nonee
 
         result.append(
             JoinedBOMRow(
@@ -92,12 +96,12 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
                 active_passive=ap_value,
                 datasheet_url=part.datasheet_url if part else None,
                 product_url=part.product_url if part else None,
-                test_method=resolved.method,
-                test_detail=resolved.detail,
+                test_method=getattr(resolved, "method", None),
+                test_detail=getattr(resolved, "detail", None),
                 test_method_powered=powered_method,
                 test_detail_powered=powered_detail,
-                test_resolution_source=resolved.source,
-                test_resolution_message=resolved.message,
+                test_resolution_source=getattr(resolved, "source", None),
+                test_resolution_message=getattr(resolved, "message", None),
             )
         )
     result.sort(key=lambda r: natural_key(r.reference))

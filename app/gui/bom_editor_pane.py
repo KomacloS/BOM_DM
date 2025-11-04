@@ -115,7 +115,7 @@ from . import state as app_state
 from .widgets.complex_panel import ComplexPanel
 from ..services.export_viva import VivaExportError, VivaExportResult
 from ..integration.ce_supervisor import CESupervisor
-from ..models import Assembly, TestMode
+from ..models import Assembly, TestMode, TestProfile, PartType
 from ..domain import complex_linker
 from ..domain.complex_linker import ComplexLink
 
@@ -135,6 +135,27 @@ def _get_ce_supervisor() -> CESupervisor:
     if _CE_SUPERVISOR is None:
         _CE_SUPERVISOR = CESupervisor(get_ce_app_exe())
     return _CE_SUPERVISOR
+
+
+def _coerce_part_type(value: object | None) -> Optional[PartType]:
+    if isinstance(value, PartType):
+        return value
+    if value is None:
+        return None
+    try:
+        return PartType(str(value))
+    except ValueError:
+        return None
+
+
+def _default_profile(part_type: Optional[PartType], mode: TestMode) -> TestProfile:
+    """Return the default TestProfile for the given part type/mode."""
+
+    if part_type is PartType.passive:
+        return TestProfile.passive
+    if mode is TestMode.powered:
+        return TestProfile.active
+    return TestProfile.passive
 
 """
 
@@ -1649,6 +1670,8 @@ QTableView::item:selected:hover {
                     ta["detail"] = detail_val
                 else:
                     ta.pop("detail", None)
+                if ta["method"] == "Quick test (QT)" and not ta.get("qt_path"):
+                    ta["qt_path"] = detail_val
             method_powered = resolved.get("method_powered")
             detail_powered = resolved.get("detail_powered")
             if method_powered:
@@ -1659,6 +1682,8 @@ QTableView::item:selected:hover {
                 ta["detail_powered"] = detail_powered
             else:
                 ta.pop("detail_powered", None)
+            if ta.get("method_powered") == "Quick test (QT)" and not ta.get("qt_path_powered"):
+                ta["qt_path_powered"] = detail_powered
 
             # Do not force method defaults based on CE link; powered and unpowered can differ
 
@@ -1689,8 +1714,6 @@ QTableView::item:selected:hover {
                 self._part_ce_linked = set()
 
         # Overlay any saved test assignments from settings for visible parts
-        self._load_test_assignments_from_settings()
-
 
     def _auto_infer(self, value: Optional[str], reference: str) -> Optional[str]:
 
@@ -1930,10 +1953,21 @@ QTableView::item:selected:hover {
         method = ta.get("method", "")
 
         detail = self._detail_text_for(ta, part_id)
+        powered_method = ta.get("method_powered", "")
+        powered_display = self._detail_text_for(
+            {
+                "method": powered_method,
+                "detail": ta.get("detail_powered"),
+                "qt_path": ta.get("qt_path_powered") or ta.get("qt_path"),
+            },
+            part_id,
+        )
 
         tm_col = self._col_indices.get("test_method")
 
         td_col = self._col_indices.get("test_detail")
+        tm_powered_col = self._col_indices.get("test_method_powered")
+        td_powered_col = self._col_indices.get("test_detail_powered")
 
         for row in range(self.model.rowCount()):
 
@@ -1949,6 +1983,14 @@ QTableView::item:selected:hover {
 
                         self.model.setData(self.model.index(row, td_col), detail)
 
+                    if tm_powered_col is not None:
+
+                        self.model.setData(self.model.index(row, tm_powered_col), powered_method)
+
+                    if td_powered_col is not None:
+
+                        self.model.setData(self.model.index(row, td_powered_col), powered_display)
+
                     break
 
 
@@ -1956,6 +1998,10 @@ QTableView::item:selected:hover {
     def _on_method_changed(self, part_id: int, new_method: str) -> None:
 
         ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+
+        previous = self._resolved_tests.get(part_id, {})
+        prev_method = (previous.get("method") or "").strip()
+        prev_detail = previous.get("detail")
 
         ta["method"] = new_method
 
@@ -1977,7 +2023,19 @@ QTableView::item:selected:hover {
 
         if self.apply_act.isChecked():
 
-            self._persist_test_assignment(part_id)
+            try:
+                self._persist_test_assignment(part_id)
+            except Exception as exc:
+                QMessageBox.warning(self, "Save failed", str(exc))
+                ta["method"] = prev_method
+                ta["detail"] = prev_detail
+                self._refresh_rows_for_part(part_id)
+                self._sync_detail_editors()
+                self._dirty_tests.add(part_id)
+                self.save_act.setEnabled(True)
+                return
+            else:
+                self._dirty_tests.discard(part_id)
 
         else:
 
@@ -2042,6 +2100,8 @@ QTableView::item:selected:hover {
         # Record selection and refresh label, keep persistent editor
 
         ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+        previous = self._resolved_tests.get(part_id, {})
+        prev_detail = previous.get("detail")
 
         ta["detail"] = new_detail or None
 
@@ -2055,7 +2115,18 @@ QTableView::item:selected:hover {
 
         if self.apply_act.isChecked():
 
-            self._persist_test_assignment(part_id)
+            try:
+                self._persist_test_assignment(part_id)
+            except Exception as exc:
+                QMessageBox.warning(self, "Save failed", str(exc))
+                ta["detail"] = prev_detail
+                self._refresh_rows_for_part(part_id)
+                self._sync_detail_editors()
+                self._dirty_tests.add(part_id)
+                self.save_act.setEnabled(True)
+                return
+            else:
+                self._dirty_tests.discard(part_id)
 
         else:
 
@@ -2101,44 +2172,76 @@ QTableView::item:selected:hover {
 
     # ------------------------------------------------------------------
 
-    # Test assignment persistence using QSettings
-
     def _persist_test_assignment(self, part_id: int) -> None:
+        """Persist staged test assignments for ``part_id`` into the DB."""
 
         ta = self._test_assignments.get(part_id) or {}
+        method = (ta.get("method") or "").strip()
+        detail = (ta.get("detail") or "").strip() or None
+        method_powered = (ta.get("method_powered") or "").strip()
+        detail_powered = (ta.get("detail_powered") or "").strip() or None
+        qt_path = ta.get("qt_path") or None
+        qt_path_powered = ta.get("qt_path_powered") or None
 
-        self._settings.setValue(f"test/method/{part_id}", ta.get("method") or "")
+        part_type = _coerce_part_type(self._parts_state.get(part_id))
+        profile_unpowered = _default_profile(part_type, TestMode.unpowered)
+        profile_powered = _default_profile(part_type, TestMode.powered)
 
-        self._settings.setValue(f"test/detail/{part_id}", ta.get("detail") or "")
+        # Treat Complex as a derived default based on CE link; do not persist to DB
+        if method == "Complex":
+            method = ""
+            detail = None
+        if method_powered == "Complex":
+            method_powered = ""
+            detail_powered = None
 
-        self._settings.setValue(f"test/qt_path/{part_id}", ta.get("qt_path") or "")
+        try:
+            with app_state.get_session() as session:
+                if method:
+                    services.save_part_test_map(
+                        session,
+                        part_id=part_id,
+                        power_mode=TestMode.unpowered,
+                        profile=profile_unpowered,
+                        method=method,
+                        detail=detail,
+                        quick_test_path=qt_path,
+                    )
+                else:
+                    services.remove_part_test_map(session, part_id, TestMode.unpowered, profile_unpowered)
 
+                if method_powered:
+                    services.save_part_test_map(
+                        session,
+                        part_id=part_id,
+                        power_mode=TestMode.powered,
+                        profile=profile_powered,
+                        method=method_powered,
+                        detail=detail_powered,
+                        quick_test_path=qt_path_powered or qt_path,
+                    )
+                else:
+                    services.remove_part_test_map(session, part_id, TestMode.powered, profile_powered)
 
+                session.commit()
+        except Exception:
+            raise
 
-    def _load_test_assignments_from_settings(self) -> None:
-
-        # Populate self._test_assignments with any saved values for parts in current view
-
-        part_ids = {r.part_id for r in self._rows_raw}
-
-        for pid in part_ids:
-
-            method = self._settings.value(f"test/method/{pid}", "")
-
-            detail = self._settings.value(f"test/detail/{pid}", "")
-
-            qt_path = self._settings.value(f"test/qt_path/{pid}", "")
-
-            if any([(method or "").strip(), (detail or "").strip(), (qt_path or "").strip()]):
-
-                ta = self._test_assignments.setdefault(pid, {"method": "", "qt_path": None})
-
-                ta["method"] = (method or "").strip()
-
-                ta["detail"] = (detail or "").strip() or None
-
-                ta["qt_path"] = (qt_path or "").strip() or None
-
+        resolved = self._resolved_tests.setdefault(
+            part_id,
+            {
+                "method": None,
+                "detail": None,
+                "method_powered": None,
+                "detail_powered": None,
+                "source": "mapping",
+                "message": None,
+            },
+        )
+        resolved["method"] = method or None
+        resolved["detail"] = detail
+        resolved["method_powered"] = method_powered or None
+        resolved["detail_powered"] = detail_powered
 
 
     def _show_stub_dialog(self, message: str) -> None:
@@ -4253,6 +4356,27 @@ QTableView::item:selected:hover {
                 ok = complex_linker.auto_link_by_pn(pid, pn)
                 if ok:
                     successes += 1
+                    # Mark as CE-linked and set display methods for both modes
+                    try:
+                        self._part_ce_linked.add(pid)
+                    except Exception:
+                        pass
+                    ta = self._test_assignments.setdefault(pid, {"method": "", "qt_path": None})
+                    ta["method"] = "Complex"
+                    ta["method_powered"] = "Complex"
+                    # Persist or stage test assignment based on Apply toggle
+                    if self.apply_act.isChecked():
+                        try:
+                            self._persist_test_assignment(pid)
+                            self._dirty_tests.discard(pid)
+                        except Exception:
+                            errors += 1
+                    else:
+                        self._dirty_tests.add(pid)
+                        try:
+                            self.save_act.setEnabled(True)
+                        except Exception:
+                            pass
                     # Refresh row UI for this part
                     self._refresh_rows_for_part(pid)
                 else:
@@ -4318,11 +4442,27 @@ QTableView::item:selected:hover {
                 ok = complex_linker.auto_link_by_pn(pid, pn)
                 if ok:
                     successes += 1
-                    # Record locally for detail rendering
+                    # Record locally for detail rendering, set Complex for both modes
                     try:
                         self._part_ce_linked.add(pid)
                     except Exception:
                         pass
+                    ta = self._test_assignments.setdefault(pid, {"method": "", "qt_path": None})
+                    ta["method"] = "Complex"
+                    ta["method_powered"] = "Complex"
+                    # Persist or stage test assignment based on Apply toggle
+                    if self.apply_act.isChecked():
+                        try:
+                            self._persist_test_assignment(pid)
+                            self._dirty_tests.discard(pid)
+                        except Exception:
+                            errors += 1
+                    else:
+                        self._dirty_tests.add(pid)
+                        try:
+                            self.save_act.setEnabled(True)
+                        except Exception:
+                            pass
                     self._refresh_rows_for_part(pid)
                 else:
                     skipped += 1

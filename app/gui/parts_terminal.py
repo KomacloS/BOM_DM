@@ -33,6 +33,7 @@ from sqlmodel import Session, select
 
 from ..database import ensure_schema, new_session
 from ..models import Part, PartType, PartTestMap, TestMode, TestMacro, PythonTest
+from ..domain.complex_linker import ComplexLink
 
 
 COLUMNS: list[tuple[str, str]] = [
@@ -43,7 +44,6 @@ COLUMNS: list[tuple[str, str]] = [
     ("value", "Value"),
     ("function", "Function"),
     ("active_passive", "Active/Passive"),
-    ("power_required", "Power Req. (Part)"),
     ("datasheet_url", "Datasheet"),
     ("product_url", "Product URL"),
     ("tol_p", "+Tol"),
@@ -161,6 +161,19 @@ class PartsWindow(QMainWindow):
                         bucket = self._test_info.setdefault(pid, {})
                         # Do not overwrite if already present; first one wins
                         bucket.setdefault(mode_key, (method, detail))
+                    # Overlay Complex method for CE-linked parts where mapping is missing
+                    ce_linked_ids = set(
+                        int(rec[0] if isinstance(rec, (list, tuple)) else getattr(rec, "part_id", rec))
+                        for rec in s.exec(select(ComplexLink.part_id).where(ComplexLink.part_id.in_(part_ids)))
+                        if rec is not None
+                    )
+                    for pid in ce_linked_ids:
+                        info = self._test_info.setdefault(pid, {})
+                        # Align with BOM resolver: when CE-linked, default to Complex where no explicit mapping
+                        if "unpowered" not in info:
+                            info["unpowered"] = ("Complex", "Linked")
+                        if "powered" not in info:
+                            info["powered"] = ("Complex", "Linked")
         except Exception as exc:
             QMessageBox.critical(self, "DB", f"Failed to load parts: {exc}")
             return
@@ -191,13 +204,6 @@ class PartsWindow(QMainWindow):
                     value = tup[0] if attr.endswith("method") else tup[1]
                     item = QTableWidgetItem(_to_text(value))
                     # Render these as read-only display cells
-                    item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
-                elif attr == "power_required":
-                    # Global per-part flag; keep read-only in this terminal to
-                    # avoid accidental changes since power requirements may
-                    # vary per-board.
-                    value = getattr(part, attr)
-                    item = QTableWidgetItem(_to_text(value))
                     item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
                 else:
                     value = getattr(part, attr)
@@ -300,8 +306,6 @@ class PartsWindow(QMainWindow):
                     raise RuntimeError("Part not found")
                 if attr == "active_passive":
                     obj.active_passive = PartType(str(value))
-                elif attr == "power_required":
-                    obj.power_required = bool(value)
                 else:
                     # Normalize empties for optional strings
                     if hasattr(obj.__class__, attr):

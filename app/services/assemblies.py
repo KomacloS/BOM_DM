@@ -60,8 +60,14 @@ def list_bom_items(assembly_id: int, session: Session) -> List[BOMItemRead]:
             except ValueError:
                 part_is_active = False
 
-        powered_method = resolved.powered_method if (assembly_mode is TestMode.powered and part_is_active) else None
-        powered_detail = resolved.powered_detail if (assembly_mode is TestMode.powered and part_is_active) else None
+        # On powered assemblies, expose powered preview even for passive parts
+        # (e.g., Complex links) so the editor can display both modes.
+        if assembly_mode is TestMode.powered:
+            powered_method = resolved.powered_method
+            powered_detail = resolved.powered_detail
+        else:
+            powered_method = None
+            powered_detail = None
         payload = item.model_dump()
         payload.update(
             {

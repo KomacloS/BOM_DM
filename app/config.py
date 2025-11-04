@@ -335,21 +335,21 @@ _VIVA_EXPORT_DEFAULTS: Dict[str, Any] = {
 }
 
 def load_settings() -> str:
-    """Return database URL from env or settings.toml."""
+    """Return database URL from env or settings.toml.
+
+    Uses a tolerant parser so the URL is respected even when ``toml``/
+    ``tomllib`` is unavailable in the runtime environment.
+    """
     _ensure_settings()
+    # Environment takes precedence
     url = os.getenv("DATABASE_URL")
-    if SETTINGS_PATH.exists():
-        try:
-            if _toml_reader is not None:
-                with open(SETTINGS_PATH, "rb") as f:
-                    data = _toml_reader.load(f)  # type: ignore[arg-type]
-            elif _toml_rw is not None:
-                data = _toml_rw.load(SETTINGS_PATH)  # type: ignore[call-arg]
-            else:
-                data = {}
-        except Exception:
-            data = {}
-        url = data.get("database", {}).get("url", url)
+    # Read settings with robust fallback parser
+    data = _read_settings_dict() if SETTINGS_PATH.exists() else {}
+    try:
+        url = (data.get("database") or {}).get("url", url)
+    except Exception:
+        # Keep any env/default value on unexpected content
+        pass
     raw_url = url or DEFAULT_URL
     return _ensure_sqlite_directory(raw_url)
 

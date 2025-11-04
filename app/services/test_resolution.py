@@ -14,6 +14,7 @@ from ..models import (
     TestMode,
     TestProfile,
 )
+from ..domain.complex_linker import ComplexLink
 
 
 def method_label_to_enum(label: str | None) -> str | None:
@@ -74,6 +75,7 @@ class BOMTestResolver:
         self._parts_by_item: Dict[int, Optional[Part]] = {}
         self._overrides: Dict[Tuple[int, TestMode], BOMItemTestOverride] = {}
         self._mappings: Dict[Tuple[int, TestMode, TestProfile], PartTestMap] = {}
+        self._ce_linked_parts: set[int] = set()
 
         if bom_items:
             for key, item in bom_items.items():
@@ -165,6 +167,21 @@ class BOMTestResolver:
                 TestMode.unpowered,
                 profiles=self._preferred_profiles(part_type, powered=False),
             )
+            # If unresolved but CE link exists, default to Complex for passive parts too
+            if (
+                resolved.record is None
+                and part.id is not None
+                and int(part.id) in self._ce_linked_parts
+            ):
+                return ResolvedTest(
+                    method="Complex",
+                    detail=None,
+                    power_mode=TestMode.unpowered,
+                    source="complex_link_default",
+                    message=None,
+                    powered_method=powered_preview.method if powered_preview else None,
+                    powered_detail=powered_preview.detail if powered_preview else None,
+                )
             return self._build_result(
                 resolved=resolved,
                 fallback_used=False,
@@ -195,6 +212,25 @@ class BOMTestResolver:
                     powered_preview=powered_preview,
                     unresolved_message="No test mapping found for active part",
                 )
+
+        if part.id is not None and int(part.id) in self._ce_linked_parts:
+            complex_record = self._ResolvedRecord(
+                None,
+                assembly_mode,
+                "complex_link_default",
+                "Complex",
+                None,
+                None,
+                None,
+                None,
+            )
+            return self._build_result(
+                resolved=complex_record,
+                fallback_used=False,
+                default_mode=assembly_mode,
+                powered_preview=powered_preview,
+                unresolved_message="No test mapping found for active part",
+            )
 
         return ResolvedTest(
             method=None,
@@ -233,6 +269,24 @@ class BOMTestResolver:
             stmt = select(PartTestMap).where(PartTestMap.part_id.in_(part_ids))
             for mapping in session.exec(stmt):
                 self._register_mapping(mapping)
+            ce_stmt = select(ComplexLink.part_id).where(ComplexLink.part_id.in_(part_ids))
+            linked_parts: set[int] = set()
+            for rec in session.exec(ce_stmt):
+                try:
+                    pid = None
+                    if isinstance(rec, (list, tuple)):
+                        pid = rec[0]
+                    elif hasattr(rec, "part_id"):
+                        pid = getattr(rec, "part_id", None)
+                    else:
+                        pid = rec
+                    if pid is not None:
+                        linked_parts.add(int(pid))
+                except Exception:
+                    continue
+            self._ce_linked_parts = linked_parts
+        else:
+            self._ce_linked_parts = set()
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -281,7 +335,18 @@ class BOMTestResolver:
 
     # ------------------------------------------------------------------
     class _ResolvedRecord:
-        __slots__ = ("record", "mode", "source", "method", "detail", "macro_id", "python_id")
+        __slots__ = (
+            "record",
+            "mode",
+            "source",
+            "method",
+            "detail",
+            "macro_id",
+            "python_id",
+            "message",
+            "powered_method",
+            "powered_detail",
+        )
 
         def __init__(
             self,
@@ -292,6 +357,9 @@ class BOMTestResolver:
             detail: Optional[str],
             macro_id: Optional[int],
             python_id: Optional[int],
+            message: Optional[str] = None,
+            powered_method: Optional[str] = None,
+            powered_detail: Optional[str] = None,
         ) -> None:
             self.record = record
             self.mode = mode
@@ -300,6 +368,9 @@ class BOMTestResolver:
             self.detail = detail
             self.macro_id = macro_id
             self.python_id = python_id
+            self.message = message
+            self.powered_method = powered_method
+            self.powered_detail = powered_detail
 
     # ------------------------------------------------------------------
     def _resolve_for_mode(
@@ -312,19 +383,37 @@ class BOMTestResolver:
         override = self._overrides.get((bom_item_id, mode))
         if override is not None:
             method, detail, macro_id, python_id = self._describe_source(override)
-            return self._ResolvedRecord(override, mode, "override", method, detail, macro_id, python_id)
+            return self._ResolvedRecord(override, mode, "override", method, detail, macro_id, python_id, None)
 
         if part.id is None:
-            return self._ResolvedRecord(None, None, "unresolved", None, None, None, None)
+            return self._ResolvedRecord(None, None, "unresolved", None, None, None, None, "unresolved")
 
         for profile in profiles:
             mapping = self._mappings.get((part.id, mode, profile))
             if mapping is None:
                 continue
             method, detail, macro_id, python_id = self._describe_source(mapping)
-            return self._ResolvedRecord(mapping, mode, "mapping", method, detail, macro_id, python_id)
+            return self._ResolvedRecord(mapping, mode, "mapping", method, detail, macro_id, python_id, None)
 
-        return self._ResolvedRecord(None, None, "unresolved", None, None, None, None)
+        # No explicit mapping found. If a CE link exists for this part, default to
+        # Complex for this mode as a preview so UIs can display Powered method=Complex
+        # when linked, even without a stored mapping.
+        try:
+            if int(part.id) in self._ce_linked_parts:
+                return self._ResolvedRecord(
+                    None,
+                    mode,
+                    "complex_link_default",
+                    "Complex",
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+        except Exception:
+            pass
+
+        return self._ResolvedRecord(None, None, "unresolved", None, None, None, None, "unresolved")
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -349,6 +438,16 @@ class BOMTestResolver:
         powered_preview: Optional["BOMTestResolver._ResolvedRecord"],
         unresolved_message: str,
     ) -> ResolvedTest:
+        if resolved.source == "complex_link_default":
+            return ResolvedTest(
+                method="Complex",
+                detail=None,
+                power_mode=default_mode,
+                source=resolved.source,
+                message=None,
+                powered_method=powered_preview.method if powered_preview else None,
+                powered_detail=powered_preview.detail if powered_preview else None,
+            )
         if resolved.record is None:
             return ResolvedTest(
                 method=None,
@@ -380,3 +479,4 @@ class BOMTestResolver:
             powered_method=powered_preview.method if powered_preview else None,
             powered_detail=powered_preview.detail if powered_preview else None,
         )
+
