@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from importlib import metadata
@@ -25,9 +26,12 @@ from ..models import (
     BOMItem,
     Part,
     PartTestAssignment,
+    PartType,
     Project,
     TestMethod,
+    TestMode,
 )
+from .test_resolution import BOMTestResolver
 
 ResolveFunc = Callable[[Sequence[str]], Tuple[Dict[str, int], List[str]]]
 
@@ -56,6 +60,10 @@ class VIVABOMLine:
     complex_id: Optional[int]
     complex_id_raw: Optional[str]
     is_fitted: bool
+    active_passive: Optional[str] = None
+    test_method: Optional[str] = None
+    test_detail: Optional[str] = None
+    effective_power_mode: Optional[TestMode] = None
 
 
 @dataclass(frozen=True)
@@ -285,14 +293,38 @@ def collect_bom_lines(session: Session, assembly_id: int) -> List[VIVABOMLine]:
 
     rows = list(_iter_bom_scope(session, assembly_id))
     rows.sort(key=lambda row: natural_key(row[0].reference))
+    assembly = session.get(Assembly, assembly_id)
+    assembly_mode = TestMode.unpowered
+    if assembly is not None:
+        mode_val = getattr(assembly, "test_mode", None)
+        if isinstance(mode_val, TestMode):
+            assembly_mode = mode_val
+        elif isinstance(mode_val, str):
+            with suppress(ValueError):
+                assembly_mode = TestMode(mode_val)
+    resolver = BOMTestResolver.from_session(
+        session,
+        assembly_id,
+        [(bom, part) for bom, part, *_ in rows],
+    )
     lines: List[VIVABOMLine] = []
     for index, (bom, part, assignment, link) in enumerate(rows, start=1):
-        method = assignment.method if assignment else None
-        requires_complex = (
-            bool(bom.is_fitted)
-            and part is not None
-            and method == TestMethod.complex
-        )
+        resolved = resolver.resolve_effective_test(bom.id, assembly_mode)
+        method_label = resolved.method
+        detail = resolved.detail
+        if method_label is None and assignment is not None:
+            method_label = (
+                assignment.method.value.replace("_", " ").title()
+                if assignment.method is not None
+                else None
+            )
+            detail = getattr(assignment, "notes", None)
+        requires_complex = False
+        if bool(bom.is_fitted):
+            if method_label and method_label.strip().lower() == "complex":
+                requires_complex = True
+            elif assignment is not None and assignment.method == TestMethod.complex:
+                requires_complex = True
         raw_id = getattr(link, "ce_complex_id", None) if link else None
         comp_id = _parse_complex_id(raw_id)
         description = None
@@ -300,6 +332,13 @@ def collect_bom_lines(session: Session, assembly_id: int) -> List[VIVABOMLine]:
             description = part.description
         elif getattr(bom, "notes", None):
             description = bom.notes
+        part_type_value: Optional[str] = None
+        if part is not None:
+            part_type = getattr(part, "active_passive", None)
+            if isinstance(part_type, PartType):
+                part_type_value = part_type.value
+            elif isinstance(part_type, str) and part_type.strip():
+                part_type_value = part_type.strip()
         lines.append(
             VIVABOMLine(
                 line_number=index,
@@ -312,6 +351,10 @@ def collect_bom_lines(session: Session, assembly_id: int) -> List[VIVABOMLine]:
                 complex_id=comp_id,
                 complex_id_raw=str(raw_id) if raw_id is not None else None,
                 is_fitted=bool(bom.is_fitted),
+                active_passive=part_type_value,
+                test_method=method_label,
+                test_detail=detail,
+                effective_power_mode=resolved.power_mode,
             )
         )
     return lines

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -15,6 +16,27 @@ logger = logging.getLogger(__name__)
 _SESSION: requests.Session | None = None
 _LAST_PREFLIGHT_TS: float | None = None
 _LAST_PREFLIGHT_PAYLOAD: Dict[str, Any] | None = None
+
+
+def _extract_payload(response: Any) -> Dict[str, Any]:
+    if response is None:
+        return {}
+    parsed: Any = None
+    if hasattr(response, "json"):
+        try:
+            parsed = response.json()
+        except ValueError:
+            parsed = None
+        except Exception:
+            parsed = None
+    if not isinstance(parsed, dict):
+        raw_content = getattr(response, "content", b"")
+        if raw_content:
+            try:
+                parsed = json.loads(raw_content)
+            except Exception:
+                parsed = None
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def get_session() -> requests.Session:
@@ -95,6 +117,8 @@ def preflight_ready(
     poll_delay = max(poll_every_s, 0.1)
     last_reason = ""
     last_payload: Dict[str, Any] | None = None
+    state_url = urljoin(base_url.rstrip("/") + "/", "admin/state")
+    selftest_url = urljoin(base_url.rstrip("/") + "/", "admin/self-test")
 
     while time.monotonic() < deadline:
         try:
@@ -104,19 +128,30 @@ def preflight_ready(
         else:
             if response.status_code in (401, 403):
                 raise CEBridgeError("Complex Editor authentication failed during preflight")
-            payload: Dict[str, Any] = {}
-            if response.content:
-                try:
-                    parsed = response.json()
-                except ValueError:
-                    parsed = {}
-                if isinstance(parsed, dict):
-                    payload = parsed
-            last_payload = payload
+            payload = _extract_payload(response)
+            if payload:
+                last_payload = payload
             if response.ok and payload.get("ready") is True:
                 _record_preflight_success(payload)
                 return payload
             reason = payload.get("reason") or payload.get("detail") or payload.get("status")
+            state_payload: Dict[str, Any] | None = None
+            try:
+                state_resp = session.get(state_url, headers=headers, timeout=request_timeout_s)
+            except req_exc.RequestException:
+                state_resp = None
+            if state_resp is not None:
+                state_payload = _extract_payload(state_resp)
+                if state_payload:
+                    last_payload = state_payload
+                    if state_resp.ok and state_payload.get("ready") is True:
+                        _record_preflight_success(state_payload)
+                        return state_payload
+                    reason = state_payload.get("reason") or reason
+            try:
+                session.post(selftest_url, headers=headers, timeout=request_timeout_s)
+            except req_exc.RequestException:
+                pass
             if isinstance(reason, str) and reason.strip():
                 last_reason = reason.strip()
         time.sleep(poll_delay)

@@ -9,7 +9,15 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.domain.complex_linker import ComplexLink
-from app.models import Assembly, BOMItem, Part, PartTestAssignment, Project, TestMethod
+from app.models import (
+    Assembly,
+    BOMItem,
+    Part,
+    PartTestAssignment,
+    PartTestMap,
+    Project,
+    TestMethod,
+)
 from app.services import export_bom_to_ce_bridge
 
 
@@ -59,6 +67,7 @@ def sqlite_session():
         Assembly.__table__,
         Part.__table__,
         PartTestAssignment.__table__,
+        PartTestMap.__table__,
         BOMItem.__table__,
         ComplexLink.__table__,
     ]

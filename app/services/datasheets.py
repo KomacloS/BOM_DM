@@ -7,7 +7,7 @@ from typing import Tuple
 import os
 import shutil
 
-from ..config import DATASHEETS_DIR
+from ..config import DATASHEETS_DIR, DATA_ROOT
 
 # Default store is provided by central config; can be local or a network path
 DATASHEET_STORE = Path(DATASHEETS_DIR)
@@ -60,8 +60,7 @@ def get_local_open_path(canonical: Path) -> Path:
     """
     cache_root = os.getenv("BOM_DATASHEETS_CACHE_DIR")
     if not cache_root:
-        # Default under user profile
-        cache_root = str(Path.home() / ".bom_platform" / "cache" / "datasheets")
+        cache_root = str((DATA_ROOT / "cache" / "datasheets").resolve())
     cache_dir = Path(cache_root)
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
