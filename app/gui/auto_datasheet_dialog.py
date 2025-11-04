@@ -589,6 +589,14 @@ class AutoDatasheetDialog(QDialog):
                 "Auto-datasheet: queue worker row=%s part_id=%s manual_ok=%s", i, wi.part_id, worker.manual_ok
             )
             self.pool.start(worker)
+        try:
+            logger.debug(
+                "Auto-datasheet: dispatch complete active=%s queued=%s",
+                self.pool.activeThreadCount(),
+                max(0, len(self.work) - self.pool.activeThreadCount()),
+            )
+        except Exception:
+            pass
 
     def _row_status(self, row: int, text: str):
         self.table.item(row, 3).setText(text)

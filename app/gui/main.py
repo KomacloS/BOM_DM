@@ -7,14 +7,18 @@ import asyncio
 import os
 import logging
 import traceback
+import atexit
+import signal
+import faulthandler
 from datetime import datetime
+from typing import Optional, TextIO
 
 from ..config import LOG_DIR, TRACEBACK_LOG_PATH
 
 from ..ai_agents import apply_env_from_agents
 from ..integration.ce_supervisor import stop_ce_bridge_if_started
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QThreadPool
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -32,6 +36,9 @@ from .state import AppState
 from .dialogs.settings_dialog import SettingsDialog
 from .widgets import AssembliesPane, CustomersPane, ProjectsPane
 from .bom_editor_pane import BOMEditorPane
+
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -176,6 +183,61 @@ def main() -> None:  # pragma: no cover - thin wrapper
     # Basic logging to terminal so user sees actions
     level = os.getenv("BOM_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(levelname)s %(name)s: %(message)s")
+    crash_log_path = TRACEBACK_LOG_PATH.with_name(f"{TRACEBACK_LOG_PATH.stem}_crash{TRACEBACK_LOG_PATH.suffix or '.log'}")
+    fh_file: Optional[TextIO] = None
+    fh_target: Optional[TextIO] = None
+    faulthandler_enabled = False
+    try:
+        crash_log_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    try:
+        fh_file = open(crash_log_path, "a", encoding="utf-8")
+        faulthandler.enable(fh_file, all_threads=True)
+        faulthandler_enabled = True
+        fh_target = fh_file
+        logger.info("Crash diagnostics enabled: %s", crash_log_path)
+    except Exception as exc:
+        fh_file = None
+        logger.debug("Unable to enable crash diagnostics file logging: %s", exc)
+    if not faulthandler_enabled:
+        try:
+            faulthandler.enable(all_threads=True)
+            faulthandler_enabled = True
+            fh_target = None
+            logger.info("Crash diagnostics enabled on standard error")
+        except Exception as exc:
+            logger.debug("Faulthandler enable failed: %s", exc)
+    if faulthandler_enabled:
+        for sig_name in ("SIGTERM", "SIGINT", "SIGABRT", "SIGSEGV", "SIGBREAK"):
+            sig = getattr(signal, sig_name, None)
+            if sig is None:
+                continue
+            try:
+                faulthandler.register(sig, file=fh_target or sys.stderr, all_threads=True, chain=True)
+            except (RuntimeError, OSError, ValueError) as exc:
+                logger.debug("Faulthandler register for %s failed: %s", sig_name, exc)
+    def _log_exit() -> None:
+        try:
+            active_threads = QThreadPool.globalInstance().activeThreadCount()
+        except Exception:
+            active_threads = -1
+        logger.info("Projects Terminal shutting down (active_threads=%s)", active_threads)
+        if fh_file is not None:
+            try:
+                fh_file.flush()
+            except Exception:
+                pass
+            try:
+                faulthandler.disable()
+            except Exception:
+                pass
+            try:
+                fh_file.close()
+            except Exception:
+                pass
+            logger.info("Crash diagnostics log closed: %s", crash_log_path)
+    atexit.register(_log_exit)
     # Write unhandled exceptions to a simple traceback log (not full debug)
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -213,6 +275,17 @@ def main() -> None:  # pragma: no cover - thin wrapper
     # Bridge agents.local.toml into environment for search/rerank services
     apply_env_from_agents()
     app = QApplication(sys.argv)
+    def _about_to_quit() -> None:
+        try:
+            pool = QThreadPool.globalInstance()
+            logger.info(
+                "Qt aboutToQuit signaled (active_threads=%d max_threads=%d)",
+                pool.activeThreadCount(),
+                pool.maxThreadCount(),
+            )
+        except Exception:
+            logger.info("Qt aboutToQuit signaled")
+    app.aboutToQuit.connect(_about_to_quit)
     state = AppState()
     win = MainWindow(state)
     win.show()
