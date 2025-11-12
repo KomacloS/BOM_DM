@@ -123,3 +123,70 @@ def reassign_file_orders(files: Iterable[SchematicFile]) -> None:
 
 def update_pack_timestamp(pack: SchematicPack) -> None:
     pack.updated_at = datetime.utcnow()
+
+
+def store_local_path(
+    pack: SchematicPack,
+    assembly: Assembly,
+    source: Path,
+) -> StoredFile:
+    """Copy ``source`` into the schematics store for ``pack``.
+
+    Parameters
+    ----------
+    pack:
+        Destination schematic pack.
+    assembly:
+        Assembly owning the pack. Used to derive the folder structure.
+    source:
+        Absolute path to an existing PDF file on disk.
+    """
+
+    if not source.exists():
+        raise FileNotFoundError(source)
+    files_root = ensure_files_dir(assembly, pack)
+    filename = _unique_filename(files_root, source.name)
+    destination = files_root / filename
+    shutil.copy2(source, destination)
+    relative = destination.resolve().relative_to(config.DATA_ROOT)
+    page_count, has_text = _analyse_pdf(destination)
+    return StoredFile(
+        path=destination,
+        relative_path=relative,
+        page_count=page_count,
+        has_text_layer=has_text,
+    )
+
+
+def remove_stored_file(relative_path: str) -> None:
+    """Remove a stored schematic file and clean up empty directories."""
+
+    try:
+        path = (config.DATA_ROOT / relative_path).resolve()
+    except Exception:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except AttributeError:  # Python <3.8 compatibility for ``missing_ok``
+        try:
+            if path.exists():
+                path.unlink()
+        except FileNotFoundError:
+            return
+    except FileNotFoundError:
+        return
+
+    # Best-effort cleanup of empty directories inside the schematics folder
+    parent = path.parent
+    root = config.DATA_ROOT.resolve()
+    while parent != root and parent.is_dir():
+        try:
+            if any(parent.iterdir()):
+                break
+        except PermissionError:
+            break
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
