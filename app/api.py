@@ -10,6 +10,7 @@ from .constants import BOM_TEMPLATE_HEADERS
 
 from .database import get_session, ensure_schema, new_session
 from .models import Customer, Project, Assembly, Part, Task, TaskStatus, User
+from .routers import schematic_packs as schematic_packs_router
 from .routers import test_methods as test_methods_router
 from .services import (
     import_bom,
@@ -31,6 +32,7 @@ from .services import test_assets
 
 app = FastAPI()
 app.include_router(test_methods_router.router)
+app.include_router(schematic_packs_router.router)
 
 
 @app.on_event("startup")
