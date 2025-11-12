@@ -120,6 +120,21 @@ from ..domain import complex_linker
 from ..domain.complex_linker import ComplexLink
 
 
+_DEFAULT_MACRO_PREFIXES: list[tuple[str, str]] = [
+    ("LED", "LED"),
+    ("CR", "DIODE"),
+    ("D", "DIODE"),
+    ("C", "CAPACITOR"),
+    ("R", "RESISTOR"),
+    ("L", "INDUCTANCE"),
+    ("J", "CONNECTOR"),
+    ("P", "CONNECTOR"),
+    ("U", "DIGITAL"),
+    ("Q", "TRANSISTOR"),
+    ("Z", "ZENER"),
+    ("Y", "OSCILLATOR"),
+]
+
 
 
 PartIdRole = Qt.ItemDataRole.UserRole + 1
@@ -1179,6 +1194,11 @@ QTableView::item:selected:hover {
         self.method_delegate = TestMethodDelegate(self.table)
 
         self.method_delegate.methodChanged.connect(self._on_method_changed)
+        self.method_delegate_powered = TestMethodDelegate(self.table)
+
+        self.method_delegate_powered.methodChanged.connect(
+            lambda part_id, method: self._on_method_changed(part_id, method, TestMode.powered)
+        )
 
         # Function options loaded for test detail delegate (with sensible fallback)
 
@@ -1195,6 +1215,15 @@ QTableView::item:selected:hover {
         self.detail_delegate.detailClicked.connect(self._on_detail_clicked)
 
         self.detail_delegate.detailChanged.connect(self._on_detail_changed)
+        self.detail_delegate_powered = TestDetailDelegate(self.table, options=self._function_options)
+
+        self.detail_delegate_powered.detailClicked.connect(
+            lambda part_id: self._on_detail_clicked(part_id, TestMode.powered)
+        )
+
+        self.detail_delegate_powered.detailChanged.connect(
+            lambda part_id, detail: self._on_detail_changed(part_id, detail, TestMode.powered)
+        )
 
         self.lines_spin.valueChanged.connect(self._on_lines_changed)
 
@@ -1566,6 +1595,19 @@ QTableView::item:selected:hover {
         self.detail_delegate.set_test_method_col(tm_col)
 
         self.table.setItemDelegateForColumn(td_col, self.detail_delegate)
+        tm_powered_col = self._col_indices.get("test_method_powered")
+
+        if tm_powered_col is not None:
+
+            self.table.setItemDelegateForColumn(tm_powered_col, self.method_delegate_powered)
+
+        td_powered_col = self._col_indices.get("test_detail_powered")
+
+        if td_powered_col is not None:
+
+            self.detail_delegate_powered.set_test_method_col(tm_powered_col)
+
+            self.table.setItemDelegateForColumn(td_powered_col, self.detail_delegate_powered)
 
         # Make icon-only columns compact while keeping icons prominent
 
@@ -1662,7 +1704,9 @@ QTableView::item:selected:hover {
                 },
             )
 
-            ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+            ta = self._test_assignments.setdefault(
+                part_id, {"method": "", "qt_path": None, "method_powered": "", "qt_path_powered": None}
+            )
             if part_id not in self._dirty_tests:
                 ta["method"] = resolved.get("method") or ""
                 detail_val = resolved.get("detail")
@@ -1856,7 +1900,18 @@ QTableView::item:selected:hover {
                 if text_value is not None:
                     row_items[idx].setText(str(text_value))
 
-            editable_names = {"test_method", "test_detail", "desc", "mfg", "package", "value", "tol_p", "tol_n"}
+            editable_names = {
+                "test_method",
+                "test_detail",
+                "test_method_powered",
+                "test_detail_powered",
+                "desc",
+                "mfg",
+                "package",
+                "value",
+                "tol_p",
+                "tol_n",
+            }
             editable = {self._col_indices[n] for n in editable_names if n in self._col_indices}
 
             for idx, item in enumerate(row_items):
@@ -1920,7 +1975,18 @@ QTableView::item:selected:hover {
                 if text_value is not None:
                     row_items[idx].setText(str(text_value))
 
-            editable_names = {"test_method", "test_detail", "desc", "mfg", "package", "value", "tol_p", "tol_n"}
+            editable_names = {
+                "test_method",
+                "test_detail",
+                "test_method_powered",
+                "test_detail_powered",
+                "desc",
+                "mfg",
+                "package",
+                "value",
+                "tol_p",
+                "tol_n",
+            }
             editable = {self._col_indices[n] for n in editable_names if n in self._col_indices}
 
             for idx, item in enumerate(row_items):
@@ -1948,7 +2014,9 @@ QTableView::item:selected:hover {
 
     def _refresh_rows_for_part(self, part_id: int) -> None:
 
-        ta = self._test_assignments.get(part_id, {"method": "", "qt_path": None})
+        ta = self._test_assignments.get(
+            part_id, {"method": "", "qt_path": None, "method_powered": "", "qt_path_powered": None}
+        )
 
         method = ta.get("method", "")
 
@@ -1995,19 +2063,29 @@ QTableView::item:selected:hover {
 
 
 
-    def _on_method_changed(self, part_id: int, new_method: str) -> None:
+    def _on_method_changed(
+        self, part_id: int, new_method: str, power_mode: TestMode = TestMode.unpowered
+    ) -> None:
 
-        ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+        ta = self._test_assignments.setdefault(
+            part_id, {"method": "", "qt_path": None, "method_powered": "", "qt_path_powered": None}
+        )
+
+        method_key = "method_powered" if power_mode is TestMode.powered else "method"
+
+        detail_key = "detail_powered" if power_mode is TestMode.powered else "detail"
+
+        qt_key = "qt_path_powered" if power_mode is TestMode.powered else "qt_path"
 
         previous = self._resolved_tests.get(part_id, {})
-        prev_method = (previous.get("method") or "").strip()
-        prev_detail = previous.get("detail")
+        prev_method = (previous.get(method_key) or "").strip()
+        prev_detail = previous.get(detail_key)
 
-        ta["method"] = new_method
+        ta[method_key] = new_method
 
         if new_method != "Quick test (QT)":
 
-            ta["qt_path"] = None
+            ta[qt_key] = None
 
         self._refresh_rows_for_part(part_id)
 
@@ -2027,8 +2105,8 @@ QTableView::item:selected:hover {
                 self._persist_test_assignment(part_id)
             except Exception as exc:
                 QMessageBox.warning(self, "Save failed", str(exc))
-                ta["method"] = prev_method
-                ta["detail"] = prev_detail
+                ta[method_key] = prev_method
+                ta[detail_key] = prev_detail
                 self._refresh_rows_for_part(part_id)
                 self._sync_detail_editors()
                 self._dirty_tests.add(part_id)
@@ -2045,11 +2123,19 @@ QTableView::item:selected:hover {
 
 
 
-    def _on_detail_clicked(self, part_id: int) -> None:
+    def _on_detail_clicked(
+        self, part_id: int, power_mode: TestMode = TestMode.unpowered
+    ) -> None:
 
-        ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+        ta = self._test_assignments.setdefault(
+            part_id, {"method": "", "qt_path": None, "method_powered": "", "qt_path_powered": None}
+        )
 
-        method = ta.get("method", "")
+        method_key = "method_powered" if power_mode is TestMode.powered else "method"
+
+        qt_key = "qt_path_powered" if power_mode is TestMode.powered else "qt_path"
+
+        method = ta.get(method_key, "")
 
         if method == "Macro":
 
@@ -2079,7 +2165,7 @@ QTableView::item:selected:hover {
 
             if path:
 
-                ta["qt_path"] = path
+                ta[qt_key] = path
 
                 self._refresh_rows_for_part(part_id)
 
@@ -2095,15 +2181,20 @@ QTableView::item:selected:hover {
 
 
 
-    def _on_detail_changed(self, part_id: int, new_detail: Optional[str]) -> None:
+    def _on_detail_changed(
+        self, part_id: int, new_detail: Optional[str], power_mode: TestMode = TestMode.unpowered
+    ) -> None:
 
         # Record selection and refresh label, keep persistent editor
 
-        ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+        ta = self._test_assignments.setdefault(
+            part_id, {"method": "", "qt_path": None, "method_powered": "", "qt_path_powered": None}
+        )
         previous = self._resolved_tests.get(part_id, {})
-        prev_detail = previous.get("detail")
+        detail_key = "detail_powered" if power_mode is TestMode.powered else "detail"
+        prev_detail = previous.get(detail_key)
 
-        ta["detail"] = new_detail or None
+        ta[detail_key] = new_detail or None
 
         self._refresh_rows_for_part(part_id)
 
@@ -2119,7 +2210,7 @@ QTableView::item:selected:hover {
                 self._persist_test_assignment(part_id)
             except Exception as exc:
                 QMessageBox.warning(self, "Save failed", str(exc))
-                ta["detail"] = prev_detail
+                ta[detail_key] = prev_detail
                 self._refresh_rows_for_part(part_id)
                 self._sync_detail_editors()
                 self._dirty_tests.add(part_id)
@@ -2146,27 +2237,30 @@ QTableView::item:selected:hover {
 
             return
 
-        tm_col = self._col_indices.get("test_method")
-
-        td_col = self._col_indices.get("test_detail")
-
-        if tm_col is None or td_col is None:
-
-            return
-
         rows = model.rowCount()
 
-        for r in range(rows):
+        column_pairs = [
+            ("test_method", "test_detail"),
+            ("test_method_powered", "test_detail_powered"),
+        ]
 
-            tm_idx = model.index(r, tm_col)
+        for method_key, detail_key in column_pairs:
 
-            method = model.data(tm_idx) or ""
+            tm_col = self._col_indices.get(method_key)
 
-            td_idx = model.index(r, td_col)
+            td_col = self._col_indices.get(detail_key)
 
-            # Always keep closed; opening is controlled by QAbstractItemView triggers
+            if tm_col is None or td_col is None:
 
-            self.table.closePersistentEditor(td_idx)
+                continue
+
+            for r in range(rows):
+
+                td_idx = model.index(r, td_col)
+
+                # Always keep closed; opening is controlled by QAbstractItemView triggers
+
+                self.table.closePersistentEditor(td_idx)
 
 
 
@@ -2712,6 +2806,16 @@ QTableView::item:selected:hover {
 
                 return canon
 
+        for key, macro in _DEFAULT_MACRO_PREFIXES:
+
+            if pfx.startswith(key):
+
+                canon = self._function_options_canon.get(macro.upper())
+
+                if canon:
+
+                    return canon
+
         return None
 
 
@@ -2804,7 +2908,10 @@ QTableView::item:selected:hover {
 
                     if macro:
 
-                        ta = self._test_assignments.setdefault(part_id, {"method": "", "qt_path": None})
+                        ta = self._test_assignments.setdefault(
+                            part_id,
+                            {"method": "", "qt_path": None, "method_powered": "", "qt_path_powered": None},
+                        )
 
                         ta["method"] = "Macro"
 
@@ -3459,6 +3566,20 @@ QTableView::item:selected:hover {
 
         td_col = self._col_indices.get("test_detail")
 
+        if self._assembly_mode is TestMode.powered:
+
+            powered_tm_col = self._col_indices.get("test_method_powered")
+
+            powered_td_col = self._col_indices.get("test_detail_powered")
+
+            if powered_tm_col is not None:
+
+                tm_col = powered_tm_col
+
+            if powered_td_col is not None:
+
+                td_col = powered_td_col
+
         ref_col = self._col_indices.get("ref")
 
         pn_col = self._col_indices.get("pn")
@@ -4094,6 +4215,14 @@ QTableView::item:selected:hover {
 
                 return
 
+        elif col == self._col_indices.get("test_method_powered"):
+
+            allowed = {"", "Macro", "Complex", "Quick test (QT)", "Python code"}
+
+            if value not in allowed:
+
+                return
+
         elif col == self._col_indices.get("test_detail"):
 
             if value and value not in self._function_options:
@@ -4122,6 +4251,32 @@ QTableView::item:selected:hover {
 
                         self._on_method_changed(part_id, "Macro")
 
+        elif col == self._col_indices.get("test_detail_powered"):
+
+            if value and value not in self._function_options:
+
+                return
+
+            tm_col = self._col_indices.get("test_method_powered")
+
+            if tm_col is not None:
+
+                for idx in idxs:
+
+                    part_id = model.data(idx, PartIdRole)
+
+                    if part_id is None:
+
+                        continue
+
+                    cur_method = str(model.data(model.index(idx.row(), tm_col)) or "")
+
+                    if cur_method != "Macro":
+
+                        model.setData(model.index(idx.row(), tm_col), "Macro")
+
+                        self._on_method_changed(part_id, "Macro", TestMode.powered)
+
         elif col == self._col_indices.get("ap"):
 
             allowed = {"", "active", "passive"}
@@ -4143,6 +4298,13 @@ QTableView::item:selected:hover {
             elif col == self._col_indices.get("test_detail") and part_id is not None:
 
                 self._on_detail_changed(part_id, value or None)
+            elif col == self._col_indices.get("test_method_powered") and part_id is not None:
+
+                self._on_method_changed(part_id, value, TestMode.powered)
+
+            elif col == self._col_indices.get("test_detail_powered") and part_id is not None:
+
+                self._on_detail_changed(part_id, value or None, TestMode.powered)
 
             elif col == self._col_indices.get("ap") and part_id is not None:
 
@@ -4361,7 +4523,9 @@ QTableView::item:selected:hover {
                         self._part_ce_linked.add(pid)
                     except Exception:
                         pass
-                    ta = self._test_assignments.setdefault(pid, {"method": "", "qt_path": None})
+                    ta = self._test_assignments.setdefault(
+                        pid, {"method": "", "qt_path": None, "method_powered": "", "qt_path_powered": None}
+                    )
                     ta["method"] = "Complex"
                     ta["method_powered"] = "Complex"
                     # Persist or stage test assignment based on Apply toggle
@@ -4447,7 +4611,9 @@ QTableView::item:selected:hover {
                         self._part_ce_linked.add(pid)
                     except Exception:
                         pass
-                    ta = self._test_assignments.setdefault(pid, {"method": "", "qt_path": None})
+                    ta = self._test_assignments.setdefault(
+                        pid, {"method": "", "qt_path": None, "method_powered": "", "qt_path_powered": None}
+                    )
                     ta["method"] = "Complex"
                     ta["method_powered"] = "Complex"
                     # Persist or stage test assignment based on Apply toggle
@@ -4677,6 +4843,9 @@ QTableView::item:selected:hover {
         tm_col = self._col_indices.get("test_method")
 
         td_col = self._col_indices.get("test_detail")
+        tm_powered_col = self._col_indices.get("test_method_powered")
+
+        td_powered_col = self._col_indices.get("test_detail_powered")
 
         ap_col = self._col_indices.get("ap")
 
@@ -4713,6 +4882,13 @@ QTableView::item:selected:hover {
             elif td_col is not None and col == td_col:
 
                 self._on_detail_changed(part_id, None)
+            elif tm_powered_col is not None and col == tm_powered_col:
+
+                self._on_method_changed(part_id, "", TestMode.powered)
+
+            elif td_powered_col is not None and col == td_powered_col:
+
+                self._on_detail_changed(part_id, None, TestMode.powered)
 
             elif ap_col is not None and col == ap_col:
 
@@ -4976,11 +5152,12 @@ QTableView::item:selected:hover {
 
 
 
-                staged_flag = part_id in self._dirty_datasheets
+                _dirty_ds = getattr(self, "_dirty_datasheets", {})
+                staged_flag = part_id in _dirty_ds
 
-                staged_value = self._dirty_datasheets.get(part_id)
+                staged_value = _dirty_ds.get(part_id)
 
-                if part_id in self._datasheet_loading:
+                if part_id in getattr(self, "_datasheet_loading", set()):
 
                     btn.setIcon(self._icon_for_loading())
 
@@ -5028,7 +5205,7 @@ QTableView::item:selected:hover {
 
                             btn.setToolTip("Stored path not found. Click to attach a new datasheet.")
 
-                        elif part_id in self._datasheet_failed:
+                        elif part_id in getattr(self, "_datasheet_failed", set()):
 
                             btn.setIcon(self._icon_pdf_error())
 
@@ -5076,7 +5253,7 @@ QTableView::item:selected:hover {
 
                         pass
 
-                    link = self._dirty_links.get(part_id, self._part_product_links.get(part_id))
+                    link = getattr(self, "_dirty_links", {}).get(part_id, self._part_product_links.get(part_id))
 
                     link_effective = link or ""
 

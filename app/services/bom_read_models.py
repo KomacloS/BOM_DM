@@ -77,7 +77,7 @@ def get_joined_bom_for_assembly(session: Session, assembly_id: int) -> List[Join
             powered_detail = getattr(resolved, "powered_detail", None)
         else:
             powered_method = None
-            powered_detail = Nonee
+            powered_detail = None
 
         result.append(
             JoinedBOMRow(

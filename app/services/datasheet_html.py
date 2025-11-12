@@ -9,6 +9,7 @@ import asyncio
 
 import requests
 import threading
+from .http_client import get_session, throttle
 
 from .datasheet_rank import score_candidate
 
@@ -148,9 +149,10 @@ def find_pdfs_in_page(url: str, pn: str, mfg: str | None, timeout: tuple[int, in
             )
             html = None
     if html is None:
-        r = requests.get(url, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        html = r.text
+        with throttle(url):
+            r = get_session().get(url, headers=headers, timeout=timeout)
+            r.raise_for_status()
+            html = r.text
 
     raw = _find_pdf_hrefs(html)
     # Include anchors that look like datasheet links even if not ending with .pdf

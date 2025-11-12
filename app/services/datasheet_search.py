@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 import os, requests, logging
+from .http_client import get_session, throttle
 
 @dataclass
 class SearchResult:
@@ -45,7 +46,9 @@ def _bing_search(query: str, count: int) -> List[SearchResult]:
     key = _env("BING_SEARCH_KEY"); assert key
     headers = {"Ocp-Apim-Subscription-Key": key}
     params = {"q": query, "count": min(count, 15), "responseFilter": "Webpages", "textDecorations": False}
-    r = requests.get("https://api.bing.microsoft.com/v7.0/search", headers=headers, params=params, timeout=15)
+    url = "https://api.bing.microsoft.com/v7.0/search"
+    with throttle(url):
+        r = get_session().get(url, headers=headers, params=params, timeout=15)
     r.raise_for_status()
     data = r.json()
     items = data.get("webPages", {}).get("value", [])
@@ -56,7 +59,9 @@ def _bing_search(query: str, count: int) -> List[SearchResult]:
 
 def _google_cse_search(query: str, count: int) -> List[SearchResult]:
     key = _env("GOOGLE_API_KEY"); cse = _env("GOOGLE_CSE_ID")
-    r = requests.get("https://www.googleapis.com/customsearch/v1", params={
+    url = "https://www.googleapis.com/customsearch/v1"
+    with throttle(url):
+        r = get_session().get(url, params={
         "key": key,
         "cx": cse,
         "q": query,
@@ -71,7 +76,9 @@ def _google_cse_search(query: str, count: int) -> List[SearchResult]:
 
 def _serpapi_search(query: str, count: int) -> List[SearchResult]:
     key = _env("SERPAPI_KEY")
-    r = requests.get("https://serpapi.com/search.json", params={"engine":"google","q":query,"num":min(count,10),"api_key":key}, timeout=15)
+    url = "https://serpapi.com/search.json"
+    with throttle(url):
+        r = get_session().get(url, params={"engine":"google","q":query,"num":min(count,10),"api_key":key}, timeout=15)
     r.raise_for_status()
     data = r.json()
     out: List[SearchResult] = []
@@ -81,7 +88,9 @@ def _serpapi_search(query: str, count: int) -> List[SearchResult]:
 
 def _brave_search(query: str, count: int) -> List[SearchResult]:
     key = _env("BRAVE_API_KEY")
-    r = requests.get("https://api.search.brave.com/res/v1/web/search", headers={"X-Subscription-Token": key}, params={"q": query, "count": min(count, 10)}, timeout=15)
+    url = "https://api.search.brave.com/res/v1/web/search"
+    with throttle(url):
+        r = get_session().get(url, headers={"X-Subscription-Token": key}, params={"q": query, "count": min(count, 10)}, timeout=15)
     r.raise_for_status()
     data = r.json()
     out: List[SearchResult] = []

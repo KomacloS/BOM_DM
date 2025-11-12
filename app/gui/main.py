@@ -9,6 +9,8 @@ import os
 import logging
 import traceback
 from datetime import datetime
+import faulthandler
+import signal
 
 from ..config import LOG_DIR, TRACEBACK_LOG_PATH
 
@@ -180,6 +182,36 @@ def main() -> None:  # pragma: no cover - thin wrapper
     # Basic logging to terminal so user sees actions
     level = os.getenv("BOM_LOG_LEVEL", "INFO").upper()
     logging.basicConfig(level=getattr(logging, level, logging.INFO), format="%(levelname)s %(name)s: %(message)s")
+    # Enable faulthandler to capture hard crashes (e.g., segfaults) into a log file
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        _fh_path = LOG_DIR / "crash_faulthandler.log"
+        _fh_file = open(_fh_path, "a", encoding="utf-8")
+        faulthandler.enable(_fh_file, all_threads=True)
+        # Also attempt to register for common termination signals when available
+        for sig in (getattr(signal, "SIGABRT", None), getattr(signal, "SIGSEGV", None)):
+            if sig is not None:
+                try:
+                    faulthandler.register(sig, file=_fh_file, all_threads=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # Capture exceptions in threads that escape to Python's threading.excepthook
+    try:
+        def _thread_excepthook(args):  # type: ignore[no-redef]
+            try:
+                with open(TRACEBACK_LOG_PATH, "a", encoding="utf-8") as f:
+                    f.write("\n===== Unhandled thread exception at " + datetime.utcnow().isoformat() + "Z =====\n")
+                    traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback, file=f)
+            except Exception:
+                pass
+            # Also echo to stderr
+            traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback)
+        import threading as _threading
+        _threading.excepthook = _thread_excepthook  # type: ignore[assignment]
+    except Exception:
+        pass
     # Write unhandled exceptions to a simple traceback log (not full debug)
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -195,6 +227,40 @@ def main() -> None:  # pragma: no cover - thin wrapper
         # Also print to stderr
         traceback.print_exception(exc_type, exc_value, exc_tb)
     sys.excepthook = _excepthook
+    # Capture Qt warnings/criticals/fatals into a dedicated log
+    try:
+        from PyQt6 import QtCore
+        qt_logger = logging.getLogger("qt")
+        from logging.handlers import RotatingFileHandler
+        qt_log_path = LOG_DIR / "qt_messages.log"
+        if not any(isinstance(h, logging.FileHandler) and str(getattr(h, 'baseFilename', '')).endswith('qt_messages.log') for h in qt_logger.handlers):
+            qt_fh = RotatingFileHandler(qt_log_path, maxBytes=2 * 1024 * 1024, backupCount=2, encoding='utf-8')
+            qt_fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+            qt_fh.setLevel(logging.INFO)
+            qt_logger.addHandler(qt_fh)
+            if qt_logger.level == logging.NOTSET:
+                qt_logger.setLevel(logging.INFO)
+
+        def _qt_msg_handler(mode, context, message):  # type: ignore[no-redef]
+            try:
+                # Map Qt message type to logging level
+                if mode == QtCore.QtMsgType.QtDebugMsg:
+                    lvl = logging.DEBUG
+                elif mode == QtCore.QtMsgType.QtInfoMsg:
+                    lvl = logging.INFO
+                elif mode == QtCore.QtMsgType.QtWarningMsg:
+                    lvl = logging.WARNING
+                elif mode == QtCore.QtMsgType.QtCriticalMsg:
+                    lvl = logging.ERROR
+                else:  # QtFatalMsg
+                    lvl = logging.CRITICAL
+                where = f"{context.file}:{context.line} ({context.function})" if context and context.file else "<qt>"
+                qt_logger.log(lvl, f"{where}: {message}")
+            except Exception:
+                pass
+        QtCore.qInstallMessageHandler(_qt_msg_handler)
+    except Exception:
+        pass
     # Ensure pyppeteer/requests_html are happy on Windows threads
     if sys.platform.startswith("win"):
         try:

@@ -5,11 +5,13 @@ import os
 import requests
 import logging
 import base64
+from .http_client import get_session, throttle
 
 
 def head_is_pdf(url: str, timeout: int = 10) -> bool:
     try:
-        r = requests.head(url, allow_redirects=True, timeout=timeout)
+        with throttle(url):
+            r = get_session().head(url, allow_redirects=True, timeout=timeout)
         ctype = r.headers.get("Content-Type", "")
         return "pdf" in ctype.lower()
     except requests.RequestException:
@@ -62,7 +64,8 @@ def mouser_candidate_urls(mpn: str, api_key: str) -> Tuple[List[str], List[str]]
         logging.info("API-first: Mouser partnumber(manufacturerPartNumber) for %s", mpn)
         url = "https://api.mouser.com/api/v1/search/partnumber"
         payload = {"SearchByPartRequest": {"manufacturerPartNumber": mpn}}
-        r = requests.post(url, json=payload, headers=headers, params=params, timeout=15)
+        with throttle(url):
+            r = get_session().post(url, json=payload, headers=headers, params=params, timeout=15)
         r.raise_for_status()
         data = r.json() or {}
         p = (data.get("SearchResults") or {}).get("Parts", []) or []
@@ -76,7 +79,8 @@ def mouser_candidate_urls(mpn: str, api_key: str) -> Tuple[List[str], List[str]]
         logging.info("API-first: Mouser keyword for %s", mpn)
         url = "https://api.mouser.com/api/v1/search/keyword"
         payload = {"SearchByKeywordRequest": {"keyword": mpn}}
-        r = requests.post(url, json=payload, headers=headers, params=params, timeout=15)
+        with throttle(url):
+            r = get_session().post(url, json=payload, headers=headers, params=params, timeout=15)
         r.raise_for_status()
         data = r.json() or {}
         p = (data.get("SearchResults") or {}).get("Parts", []) or []
@@ -91,7 +95,8 @@ def mouser_candidate_urls(mpn: str, api_key: str) -> Tuple[List[str], List[str]]
         logging.info("API-first: Mouser partnumber(mouserPartNumber) for %s", mpn)
         url = "https://api.mouser.com/api/v1/search/partnumber"
         payload = {"SearchByPartRequest": {"mouserPartNumber": mpn}}
-        r = requests.post(url, json=payload, headers=headers, params=params, timeout=15)
+        with throttle(url):
+            r = get_session().post(url, json=payload, headers=headers, params=params, timeout=15)
         r.raise_for_status()
         data = r.json() or {}
         p = (data.get("SearchResults") or {}).get("Parts", []) or []
@@ -175,7 +180,8 @@ def get_part_description_api_first(mpn: str) -> Optional[str]:
     try:
         url = "https://api.mouser.com/api/v1/search/partnumber"
         payload = {"SearchByPartRequest": {"manufacturerPartNumber": mpn}}
-        r = requests.post(url, json=payload, headers=headers, params=params, timeout=15)
+        with throttle(url):
+            r = get_session().post(url, json=payload, headers=headers, params=params, timeout=15)
         r.raise_for_status()
         data = r.json() or {}
         p = (data.get("SearchResults") or {}).get("Parts", []) or []
@@ -210,7 +216,8 @@ def _digikey_get_token(client_id: str, client_secret: str) -> Optional[str]:
             "Content-Type": "application/x-www-form-urlencoded",
         }
         data = {"grant_type": "client_credentials"}
-        r = requests.post(token_url, headers=headers, data=data, timeout=15)
+        with throttle(token_url):
+            r = get_session().post(token_url, headers=headers, data=data, timeout=15)
         if r.status_code >= 400:
             logging.info("API-first: Digi-Key token error %s: %s", r.status_code, (r.text or "")[:200])
             return None

@@ -22,7 +22,45 @@ from ..services.description_extract import infer_description_from_pdf
 from . import state as app_state
 import requests
 import logging
-from ..config import MAX_DATASHEET_MB
+from ..config import MAX_DATASHEET_MB, LOG_DIR
+from logging.handlers import RotatingFileHandler
+import threading
+
+"""Install a lightweight file logger for autosheet so runs are captured.
+
+Attach a single RotatingFileHandler to the root logger with a filter,
+avoiding duplicate handlers writing to the same file from different loggers.
+"""
+try:
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    class _AutosheetFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
+            # Avoid calling record.getMessage() here to reduce formatting reentrancy
+            name = getattr(record, 'name', '')
+            raw = record.msg if hasattr(record, 'msg') else ''
+            try:
+                text = str(raw)
+            except Exception:
+                text = ''
+            return (
+                'auto_datasheet_dialog' in name
+                or 'Auto-datasheet' in text
+                or 'datasheet_search' in text
+                or 'API-first:' in text
+            )
+    root_logger = logging.getLogger()
+    if not any(isinstance(h, logging.FileHandler) and str(getattr(h, 'baseFilename', '')).endswith('auto_datasheet.log') for h in root_logger.handlers):
+        root_fh = RotatingFileHandler((LOG_DIR / 'auto_datasheet.log'), maxBytes=5 * 1024 * 1024, backupCount=3, encoding='utf-8', delay=True)
+        root_fh.setFormatter(logging.Formatter('%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s'))
+        root_fh.setLevel(logging.INFO)
+        root_fh.addFilter(_AutosheetFilter())
+        root_logger.addHandler(root_fh)
+except Exception:
+    # Never fail import due to logging setup
+    pass
 
 
 @dataclass
@@ -55,7 +93,13 @@ class _Worker(QRunnable):
         self._sess = requests.Session()
 
     def run(self):
-        logging.info("Auto-datasheet worker start: row=%s part_id=%s pn=%s", self.row, self.wi.part_id, self.wi.pn)
+        logging.info(
+            "Auto-datasheet worker start: row=%s part_id=%s pn=%s thread=%s",
+            self.row,
+            self.wi.part_id,
+            self.wi.pn,
+            threading.current_thread().name,
+        )
         try:
             logging.info(
                 "API-first: configured -> mouser=%s digikey=%s nexar=%s",
@@ -383,11 +427,14 @@ class _Worker(QRunnable):
                 to = (10, int(os.getenv("BOM_DS_READ_TIMEOUT", 90)))
 
             # Separate connect/read timeouts; retry once on transient timeouts
-            sess = self._sess
+            # Use the global constrained session and throttle by host
+            from ..services.http_client import get_session as _get_session, throttle as _throttle  # type: ignore
+            sess = _get_session()
             if referer:
                 headers["Referer"] = referer
             def _try_download(connect_read_timeout):
-                return sess.get(url, stream=True, headers=headers, timeout=connect_read_timeout, allow_redirects=True)
+                with _throttle(url):
+                    return sess.get(url, stream=True, headers=headers, timeout=connect_read_timeout, allow_redirects=True)
 
             try:
                 r = _try_download(to)
@@ -467,7 +514,16 @@ class AutoDatasheetDialog(QDialog):
         self.resize(900, 420)
         self.work = work
         self.on_locked_parts_changed = on_locked_parts_changed
-        self.pool = QThreadPool.globalInstance()
+        # Use a dedicated thread pool with a bounded concurrency to avoid resource spikes
+        self.pool = QThreadPool()
+        try:
+            # Allow override via env; default to 2 concurrent workers (safer on Windows)
+            _max = int(os.getenv('BOM_AUTODATA_THREADS', '2'))
+        except Exception:
+            _max = 3
+        _max = max(1, min(_max, 8))
+        self.pool.setMaxThreadCount(_max)
+        logging.info("Auto-datasheet dialog created: %d items, max_threads=%d", len(work), _max)
         self.sig = _Signals()
         self.sig.rowStatus.connect(self._row_status)
         self.sig.rowDone.connect(self._row_done)
@@ -510,6 +566,8 @@ class AutoDatasheetDialog(QDialog):
 
         self.done = 0
         self.dup_queue: List[int] = []
+        # Keep explicit refs to workers to avoid premature GC while running
+        self._workers: List[_Worker] = []
 
         self.btnStart.clicked.connect(self._start)
         self.btnCancel.clicked.connect(self.reject)
@@ -520,10 +578,12 @@ class AutoDatasheetDialog(QDialog):
         self.btnStart.setEnabled(False)
         self.btnCancel.setEnabled(False)
         auto = self.auto_dupes.isChecked()
+        logging.info("Auto-datasheet start: items=%d auto_dupes=%s manual_pages=%s", len(self.work), auto, self.manual_pages.isChecked())
         for i, wi in enumerate(self.work):
             worker = _Worker(i, wi, auto, self.sig)
             # pass manual-pages preference
             worker.manual_ok = self.manual_pages.isChecked()
+            self._workers.append(worker)
             self.pool.start(worker)
 
     def _row_status(self, row: int, text: str):
@@ -545,6 +605,16 @@ class AutoDatasheetDialog(QDialog):
             self.on_locked_parts_changed({w.part_id for w in self.work}, lock=False)
         if self.dup_queue and not self.auto_dupes.isChecked():
             self._review_duplicates()
+        try:
+            # Give the pool a moment to drain; then drop references
+            self.pool.waitForDone(1000)
+        except Exception:
+            pass
+        logging.info("Auto-datasheet finished: done=%d duplicates=%d", self.done, len(self.dup_queue))
+        try:
+            self._workers.clear()
+        except Exception:
+            pass
         self.accept()
 
     def _review_duplicates(self):
