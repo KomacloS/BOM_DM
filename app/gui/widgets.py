@@ -413,8 +413,11 @@ class AssembliesPane(QWidget):
         self.import_btn.clicked.connect(self._on_import_bom)
         self.template_btn = QPushButton("Download CSV template")
         self.template_btn.clicked.connect(self.download_template)
+        self.schematics_btn = QPushButton("Schematics…")
+        self.schematics_btn.clicked.connect(self._open_schematics)
         btn_row.addWidget(self.import_btn)
         btn_row.addWidget(self.template_btn)
+        btn_row.addWidget(self.schematics_btn)
         layout.addLayout(btn_row)
         # Sub-headers
         bom_lbl = QLabel("BOM Items")
@@ -435,6 +438,7 @@ class AssembliesPane(QWidget):
         layout.addWidget(self.items_table)
         self.items_table.setEnabled(False)
         self.import_btn.setEnabled(False)
+        self.schematics_btn.setEnabled(False)
 
         tasks_lbl = QLabel("Tasks")
         f2 = tasks_lbl.font()
@@ -477,6 +481,7 @@ class AssembliesPane(QWidget):
         self.delete_btn.setEnabled(False)
         self.items_table.setEnabled(False)
         self.import_btn.setEnabled(False)
+        self.schematics_btn.setEnabled(False)
         self.items_table.setRowCount(0)
         self._update_mode_combo(None)
         self._state.refresh_assemblies(pid)
@@ -519,10 +524,12 @@ class AssembliesPane(QWidget):
         if aid:
             self.items_table.setEnabled(True)
             self.import_btn.setEnabled(True)
+            self.schematics_btn.setEnabled(True)
             self._state.refresh_bom_items(aid)
         else:
             self.items_table.setEnabled(False)
             self.import_btn.setEnabled(False)
+            self.schematics_btn.setEnabled(False)
             self.items_table.setRowCount(0)
         if self._project_id:
             self._state.refresh_tasks(
@@ -579,6 +586,18 @@ class AssembliesPane(QWidget):
         self._show_import_progress_dialog()
         # Use AppState API which emits bomImported
         self._state.import_bom(aid, data)
+
+    def _open_schematics(self) -> None:  # pragma: no cover - UI glue
+        aid = (
+            self.current_assembly_id() if hasattr(self, "current_assembly_id") else getattr(self, "_assembly_id", None)
+        )
+        if not aid:
+            QMessageBox.information(self, "Schematics", "Select an assembly first.")
+            return
+        from .dialogs.schematic_manager import SchematicsManagerDialog
+
+        dialog = SchematicsManagerDialog(aid, parent=self)
+        dialog.exec()
 
     def download_template(self) -> None:  # pragma: no cover - UI glue
         path, _ = QFileDialog.getSaveFileName(

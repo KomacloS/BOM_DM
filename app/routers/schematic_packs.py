@@ -6,21 +6,22 @@ from typing import Iterable
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from .. import config
 from ..auth import get_current_user
 from ..database import get_session
-from ..models import (
-    Assembly,
-    SchematicFile,
-    SchematicIndexSource,
-    SchematicOcrStatus,
-    SchematicPack,
-    User,
+from ..models import SchematicFile, SchematicIndexSource, SchematicOcrStatus, User
+from ..services import (
+    SchematicFileInfo,
+    SchematicPackInfo,
+    add_schematic_files_from_uploads,
+    create_schematic_pack as svc_create_schematic_pack,
+    get_pack_detail as svc_get_pack_detail,
+    list_schematic_packs as svc_list_schematic_packs,
+    mark_schematic_file_reindexed,
+    reorder_schematic_files,
 )
-from ..services import schematic_storage
 
 
 router = APIRouter(tags=["schematic-packs"])
@@ -76,42 +77,28 @@ class OverlayResponse(BaseModel):
     transform: dict | None = None
 
 
-def _get_pack(session: Session, pack_id: int) -> SchematicPack:
-    pack = session.get(SchematicPack, pack_id)
-    if not pack:
-        raise HTTPException(status_code=404, detail="Pack not found")
-    return pack
-
-
-def _ensure_assembly(session: Session, assembly_id: int) -> Assembly:
-    assembly = session.get(Assembly, assembly_id)
-    if not assembly:
-        raise HTTPException(status_code=404, detail="Assembly not found")
-    return assembly
-
-
-def _serialize_file(file: SchematicFile) -> FileRecord:
+def _serialize_file_info(info: SchematicFileInfo) -> FileRecord:
     return FileRecord(
-        id=file.id,
-        pack_id=file.pack_id,
-        file_order=file.file_order,
-        relative_path=file.relative_path,
-        page_count=file.page_count,
-        has_text_layer=file.has_text_layer,
-        ocr_status=file.ocr_status,
-        last_indexed_at=file.last_indexed_at,
+        id=info.id,
+        pack_id=info.pack_id,
+        file_order=info.file_order,
+        relative_path=info.relative_path,
+        page_count=info.page_count,
+        has_text_layer=info.has_text_layer,
+        ocr_status=info.ocr_status,
+        last_indexed_at=info.last_indexed_at,
     )
 
 
-def _serialize_pack(pack: SchematicPack, files: Iterable[SchematicFile]) -> PackDetail:
+def _serialize_pack_info(info: SchematicPackInfo) -> PackDetail:
     return PackDetail(
-        id=pack.id,
-        assembly_id=pack.assembly_id,
-        display_name=pack.display_name,
-        pack_revision=pack.pack_revision,
-        created_at=pack.created_at,
-        updated_at=pack.updated_at,
-        files=sorted((_serialize_file(f) for f in files), key=lambda f: f.file_order),
+        id=info.id,
+        assembly_id=info.assembly_id,
+        display_name=info.display_name,
+        pack_revision=info.pack_revision,
+        created_at=info.created_at,
+        updated_at=info.updated_at,
+        files=sorted((_serialize_file_info(f) for f in info.files), key=lambda f: f.file_order),
     )
 
 
@@ -122,12 +109,10 @@ def create_pack(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    assembly = _ensure_assembly(session, assembly_id)
-    pack = SchematicPack(assembly_id=assembly.id, display_name=payload.display_name.strip())
-    session.add(pack)
-    session.commit()
-    session.refresh(pack)
-    schematic_storage.ensure_files_dir(assembly, pack)
+    try:
+        pack = svc_create_schematic_pack(session, assembly_id, payload.display_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PackCreateResponse(pack_id=pack.id)
 
 
@@ -137,10 +122,10 @@ def list_packs(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    _ensure_assembly(session, assembly_id)
-    packs = session.exec(
-        select(SchematicPack).where(SchematicPack.assembly_id == assembly_id)
-    ).all()
+    try:
+        packs = svc_list_schematic_packs(session, assembly_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return [
         PackSummary(
             id=p.id,
@@ -163,34 +148,14 @@ async def upload_files(
 ):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
-    pack = _get_pack(session, pack_id)
-    assembly = _ensure_assembly(session, pack.assembly_id)
-    max_order = session.exec(
-        select(func.max(SchematicFile.file_order)).where(SchematicFile.pack_id == pack_id)
-    ).first()
-    next_order = (max_order or 0) + 1
-    stored_files: list[SchematicFile] = []
-    for upload in files:
-        stored = schematic_storage.store_upload(pack, assembly, upload)
-        record = SchematicFile(
-            pack_id=pack.id,
-            file_order=next_order,
-            relative_path=stored.relative_path.as_posix(),
-            page_count=stored.page_count,
-            has_text_layer=stored.has_text_layer,
-            ocr_status=(
-                SchematicOcrStatus.completed if stored.has_text_layer else SchematicOcrStatus.pending
-            ),
-        )
-        session.add(record)
-        stored_files.append(record)
-        next_order += 1
-    pack.pack_revision += 1
-    schematic_storage.update_pack_timestamp(pack)
-    session.commit()
-    for record in stored_files:
-        session.refresh(record)
-    return [_serialize_file(record) for record in stored_files]
+    try:
+        infos = add_schematic_files_from_uploads(session, pack_id, files)
+    except ValueError as exc:
+        detail = str(exc)
+        if "not found" in detail.lower():
+            raise HTTPException(status_code=404, detail=detail) from exc
+        raise HTTPException(status_code=400, detail=detail) from exc
+    return [_serialize_file_info(info) for info in infos]
 
 
 @router.post("/schematic-packs/{pack_id}/reorder")
@@ -200,20 +165,12 @@ def reorder_files(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    pack = _get_pack(session, pack_id)
-    files = session.exec(select(SchematicFile).where(SchematicFile.pack_id == pack_id)).all()
-    file_map = {file.id: file for file in files}
-    if set(payload.file_ids) != set(file_map.keys()):
-        raise HTTPException(status_code=400, detail="File IDs do not match pack contents")
-    offset = len(payload.file_ids)
-    for order, file_id in enumerate(payload.file_ids, start=1):
-        file_map[file_id].file_order = order + offset
-    session.flush()
-    for order, file_id in enumerate(payload.file_ids, start=1):
-        file_map[file_id].file_order = order
-    pack.pack_revision += 1
-    schematic_storage.update_pack_timestamp(pack)
-    session.commit()
+    try:
+        pack = reorder_schematic_files(session, pack_id, payload.file_ids)
+    except ValueError as exc:
+        detail = str(exc)
+        status = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status, detail=detail) from exc
     return {"pack_revision": pack.pack_revision}
 
 
@@ -223,11 +180,10 @@ def get_pack_detail(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    pack = _get_pack(session, pack_id)
-    files = session.exec(
-        select(SchematicFile).where(SchematicFile.pack_id == pack_id).order_by(SchematicFile.file_order)
-    ).all()
-    return _serialize_pack(pack, files)
+    pack = svc_get_pack_detail(session, pack_id)
+    if pack is None:
+        raise HTTPException(status_code=404, detail="Pack not found")
+    return _serialize_pack_info(pack)
 
 
 @router.get("/schematic-packs/{pack_id}/search", response_model=list[SearchResult])
@@ -238,7 +194,9 @@ def search_pack(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    _get_pack(session, pack_id)
+    pack = svc_get_pack_detail(session, pack_id)
+    if pack is None:
+        raise HTTPException(status_code=404, detail="Pack not found")
     return []
 
 
@@ -277,10 +235,8 @@ def reindex_file(
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ):
-    file = session.get(SchematicFile, file_id)
-    if not file:
-        raise HTTPException(status_code=404, detail="File not found")
-    file.last_indexed_at = datetime.utcnow()
-    session.add(file)
-    session.commit()
+    try:
+        mark_schematic_file_reindexed(session, file_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "queued", "file_id": file_id}

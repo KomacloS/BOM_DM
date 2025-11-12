@@ -103,6 +103,20 @@ from .test_defaults import (
     upsert_python_test,
     upsert_test_macro,
 )
+from .schematics import (
+    SchematicFileInfo,
+    SchematicPackInfo,
+    list_schematic_packs,
+    create_schematic_pack,
+    get_pack_detail,
+    rename_schematic_pack,
+    add_schematic_file_from_path,
+    add_schematic_files_from_uploads,
+    replace_schematic_file_from_path,
+    remove_schematic_file,
+    reorder_schematic_files,
+    mark_schematic_file_reindexed,
+)
 
 __all__ = [
     "list_customers",
@@ -168,5 +182,17 @@ __all__ = [
     "upsert_part_test_map",
     "upsert_python_test",
     "upsert_test_macro",
+    "SchematicFileInfo",
+    "SchematicPackInfo",
+    "list_schematic_packs",
+    "create_schematic_pack",
+    "get_pack_detail",
+    "rename_schematic_pack",
+    "add_schematic_file_from_path",
+    "add_schematic_files_from_uploads",
+    "replace_schematic_file_from_path",
+    "remove_schematic_file",
+    "reorder_schematic_files",
+    "mark_schematic_file_reindexed",
 ]
 

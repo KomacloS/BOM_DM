@@ -97,6 +97,7 @@ from ..logic.prefix_macros import load_prefix_macros
 from ..models import Assembly, TestMode, TestProfile
 from . import state as app_state
 from .widgets.complex_panel import ComplexPanel
+from .widgets.schematic_panel import SchematicPanel
 
 
 PartIdRole = Qt.ItemDataRole.UserRole + 1
@@ -524,6 +525,8 @@ class BOMEditorPane(QWidget):
         self._assembly_mode: TestMode = TestMode.unpowered
         self._complex_splitter: Optional[QSplitter] = None
         self._complex_panel: Optional[ComplexPanel] = None
+        self._main_splitter: Optional[QSplitter] = None
+        self._schematic_panel: Optional[SchematicPanel] = None
         self._view_mode = self._settings.value("view_mode", "by_pn")
         self._col_indices = {  # will be updated on model rebuild
             "pn": 0,
@@ -719,9 +722,22 @@ QTableView::item:selected:hover {
                 self._complex_splitter.setCollapsible(1, True)
             except Exception:
                 pass
-            layout.addWidget(self._complex_splitter)
+            table_container: QWidget = self._complex_splitter
         else:
-            layout.addWidget(self.table)
+            table_container = self.table
+
+        self._schematic_panel = SchematicPanel(self._assembly_id, self._open_pdf_path, self)
+        self._schematic_panel.hide()
+        self._main_splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self._main_splitter.addWidget(table_container)
+        self._main_splitter.addWidget(self._schematic_panel)
+        self._main_splitter.setStretchFactor(0, 3)
+        self._main_splitter.setStretchFactor(1, 2)
+        try:
+            self._main_splitter.setCollapsible(1, True)
+        except Exception:
+            pass
+        layout.addWidget(self._main_splitter)
 
         # Undo/Redo support via QUndoStack
         self.undo_act = QAction("Undo", self, shortcut=QKeySequence.StandardKey.Undo)
@@ -755,6 +771,10 @@ QTableView::item:selected:hover {
         self.menu_view.addAction(self.view_by_pn_act)
         self.menu_view.addAction(self.view_by_ref_act)
         self.menu_view.addMenu(self.columns_menu)
+        self.view_schematics_act = QAction("Schematics Panel", self)
+        self.view_schematics_act.setCheckable(True)
+        self.view_schematics_act.toggled.connect(self._toggle_schematic_panel)
+        self.menu_view.addAction(self.view_schematics_act)
         self.btn_view.setMenu(self.menu_view)
         self.toolbar.addWidget(self.btn_view)
 
@@ -1008,6 +1028,12 @@ QTableView::item:selected:hover {
                     self._assembly_mode = TestMode.unpowered
         else:
             self._assembly_mode = TestMode.unpowered
+        schem_visible = bool(self._settings.value("schematics_visible", False, type=bool))
+        if self._schematic_panel:
+            self.view_schematics_act.blockSignals(True)
+            self.view_schematics_act.setChecked(schem_visible)
+            self.view_schematics_act.blockSignals(False)
+            self._set_schematic_panel_visible(schem_visible)
         self._update_mode_badge()
         # Seed parts state from DB
         self._parts_state.clear()
@@ -2111,6 +2137,7 @@ QTableView::item:selected:hover {
     def _on_table_selection_changed(self, *_args) -> None:
         self._update_auto_ds_act()
         self._update_complex_panel_context()
+        self._update_schematic_panel_context()
 
     def _update_auto_ds_act(self) -> None:
         sel = self.table.selectionModel()
@@ -2167,6 +2194,53 @@ QTableView::item:selected:hover {
             self._complex_panel.hide()
             return
         self._ensure_complex_panel_visible_for_part(part_id)
+
+    def _selected_reference_text(self) -> str:
+        ref_col = self._col_indices.get("ref")
+        sel = self.table.selectionModel()
+        if ref_col is None or not sel:
+            return ""
+        indexes = sel.selectedIndexes()
+        if not indexes:
+            return ""
+        source_index = self.proxy.mapToSource(indexes[0])
+        idx = self.model.index(source_index.row(), ref_col)
+        ref = self.model.data(idx)
+        return str(ref or "")
+
+    def _update_schematic_panel_context(self) -> None:
+        if not self._schematic_panel or not self.view_schematics_act.isChecked():
+            return
+        part_id = self._selected_part_id()
+        if part_id is None:
+            self._schematic_panel.clear_component_context()
+            return
+        pn = self._part_number_for_part(part_id)
+        reference = self._selected_reference_text()
+        self._schematic_panel.set_component_context(part_id, pn, reference)
+
+    def _toggle_schematic_panel(self, checked: bool) -> None:
+        self._settings.setValue("schematics_visible", bool(checked))
+        self._set_schematic_panel_visible(checked)
+
+    def _set_schematic_panel_visible(self, visible: bool) -> None:
+        if not self._schematic_panel or not self._main_splitter:
+            return
+        self._schematic_panel.setVisible(visible)
+        if visible:
+            sizes = self._main_splitter.sizes()
+            if len(sizes) == 2 and sizes[1] == 0:
+                total = sum(sizes) or max(self.height(), 1)
+                self._main_splitter.setSizes([int(total * 0.65), int(total * 0.35)])
+            self._schematic_panel.refresh()
+            self._update_schematic_panel_context()
+        else:
+            try:
+                total = sum(self._main_splitter.sizes()) or 1
+                self._main_splitter.setSizes([total, 0])
+            except Exception:
+                pass
+            self._schematic_panel.clear_component_context()
 
     def _on_complex_link_updated(self, part_id: int) -> None:
         self._reload_complex_links([part_id])
