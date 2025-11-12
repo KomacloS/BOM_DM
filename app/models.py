@@ -311,3 +311,90 @@ class AuditEvent(SQLModel, table=True):
     action: AuditAction
     diff: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     ts: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SchematicTokenKind(str, Enum):
+    refdes = "refdes"
+    pn = "pn"
+    net = "net"
+
+
+class SchematicIndexSource(str, Enum):
+    vector = "vector"
+    ocr = "ocr"
+
+
+class SchematicOcrStatus(str, Enum):
+    pending = "pending"
+    completed = "completed"
+    failed = "failed"
+    skipped = "skipped"
+
+
+class SchematicPack(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    assembly_id: int = Field(foreign_key="assembly.id", index=True)
+    display_name: str = Field(nullable=False)
+    pack_revision: int = Field(default=1, nullable=False)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SchematicFile(SQLModel, table=True):
+    __table_args__ = (
+        sa.UniqueConstraint("pack_id", "file_order", name="uq_schematic_file_order"),
+        Index("ix_schematic_file_pack_order", "pack_id", "file_order"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    pack_id: int = Field(foreign_key="schematicpack.id", index=True)
+    file_order: int = Field(default=1, nullable=False)
+    relative_path: str = Field(sa_column=Column(Text, nullable=False))
+    page_count: int = Field(default=0, nullable=False)
+    has_text_layer: bool = Field(default=False, nullable=False)
+    ocr_status: SchematicOcrStatus = Field(
+        default=SchematicOcrStatus.pending,
+        sa_column=Column(
+            SAEnum(SchematicOcrStatus, name="schematic_ocr_status"),
+            server_default=SchematicOcrStatus.pending.value,
+        ),
+    )
+    last_indexed_at: datetime | None = Field(default=None)
+
+
+class SchematicPage(SQLModel, table=True):
+    __table_args__ = (
+        Index("ix_schematic_page_file_page", "file_id", "page_num"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    file_id: int = Field(foreign_key="schematicfile.id", index=True)
+    page_num: int = Field(nullable=False)
+    ocr_backed: bool = Field(default=False, nullable=False)
+
+
+class SchematicIndex(SQLModel, table=True):
+    __table_args__ = (
+        Index("ix_schematic_index_token", "token_norm"),
+        Index("ix_schematic_index_file_page", "file_id", "page_num"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    file_id: int = Field(foreign_key="schematicfile.id", index=True)
+    page_num: int = Field(nullable=False)
+    token_raw: str = Field(sa_column=Column(Text, nullable=False))
+    token_norm: str = Field(sa_column=Column(Text, nullable=False))
+    kind: SchematicTokenKind = Field(
+        sa_column=Column(
+            SAEnum(SchematicTokenKind, name="schematic_token_kind"),
+            nullable=False,
+        ),
+    )
+    boxes_json: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    source: SchematicIndexSource = Field(
+        default=SchematicIndexSource.vector,
+        sa_column=Column(
+            SAEnum(SchematicIndexSource, name="schematic_index_source"),
+            server_default=SchematicIndexSource.vector.value,
+        ),
+    )
